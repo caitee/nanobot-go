@@ -1,0 +1,151 @@
+package providers
+
+import (
+    "bytes"
+    "context"
+    "encoding/json"
+    "fmt"
+    "net/http"
+    "time"
+)
+
+// OpenAIProvider implements LLMProvider for OpenAI-compatible APIs
+type OpenAIProvider struct {
+    BaseURL     string
+    APIKey      string
+    DefaultModel string
+    HTTPClient  *http.Client
+}
+
+// NewOpenAIProvider creates a new OpenAI provider
+func NewOpenAIProvider(baseURL, apiKey, defaultModel string) *OpenAIProvider {
+    return &OpenAIProvider{
+        BaseURL:     baseURL,
+        APIKey:      apiKey,
+        DefaultModel: defaultModel,
+        HTTPClient: &http.Client{Timeout: 60 * time.Second},
+    }
+}
+
+func (p *OpenAIProvider) Chat(ctx context.Context, messages []Message, tools []ToolDef, opts ChatOptions) (*LLMResponse, error) {
+    model := opts.Model
+    if model == "" {
+        model = p.DefaultModel
+    }
+
+    reqBody := map[string]any{
+        "model":    model,
+        "messages": messages,
+    }
+
+    if len(tools) > 0 {
+        reqBody["tools"] = tools
+    }
+
+    if opts.MaxTokens > 0 {
+        reqBody["max_tokens"] = opts.MaxTokens
+    }
+    if opts.Temperature > 0 {
+        reqBody["temperature"] = opts.Temperature
+    }
+
+    jsonBody, err := json.Marshal(reqBody)
+    if err != nil {
+        return nil, fmt.Errorf("failed to marshal request: %w", err)
+    }
+
+    req, err := http.NewRequestWithContext(ctx, "POST", p.BaseURL+"/chat/completions", bytes.NewBuffer(jsonBody))
+    if err != nil {
+        return nil, fmt.Errorf("failed to create request: %w", err)
+    }
+
+    req.Header.Set("Content-Type", "application/json")
+    req.Header.Set("Authorization", "Bearer "+p.APIKey)
+
+    resp, err := p.HTTPClient.Do(req)
+    if err != nil {
+        return nil, fmt.Errorf("request failed: %w", err)
+    }
+    defer resp.Body.Close()
+
+    if resp.StatusCode != http.StatusOK {
+        return nil, fmt.Errorf("API error: status %d", resp.StatusCode)
+    }
+
+    var result map[string]any
+    if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+        return nil, fmt.Errorf("failed to decode response: %w", err)
+    }
+
+    return p.parseResponse(result)
+}
+
+func (p *OpenAIProvider) ChatWithRetry(ctx context.Context, messages []Message, tools []ToolDef, opts ChatOptions) (*LLMResponse, error) {
+    var lastErr error
+    for i := 0; i < 3; i++ {
+        resp, err := p.Chat(ctx, messages, tools, opts)
+        if err == nil {
+            return resp, nil
+        }
+        lastErr = err
+        time.Sleep(time.Duration(i+1) * time.Second)
+    }
+    return nil, lastErr
+}
+
+func (p *OpenAIProvider) GetDefaultModel() string {
+    return p.DefaultModel
+}
+
+func (p *OpenAIProvider) parseResponse(result map[string]any) (*LLMResponse, error) {
+    choices, ok := result["choices"].([]any)
+    if !ok || len(choices) == 0 {
+        return nil, fmt.Errorf("no choices in response")
+    }
+
+    choice, ok := choices[0].(map[string]any)
+    if !ok {
+        return nil, fmt.Errorf("invalid choice format")
+    }
+
+    msg, ok := choice["message"].(map[string]any)
+    if !ok {
+        return nil, fmt.Errorf("no message in choice")
+    }
+
+    content, _ := msg["content"].(string)
+
+    resp := &LLMResponse{
+        Content: content,
+    }
+
+    if toolCalls, ok := msg["tool_calls"].([]any); ok {
+        for _, tc := range toolCalls {
+            if tcMap, ok := tc.(map[string]any); ok {
+                funcMap, _ := tcMap["function"].(map[string]any)
+                args, _ := funcMap["arguments"].(string)
+                var argsMap map[string]any
+                json.Unmarshal([]byte(args), &argsMap)
+
+                resp.ToolCalls = append(resp.ToolCalls, ToolCall{
+                    ID:        tcMap["id"].(string),
+                    Name:      funcMap["name"].(string),
+                    Arguments: argsMap,
+                })
+            }
+        }
+    }
+
+    if finishReason, ok := choice["finish_reason"].(string); ok {
+        resp.FinishReason = finishReason
+    }
+
+    if usage, ok := result["usage"].(map[string]any); ok {
+        resp.Usage = TokenUsage{
+            PromptTokens:     int(usage["prompt_tokens"].(float64)),
+            CompletionTokens: int(usage["completion_tokens"].(float64)),
+        }
+    }
+
+    return resp, nil
+}
