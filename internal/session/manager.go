@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
@@ -20,19 +21,26 @@ type SessionStore interface {
 
 // fileSessionStore implements SessionStore with JSONL persistence
 type fileSessionStore struct {
-	sessionsDir string
-	sessions    map[string]*Session
-	mu          sync.RWMutex
+	sessionsDir      string
+	legacySessionsDir string
+	sessions         map[string]*Session
+	mu               sync.RWMutex
 }
 
 // NewFileSessionStore creates a new file-based session store
 func NewFileSessionStore(sessionsDir string) (SessionStore, error) {
+	return NewFileSessionStoreWithLegacy(sessionsDir, "")
+}
+
+// NewFileSessionStoreWithLegacy creates a session store with legacy migration support
+func NewFileSessionStoreWithLegacy(sessionsDir, legacySessionsDir string) (SessionStore, error) {
 	if err := os.MkdirAll(sessionsDir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create sessions dir: %w", err)
 	}
 	return &fileSessionStore{
-		sessionsDir: sessionsDir,
-		sessions:    make(map[string]*Session),
+		sessionsDir:      sessionsDir,
+		legacySessionsDir: legacySessionsDir,
+		sessions:         make(map[string]*Session),
 	}, nil
 }
 
@@ -68,6 +76,20 @@ func (s *fileSessionStore) GetOrCreate(key string) *Session {
 
 func (s *fileSessionStore) loadSession(key string) *Session {
 	filePath := s.sessionFile(key)
+
+	// Check if file exists, if not try legacy path
+	if _, err := os.Stat(filePath); os.IsNotExist(err) && s.legacySessionsDir != "" {
+		legacyPath := s.legacySessionFile(key)
+		if _, err := os.Stat(legacyPath); err == nil {
+			// Migrate legacy session
+			if err := s.migrateLegacySession(legacyPath, filePath); err != nil {
+				slog.Warn("failed to migrate legacy session", "key", key, "error", err)
+			} else {
+				slog.Info("migrated session from legacy path", "key", key)
+			}
+		}
+	}
+
 	file, err := os.Open(filePath)
 	if err != nil {
 		return nil
@@ -81,6 +103,7 @@ func (s *fileSessionStore) loadSession(key string) *Session {
 	for scanner.Scan() {
 		var data map[string]any
 		if err := json.Unmarshal(scanner.Bytes(), &data); err != nil {
+			slog.Warn("failed to unmarshal session line", "error", err)
 			continue
 		}
 		if data["_type"] == "metadata" {
@@ -111,11 +134,59 @@ func (s *fileSessionStore) loadSession(key string) *Session {
 			if role, ok := data["role"].(string); ok {
 				msg.Role = role
 			}
+			if v, ok := data["tool_call_id"].(string); ok {
+				msg.ToolCallID = v
+			}
+			if v, ok := data["name"].(string); ok {
+				msg.Name = v
+			}
+			if toolCallsRaw, ok := data["tool_calls"].([]any); ok {
+				for _, tcRaw := range toolCallsRaw {
+					if tcMap, ok := tcRaw.(map[string]any); ok {
+						tc := ToolCall{}
+						if id, ok := tcMap["id"].(string); ok {
+							tc.ID = id
+						}
+						if name, ok := tcMap["name"].(string); ok {
+							tc.Name = name
+						}
+						msg.ToolCalls = append(msg.ToolCalls, tc)
+					}
+				}
+			}
 			session.Messages = append(session.Messages, msg)
 		}
 	}
 
 	return &session
+}
+
+// legacySessionFile returns the legacy session file path for a key
+func (s *fileSessionStore) legacySessionFile(key string) string {
+	safeKey := filepath.Base(key)
+	return filepath.Join(s.legacySessionsDir, safeKey+".jsonl")
+}
+
+// migrateLegacySession moves a legacy session file to the new location
+func (s *fileSessionStore) migrateLegacySession(legacyPath, newPath string) error {
+	// Ensure the new directory exists
+	if err := os.MkdirAll(filepath.Dir(newPath), 0755); err != nil {
+		return fmt.Errorf("failed to create sessions dir: %w", err)
+	}
+	// Read legacy file content
+	data, err := os.ReadFile(legacyPath)
+	if err != nil {
+		return fmt.Errorf("failed to read legacy file: %w", err)
+	}
+	// Write to new location
+	if err := os.WriteFile(newPath, data, 0644); err != nil {
+		return fmt.Errorf("failed to write new session file: %w", err)
+	}
+	// Remove legacy file
+	if err := os.Remove(legacyPath); err != nil {
+		slog.Warn("failed to remove legacy session file", "path", legacyPath, "error", err)
+	}
+	return nil
 }
 
 func (s *fileSessionStore) Save(session *Session) error {
@@ -140,15 +211,29 @@ func (s *fileSessionStore) Save(session *Session) error {
 		"last_consolidated":  session.LastConsolidated,
 		"metadata":          session.Metadata,
 	}
-	metaBytes, _ := json.Marshal(meta)
-	file.Write(metaBytes)
-	file.Write([]byte("\n"))
+	metaBytes, err := json.Marshal(meta)
+	if err != nil {
+		return fmt.Errorf("failed to marshal metadata: %w", err)
+	}
+	if _, err := file.Write(metaBytes); err != nil {
+		return fmt.Errorf("failed to write metadata: %w", err)
+	}
+	if _, err := file.Write([]byte("\n")); err != nil {
+		return fmt.Errorf("failed to write newline: %w", err)
+	}
 
 	// Write messages
 	for _, msg := range session.Messages {
-		msgBytes, _ := json.Marshal(msg)
-		file.Write(msgBytes)
-		file.Write([]byte("\n"))
+		msgBytes, err := json.Marshal(msg)
+		if err != nil {
+			return fmt.Errorf("failed to marshal message: %w", err)
+		}
+		if _, err := file.Write(msgBytes); err != nil {
+			return fmt.Errorf("failed to write message: %w", err)
+		}
+		if _, err := file.Write([]byte("\n")); err != nil {
+			return fmt.Errorf("failed to write newline: %w", err)
+		}
 	}
 
 	return nil

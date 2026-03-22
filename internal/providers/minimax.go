@@ -1,0 +1,254 @@
+package providers
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log"
+	"net/http"
+	"time"
+)
+
+// MinimaxProvider implements LLMProvider for MiniMax Anthropic-compatible API
+type MinimaxProvider struct {
+	APIKey       string
+	BaseURL      string
+	DefaultModel string
+	HTTPClient   *http.Client
+}
+
+// NewMinimaxProvider creates a new MiniMax provider
+func NewMinimaxProvider(apiKey, baseURL, defaultModel string) *MinimaxProvider {
+	if baseURL == "" {
+		baseURL = "https://api.minimaxi.com/anthropic"
+	}
+	return &MinimaxProvider{
+		APIKey:       apiKey,
+		BaseURL:      baseURL,
+		DefaultModel: defaultModel,
+		HTTPClient:   &http.Client{Timeout: 120 * time.Second},
+	}
+}
+
+func (p *MinimaxProvider) Chat(ctx context.Context, messages []Message, tools []ToolDef, opts ChatOptions) (*LLMResponse, error) {
+	model := opts.Model
+	if model == "" {
+		model = p.DefaultModel
+	}
+	if model == "" {
+		model = "MiniMax-M2.7"
+	}
+
+	// Extract system message for Anthropic (expects max one system message at start)
+	var systemContent string
+	minimaxMsgs := make([]map[string]any, 0, len(messages))
+	for _, msg := range messages {
+		if msg.Role == "system" {
+			if systemContent == "" {
+				systemContent, _ = msg.Content.(string)
+			}
+			continue
+		}
+
+		// MiniMax API expects content as array of content blocks
+		var contentBlocks []map[string]any
+
+		switch c := msg.Content.(type) {
+		case string:
+			if c != "" {
+				if msg.Role == "tool" {
+					// Tool result messages need tool_result content block with tool_use_id
+					contentBlocks = []map[string]any{{"type": "tool_result", "tool_use_id": msg.ToolCallID, "content": c}}
+				} else {
+					contentBlocks = []map[string]any{{"type": "text", "text": c}}
+				}
+			} else {
+				contentBlocks = []map[string]any{}
+			}
+		case []ContentBlock:
+			for _, b := range c {
+				block := map[string]any{"type": b.Type}
+				if b.Text != "" {
+					block["text"] = b.Text
+				}
+				if b.ImageURL != "" {
+					block["image_url"] = b.ImageURL
+				}
+				contentBlocks = append(contentBlocks, block)
+			}
+		case []any:
+			// Already in correct format (from JSON unmarshal)
+			contentBlocks = make([]map[string]any, 0, len(c))
+			for _, b := range c {
+				if blockMap, ok := b.(map[string]any); ok {
+					contentBlocks = append(contentBlocks, blockMap)
+				}
+			}
+		case nil:
+			contentBlocks = []map[string]any{}
+		default:
+			contentBlocks = []map[string]any{{"type": "text", "text": fmt.Sprintf("%v", c)}}
+		}
+
+		// Add tool_use blocks from ToolCalls (assistant messages with tool calls)
+		for _, tc := range msg.ToolCalls {
+			toolUse := map[string]any{
+				"type": "tool_use",
+				"id":   tc.ID,
+				"name": tc.Name,
+				"input": tc.Arguments,
+			}
+			contentBlocks = append(contentBlocks, toolUse)
+		}
+
+		content := contentBlocks
+
+			role := msg.Role
+		// For tool results, Anthropic/MiniMax expects role "user" with tool_use_id in content
+		minimaxMsg := map[string]any{
+			"role":    role,
+			"content": content,
+		}
+		if msg.Role == "tool" {
+			minimaxMsg["role"] = "user"
+			// tool_use_id is already set in the tool_result content block at line 62
+			log.Printf("DEBUG tool result: role=%s tool_call_id=%s", role, msg.ToolCallID)
+		}
+		minimaxMsgs = append(minimaxMsgs, minimaxMsg)
+	}
+
+	reqBody := map[string]any{
+		"model":      model,
+		"messages":   minimaxMsgs,
+		"max_tokens": opts.MaxTokens,
+	}
+
+	if systemContent != "" {
+		reqBody["system"] = systemContent
+	}
+
+	if opts.Temperature > 0 {
+		reqBody["temperature"] = opts.Temperature
+	}
+
+	if len(tools) > 0 {
+		// Transform tools to MiniMax/Anthropic format
+		validTools := make([]map[string]any, 0, len(tools))
+		for _, t := range tools {
+			if t.Name == "" {
+				continue
+			}
+			params := t.Parameters
+			if params == nil {
+				params = map[string]any{"type": "object"}
+			}
+			validTools = append(validTools, map[string]any{
+				"name":        t.Name,
+				"description": t.Description,
+				"input_schema": params,
+			})
+		}
+		if len(validTools) > 0 {
+			reqBody["tools"] = validTools
+		}
+	}
+
+	jsonBody, _ := json.Marshal(reqBody)
+	log.Printf("minimax request: url=%s body=%s", p.BaseURL+"/v1/messages", string(jsonBody))
+	req, err := http.NewRequestWithContext(ctx, "POST", p.BaseURL+"/v1/messages", bytes.NewBuffer(jsonBody))
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+p.APIKey)
+	req.Header.Set("anthropic-version", "2023-06-01")
+
+	resp, err := p.HTTPClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("minimax API error: status %d, body: %s", resp.StatusCode, string(body))
+	}
+
+	var result map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	content := ""
+	var toolCalls []ToolCall
+	reasoningContent := ""
+	if contentArr, ok := result["content"].([]any); ok {
+		for _, block := range contentArr {
+			if blockMap, ok := block.(map[string]any); ok {
+				switch blockMap["type"] {
+				case "text":
+					if text, ok := blockMap["text"].(string); ok {
+						content = text
+					}
+				case "thinking":
+					if thinking, ok := blockMap["thinking"].(string); ok {
+						reasoningContent = thinking
+					}
+				case "tool_use":
+					id, _ := blockMap["id"].(string)
+					name, _ := blockMap["name"].(string)
+					input, _ := blockMap["input"].(map[string]any)
+					log.Printf("DEBUG tool_use block: id=%s name=%s input=%v", id, name, input)
+					toolCalls = append(toolCalls, ToolCall{
+						ID:        id,
+						Name:      name,
+						Arguments: input,
+					})
+				}
+			}
+		}
+	}
+
+	finishReason := ""
+	if sr, ok := result["stop_reason"].(string); ok {
+		finishReason = sr
+	}
+
+	resp2 := &LLMResponse{
+		Content:          content,
+		ToolCalls:        toolCalls,
+		FinishReason:     finishReason,
+		ReasoningContent: reasoningContent,
+	}
+
+	if usage, ok := result["usage"].(map[string]any); ok {
+		if pt, ok := usage["input_tokens"].(float64); ok {
+			resp2.Usage.PromptTokens = int(pt)
+		}
+		if ct, ok := usage["output_tokens"].(float64); ok {
+			resp2.Usage.CompletionTokens = int(ct)
+		}
+	}
+
+	return resp2, nil
+}
+
+func (p *MinimaxProvider) ChatWithRetry(ctx context.Context, messages []Message, tools []ToolDef, opts ChatOptions) (*LLMResponse, error) {
+	var lastErr error
+	for i := 0; i < 3; i++ {
+		resp, err := p.Chat(ctx, messages, tools, opts)
+		if err == nil {
+			return resp, nil
+		}
+		lastErr = err
+		time.Sleep(time.Duration(i+1) * time.Second)
+	}
+	return nil, lastErr
+}
+
+func (p *MinimaxProvider) GetDefaultModel() string {
+	return p.DefaultModel
+}

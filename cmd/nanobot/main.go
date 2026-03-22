@@ -6,182 +6,240 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"os/user"
+	"os/signal"
 	"path/filepath"
+	"strings"
+	"sync"
+	"syscall"
 
 	"nanobot-go/internal/agent"
 	"nanobot-go/internal/bus"
+	"nanobot-go/internal/channels"
 	"nanobot-go/internal/config"
+	"nanobot-go/internal/cron"
 	"nanobot-go/internal/providers"
 	"nanobot-go/internal/session"
 	"nanobot-go/internal/tools"
 
+	"github.com/charmbracelet/bubbles/textinput"
+	"github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
 )
+
+var (
+	version = "0.1.0-go"
+	logo    = `
+    _   _
+   | | | |
+  / __/ __|
+  \__ \__ \
+  (   (   )
+   |_| |_|
+  AI Assistant
+`
+)
+
+// ============================================================================
+// Root Command
+// ============================================================================
 
 var rootCmd = &cobra.Command{
 	Use:   "nanobot",
 	Short: "Nanobot AI Assistant",
-	Long:  "A lightweight AI assistant framework rewritten in Go",
+	Long:  fmt.Sprintf("%s nanobot - Personal AI Assistant", logo),
 }
+
+var versionCmd = &cobra.Command{
+	Use:   "version",
+	Short: "Show version information",
+	Run: func(cmd *cobra.Command, args []string) {
+		fmt.Printf("%s nanobot v%s\n", logo, version)
+	},
+}
+
+// ============================================================================
+// Onboard Command
+// ============================================================================
 
 var onboardCmd = &cobra.Command{
 	Use:   "onboard",
-	Short: "Initialize nanobot configuration",
+	Short: "Initialize nanobot configuration and workspace",
 	Run:   runOnboard,
 }
 
 var onboardWizardFlag bool
+var onboardWorkspaceFlag string
+var onboardConfigFlag string
 
 func init() {
-	onboardCmd.Flags().BoolVarP(&onboardWizardFlag, "wizard", "w", false, "Use interactive wizard")
+	onboardCmd.Flags().BoolVarP(&onboardWizardFlag, "wizard", "w", false, "Use interactive configuration wizard")
+	onboardCmd.Flags().StringVarP(&onboardWorkspaceFlag, "workspace", "", "", "Workspace directory")
+	onboardCmd.Flags().StringVarP(&onboardConfigFlag, "config", "c", "", "Path to config file")
 }
+
+// ============================================================================
+// Agent Command
+// ============================================================================
 
 var agentCmd = &cobra.Command{
 	Use:   "agent",
-	Short: "Run the agent",
+	Short: "Interact with the agent",
 	Run:   runAgent,
 }
 
-var messageFlag string
-var sessionFlag string
-var workspaceFlag string
+var (
+	agentMessageFlag    string
+	agentSessionFlag    string
+	agentWorkspaceFlag  string
+	agentConfigFlag     string
+	agentMarkdownFlag   bool
+	agentLogsFlag       bool
+)
+
+func init() {
+	agentCmd.Flags().StringVarP(&agentMessageFlag, "message", "m", "", "Message to send to the agent")
+	agentCmd.Flags().StringVarP(&agentSessionFlag, "session", "s", "cli:direct", "Session ID")
+	agentCmd.Flags().StringVarP(&agentWorkspaceFlag, "workspace", "w", "", "Workspace directory")
+	agentCmd.Flags().StringVarP(&agentConfigFlag, "config", "c", "", "Config file path")
+	agentCmd.Flags().BoolVarP(&agentMarkdownFlag, "markdown", "", true, "Render assistant output as Markdown")
+	agentCmd.Flags().BoolVarP(&agentLogsFlag, "logs", "", false, "Show nanobot runtime logs during chat")
+}
+
+// ============================================================================
+// Gateway Command
+// ============================================================================
 
 var gatewayCmd = &cobra.Command{
 	Use:   "gateway",
-	Short: "Start the gateway server",
+	Short: "Start the nanobot gateway server",
 	Run:   runGateway,
 }
+
+var (
+	gatewayPortFlag     int
+	gatewayWorkspaceFlag string
+	gatewayVerboseFlag   bool
+	gatewayConfigFlag    string
+)
+
+func init() {
+	gatewayCmd.Flags().IntVarP(&gatewayPortFlag, "port", "p", 0, "Gateway port")
+	gatewayCmd.Flags().StringVarP(&gatewayWorkspaceFlag, "workspace", "w", "", "Workspace directory")
+	gatewayCmd.Flags().BoolVarP(&gatewayVerboseFlag, "verbose", "v", false, "Verbose output")
+	gatewayCmd.Flags().StringVarP(&gatewayConfigFlag, "config", "c", "", "Config file path")
+}
+
+// ============================================================================
+// Status Command
+// ============================================================================
 
 var statusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Show nanobot status",
-	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Println("Nanobot Status")
-		fmt.Println("==============")
-		fmt.Println("Version: 0.1.0-go")
-		fmt.Println("Status: Running")
-	},
+	Run:   runStatus,
 }
+
+var statusConfigFlag string
+
+func init() {
+	statusCmd.Flags().StringVarP(&statusConfigFlag, "config", "c", "", "Config file path")
+}
+
+// ============================================================================
+// Channels Command
+// ============================================================================
 
 var channelsCmd = &cobra.Command{
 	Use:   "channels",
 	Short: "Manage channels",
 }
 
-var channelsLoginCmd = &cobra.Command{
-	Use:   "login",
-	Short: "Login to a channel",
-	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Println("Channel login not implemented")
-	},
-}
-
 var channelsStatusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Show channel status",
-	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Println("Channel Status")
-		fmt.Println("==============")
-	},
+	Run:   runChannelsStatus,
+}
+
+var channelsLoginCmd = &cobra.Command{
+	Use:   "login",
+	Short: "Login to a channel",
+	Run:   runChannelsLogin,
 }
 
 func init() {
-	agentCmd.Flags().StringVarP(&messageFlag, "message", "m", "", "Message to send")
-	agentCmd.Flags().StringVarP(&sessionFlag, "session", "s", "cli:direct", "Session ID")
-	agentCmd.Flags().StringVarP(&workspaceFlag, "workspace", "w", "", "Workspace directory")
+	channelsCmd.AddCommand(channelsStatusCmd)
+	channelsCmd.AddCommand(channelsLoginCmd)
+}
+
+// ============================================================================
+// Main Entry Point
+// ============================================================================
+
+func main() {
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+		Level: slog.LevelWarn,
+	})))
 
 	rootCmd.AddCommand(onboardCmd)
 	rootCmd.AddCommand(agentCmd)
 	rootCmd.AddCommand(gatewayCmd)
 	rootCmd.AddCommand(statusCmd)
 	rootCmd.AddCommand(channelsCmd)
-	channelsCmd.AddCommand(channelsLoginCmd)
-	channelsCmd.AddCommand(channelsStatusCmd)
-}
+	rootCmd.AddCommand(versionCmd)
 
-func runAgent(cmd *cobra.Command, args []string) {
-	ctx := cmd.Context()
-	cfg, err := config.Load("")
-	if err != nil {
-		slog.Error("failed to load config", "error", err)
+	if err := rootCmd.ExecuteContext(context.Background()); err != nil {
+		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-
-	// Initialize components
-	messageBus := bus.New(100)
-	sessionStore, err := session.NewFileSessionStore("sessions")
-	if err != nil {
-		slog.Error("failed to create session store", "error", err)
-		os.Exit(1)
-	}
-
-	toolRegistry := tools.NewRegistry()
-	// Register default tools
-	toolRegistry.Register(tools.NewMessageTool())
-	toolRegistry.Register(tools.NewFilesystemTool(nil))
-	toolRegistry.Register(tools.NewShellTool(true, nil, nil))
-	toolRegistry.Register(tools.NewWebTool())
-
-	// Create provider
-	provider := providers.NewOpenAIProvider(
-		"https://api.openai.com/v1",
-		os.Getenv("OPENAI_API_KEY"),
-		"gpt-4",
-	)
-
-	agentLoop := agent.NewAgentLoop(messageBus, sessionStore, toolRegistry, provider, cfg.Agents.MaxToolIterations)
-
-	if messageFlag != "" {
-		// Single message mode
-		inbound := bus.InboundMessage{
-			Channel:    "cli",
-			SenderID:   "cli",
-			ChatID:     sessionFlag,
-			Content:    messageFlag,
-			SessionKey: sessionFlag,
-		}
-		messageBus.PublishInbound(inbound)
-		<-ctx.Done()
-	} else {
-		// Interactive mode
-		fmt.Println("Nanobot agent started. Press Ctrl+C to exit.")
-		agentLoop.Start(ctx)
-	}
 }
 
-func runGateway(cmd *cobra.Command, args []string) {
-	fmt.Println("Starting gateway server...")
-	// Gateway startup would be implemented here
-}
+// ============================================================================
+// Onboard Implementation
+// ============================================================================
 
 func runOnboard(cmd *cobra.Command, args []string) {
-	usr, err := user.Current()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error getting home directory: %v\n", err)
-		os.Exit(1)
+	configPath := onboardConfigFlag
+	if configPath == "" {
+		homeDir, err := os.UserHomeDir()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error getting home directory: %v\n", err)
+			os.Exit(1)
+		}
+		configPath = filepath.Join(homeDir, ".nanobot", "config.json")
 	}
-	configDir := filepath.Join(usr.HomeDir, ".nanobot")
-	configPath := filepath.Join(configDir, "config.json")
 
-	// Create config directory if it doesn't exist
+	configDir := filepath.Dir(configPath)
 	if err := os.MkdirAll(configDir, 0755); err != nil {
 		fmt.Fprintf(os.Stderr, "Error creating config directory: %v\n", err)
 		os.Exit(1)
 	}
 
-	// Check if config already exists
-	if _, err := os.Stat(configPath); err == nil {
-		if !onboardWizardFlag {
-			fmt.Printf("Config already exists at %s\n", configPath)
-			fmt.Println("Use --wizard flag for interactive configuration, or manually edit the config file.")
+	// Run wizard if requested
+	if onboardWizardFlag {
+		_, saved, err := RunWizard()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error running wizard: %v\n", err)
+			os.Exit(1)
+		}
+		if !saved {
+			fmt.Println("Wizard cancelled, no changes made.")
 			return
 		}
-		// In wizard mode, for now just overwrite (future: could merge)
-		fmt.Printf("Config exists, will be overwritten\n")
+		fmt.Println()
+		fmt.Printf("Configuration saved to %s\n", configPath)
+		fmt.Println()
+		printOnboardNextSteps(configPath)
+		return
 	}
 
-	// Create default configuration (matches Python Config() defaults)
+	// Non-interactive mode: check if config exists
+	if _, err := os.Stat(configPath); err == nil {
+		fmt.Printf("Config already exists at %s\n", configPath)
+		fmt.Println("Use --wizard flag for interactive configuration, or manually edit the config file.")
+		return
+	}
+
+	// Create default configuration
 	cfg := config.Config{
 		Agents: config.AgentDefaults{
 			Model:               "claude-opus-4-5",
@@ -200,6 +258,15 @@ func runOnboard(cmd *cobra.Command, args []string) {
 				SearchProvider: "brave",
 			},
 		},
+		Channels: config.ChannelsConfig{
+			SendProgress:  true,
+			SendToolHints: true,
+		},
+	}
+
+	// Apply workspace override if specified
+	if onboardWorkspaceFlag != "" {
+		cfg.Agents.Workspace = onboardWorkspaceFlag
 	}
 
 	// Save config
@@ -217,24 +284,610 @@ func runOnboard(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
-	fmt.Println()
-	fmt.Printf("Created config at %s\n", configPath)
-
-	if onboardWizardFlag {
-		fmt.Println("Interactive wizard not yet implemented in Go version")
+	// Create workspace directory
+	workspace := cfg.Agents.Workspace
+	if workspace == "" {
+		homeDir, _ := os.UserHomeDir()
+		workspace = filepath.Join(homeDir, ".nanobot", "workspace")
+	}
+	if err := os.MkdirAll(workspace, 0755); err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating workspace: %v\n", err)
+		os.Exit(1)
 	}
 
 	fmt.Println()
+	fmt.Printf("Created config at %s\n", configPath)
+	fmt.Printf("Created workspace at %s\n", workspace)
+	fmt.Println()
+	printOnboardNextSteps(configPath)
+}
+
+func printOnboardNextSteps(configPath string) {
 	fmt.Println("Next steps:")
 	fmt.Printf("  1. Add your API key to %s\n", configPath)
 	fmt.Println("     Get one at: https://openrouter.ai/keys")
-	fmt.Println("  2. Run: ./nanobot agent -m \"Hello!\"")
+	fmt.Printf("  2. Chat: ./nanobot agent -m \"Hello!\"\n")
+	fmt.Println()
+	fmt.Println("Want Telegram/WhatsApp? See: https://github.com/HKUDS/nanobot#-chat-apps")
 }
 
-func main() {
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, nil)))
-	if err := rootCmd.ExecuteContext(context.Background()); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+// ============================================================================
+// Agent Implementation
+// ============================================================================
+
+func runAgent(cmd *cobra.Command, args []string) {
+	ctx := context.Background()
+	cfg, err := config.Load(agentConfigFlag)
+	if err != nil {
+		slog.Error("failed to load config", "error", err)
 		os.Exit(1)
 	}
+
+	// Override workspace if specified
+	workspace := agentWorkspaceFlag
+	if workspace == "" {
+		workspace = cfg.Agents.Workspace
+	}
+	if workspace == "" {
+		homeDir, _ := os.UserHomeDir()
+		workspace = filepath.Join(homeDir, ".nanobot", "workspace")
+	}
+
+	// Create session store
+	sessionStore, err := session.NewFileSessionStore("sessions")
+	if err != nil {
+		slog.Error("failed to create session store", "error", err)
+		os.Exit(1)
+	}
+
+	// Create tool registry
+	toolRegistry := tools.NewRegistry()
+	toolRegistry.Register(tools.NewMessageTool())
+	toolRegistry.Register(tools.NewFilesystemTool(nil))
+	toolRegistry.Register(tools.NewShellTool(true, nil, nil))
+	toolRegistry.Register(tools.NewWebTool())
+	toolRegistry.Register(tools.NewCronTool(nil, nil))
+	toolRegistry.Register(tools.NewSpawnTool(nil))
+
+	// Create provider based on config
+	provider := createProvider(cfg)
+
+	// Create agent loop
+	maxIterations := cfg.Agents.MaxToolIterations
+	if maxIterations <= 0 {
+		maxIterations = 40
+	}
+	agentLoop := agent.NewAgentLoop(nil, sessionStore, toolRegistry, provider, maxIterations)
+
+	if agentMessageFlag != "" {
+		// Single message mode
+		runAgentSingle(ctx, agentLoop, sessionStore, toolRegistry, provider, maxIterations)
+	} else {
+		// Interactive mode
+		runAgentInteractive(ctx, agentLoop, sessionStore, toolRegistry, provider, maxIterations)
+	}
+}
+
+func createProvider(cfg *config.Config) providers.LLMProvider {
+	model := cfg.Agents.Model
+	providerName := cfg.Agents.Provider
+
+	// Try to get API key from providers config
+	var apiKey string
+	var apiBase string
+
+	switch providerName {
+	case "openai":
+		if cfg.Providers.OpenAI != nil {
+			if k, ok := cfg.Providers.OpenAI["api_key"].(string); ok {
+				apiKey = k
+			}
+			if b, ok := cfg.Providers.OpenAI["api_base"].(string); ok {
+				apiBase = b
+			}
+		}
+		if apiBase == "" {
+			apiBase = "https://api.openai.com/v1"
+		}
+		return providers.NewOpenAIProvider(apiBase, apiKey, model)
+
+	case "openrouter":
+		if cfg.Providers.OpenRouter != nil {
+			if k, ok := cfg.Providers.OpenRouter["api_key"].(string); ok {
+				apiKey = k
+			}
+		}
+		return providers.NewOpenRouterProvider(apiKey, model)
+
+	case "anthropic":
+		if cfg.Providers.Anthropic != nil {
+			if k, ok := cfg.Providers.Anthropic["api_key"].(string); ok {
+				apiKey = k
+			}
+		}
+		// Anthropic uses OpenAI-compatible API
+		if apiBase == "" {
+			apiBase = "https://api.anthropic.com/v1"
+		}
+		return providers.NewOpenAIProvider(apiBase, apiKey, model)
+
+	case "azure":
+		if cfg.Providers.Azure != nil {
+			if k, ok := cfg.Providers.Azure["api_key"].(string); ok {
+				apiKey = k
+			}
+			if b, ok := cfg.Providers.Azure["api_base"].(string); ok {
+				apiBase = b
+			}
+		}
+		return providers.NewOpenAIProvider(apiBase, apiKey, model)
+
+	case "minimax":
+		if cfg.Providers.Minimax != nil {
+			if k, ok := cfg.Providers.Minimax["api_key"].(string); ok {
+				apiKey = k
+			}
+			if b, ok := cfg.Providers.Minimax["api_base"].(string); ok {
+				apiBase = b
+			}
+		}
+		return providers.NewMinimaxProvider(apiKey, apiBase, model)
+
+	default:
+		// Default to OpenRouter for "auto" or unknown
+		if cfg.Providers.OpenRouter != nil {
+			if k, ok := cfg.Providers.OpenRouter["api_key"].(string); ok {
+				apiKey = k
+			}
+		}
+		if apiKey == "" {
+			apiKey = os.Getenv("OPENROUTER_API_KEY")
+		}
+		if apiKey == "" {
+			apiKey = os.Getenv("OPENAI_API_KEY")
+		}
+		return providers.NewOpenRouterProvider(apiKey, model)
+	}
+}
+
+func runAgentSingle(ctx context.Context, agentLoop *agent.AgentLoop, sessionStore session.SessionStore, toolRegistry tools.ToolRegistry, provider providers.LLMProvider, maxIterations int) {
+	messageBus := bus.New(100)
+	agentLoop = agent.NewAgentLoop(messageBus, sessionStore, toolRegistry, provider, maxIterations)
+
+	// Parse session
+	sessionKey := agentSessionFlag
+	var chatID string
+	if idx := strings.Index(sessionKey, ":"); idx != -1 {
+		chatID = sessionKey[idx+1:]
+	} else {
+		chatID = sessionKey
+	}
+
+	inbound := bus.InboundMessage{
+		Channel:    "cli",
+		SenderID:   "user",
+		ChatID:     chatID,
+		Content:    agentMessageFlag,
+		SessionKey: sessionKey,
+	}
+	// Start agent loop in background
+	go func() {
+		if err := agentLoop.Start(ctx); err != nil && err != context.Canceled {
+			slog.Error("agent loop error", "error", err)
+		}
+	}()
+
+	messageBus.PublishInbound(inbound)
+
+	// Wait for response
+	for msg := range messageBus.ConsumeOutbound() {
+		fmt.Println()
+		fmt.Println("nanobot:")
+		if agentMarkdownFlag {
+			fmt.Println(msg.Content)
+		} else {
+			fmt.Println(msg.Content)
+		}
+		break
+	}
+}
+
+func runAgentInteractive(ctx context.Context, agentLoop *agent.AgentLoop, sessionStore session.SessionStore, toolRegistry tools.ToolRegistry, provider providers.LLMProvider, maxIterations int) {
+	messageBus := bus.New(100)
+	agentLoop = agent.NewAgentLoop(messageBus, sessionStore, toolRegistry, provider, maxIterations)
+
+	// Parse session
+	sessionKey := agentSessionFlag
+	var chatID string
+	if idx := strings.Index(sessionKey, ":"); idx != -1 {
+		chatID = sessionKey[idx+1:]
+	} else {
+		chatID = sessionKey
+	}
+
+	fmt.Printf("%s Interactive mode (type 'exit' or Ctrl+C to quit)\n\n", logo)
+
+	// Start agent loop in background
+	go func() {
+		if err := agentLoop.Start(ctx); err != nil && err != context.Canceled {
+			slog.Error("agent loop error", "error", err)
+		}
+	}()
+
+	// Create text input for line editing
+	model := newInteractiveModel(messageBus, sessionKey, chatID)
+	p := tea.NewProgram(model, tea.WithoutSignals())
+	if _, err := p.Run(); err != nil {
+		slog.Error("interactive mode error", "error", err)
+	}
+}
+
+type interactiveModel struct {
+	textInput    textinput.Model
+	messageBus   bus.MessageBus
+	sessionKey   string
+	chatID       string
+	waiting      bool
+	messages     []conversationEntry
+	quitting     bool
+	done         chan struct{}
+	mu           sync.Mutex
+}
+
+type conversationEntry struct {
+	role    string
+	content string
+}
+
+func newInteractiveModel(messageBus bus.MessageBus, sessionKey, chatID string) *interactiveModel {
+	ti := textinput.New()
+	ti.Placeholder = "Type a message..."
+	ti.Focus()
+	ti.Prompt = "You: "
+
+	return &interactiveModel{
+		textInput:  ti,
+		messageBus: messageBus,
+		sessionKey: sessionKey,
+		chatID:     chatID,
+		done:       make(chan struct{}),
+	}
+}
+
+func (m *interactiveModel) Init() tea.Cmd {
+	return textinput.Blink
+}
+
+func (m *interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		if m.waiting {
+			return m, nil
+		}
+		switch msg.Type {
+		case tea.KeyCtrlC, tea.KeyCtrlD:
+			m.quitting = true
+			return m, tea.Quit
+		case tea.KeyEnter:
+			userInput := strings.TrimSpace(m.textInput.Value())
+			m.textInput.SetValue("")
+			if userInput == "" {
+				return m, nil
+			}
+			lower := strings.ToLower(userInput)
+			if lower == "exit" || lower == "quit" || lower == "/exit" || lower == "/quit" || lower == ":q" {
+				m.quitting = true
+				return m, tea.Quit
+			}
+			m.mu.Lock()
+			m.messages = append(m.messages, conversationEntry{role: "user", content: userInput})
+			m.waiting = true
+			m.mu.Unlock()
+			inbound := bus.InboundMessage{
+				Channel:    "cli",
+				SenderID:   "user",
+				ChatID:     m.chatID,
+				Content:    userInput,
+				SessionKey: m.sessionKey,
+			}
+			m.messageBus.PublishInbound(inbound)
+			go func() {
+				resp := <-m.messageBus.ConsumeOutbound()
+				m.mu.Lock()
+				m.messages = append(m.messages, conversationEntry{role: "assistant", content: resp.Content})
+				m.waiting = false
+				m.mu.Unlock()
+			}()
+			return m, nil
+		}
+	}
+	var cmd tea.Cmd
+	m.textInput, cmd = m.textInput.Update(msg)
+	return m, cmd
+}
+
+func (m *interactiveModel) View() string {
+	if m.quitting {
+		return "\nGoodbye!\n"
+	}
+	var s strings.Builder
+	m.mu.Lock()
+	// Show conversation history
+	for _, msg := range m.messages {
+		if msg.role == "user" {
+			s.WriteString("\nYou: ")
+			s.WriteString(msg.content)
+			s.WriteString("\n")
+		} else {
+			s.WriteString("\nnanobot:\n")
+			s.WriteString(msg.content)
+			s.WriteString("\n")
+		}
+	}
+	waiting := m.waiting
+	m.mu.Unlock()
+	if waiting {
+		s.WriteString("\n(machine is thinking...)\n")
+	}
+	s.WriteString("\r")
+	s.WriteString(m.textInput.View())
+	s.WriteString("\n")
+	return s.String()
+}
+
+// ============================================================================
+// Gateway Implementation
+// ============================================================================
+
+func runGateway(cmd *cobra.Command, args []string) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Set log level
+	if gatewayVerboseFlag {
+		slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+			Level: slog.LevelDebug,
+		})))
+	}
+
+	cfg, err := config.Load(gatewayConfigFlag)
+	if err != nil {
+		slog.Error("failed to load config", "error", err)
+		os.Exit(1)
+	}
+
+	// Override port if specified
+	port := gatewayPortFlag
+	if port == 0 {
+		port = cfg.Gateway.Port
+	}
+
+	// Override workspace if specified
+	workspace := gatewayWorkspaceFlag
+	if workspace == "" {
+		workspace = cfg.Agents.Workspace
+	}
+	if workspace == "" {
+		homeDir, _ := os.UserHomeDir()
+		workspace = filepath.Join(homeDir, ".nanobot", "workspace")
+	}
+
+	// Create workspace directory
+	if err := os.MkdirAll(workspace, 0755); err != nil {
+		slog.Error("failed to create workspace", "error", err)
+		os.Exit(1)
+	}
+
+	// Create session store
+	sessionStore, err := session.NewFileSessionStore(filepath.Join(workspace, "sessions"))
+	if err != nil {
+		slog.Error("failed to create session store", "error", err)
+		os.Exit(1)
+	}
+
+	// Create message bus
+	messageBus := bus.New(100)
+
+	// Create cron service
+	cronStorePath := filepath.Join(workspace, "data", "cron", "jobs.json")
+	cronService := cron.NewCronService(cronStorePath, func(job *cron.CronJob) {
+		slog.Info("cron job executing", "name", job.Name)
+		msg := bus.InboundMessage{
+			Channel:    job.Payload.Channel,
+			ChatID:     job.Payload.To,
+			Content:    job.Payload.Message,
+			SessionKey: fmt.Sprintf("%s:%s", job.Payload.Channel, job.Payload.To),
+		}
+		messageBus.PublishInbound(msg)
+	})
+
+	// Create tool registry
+	toolRegistry := tools.NewRegistry()
+	toolRegistry.Register(tools.NewMessageTool())
+	toolRegistry.Register(tools.NewFilesystemTool(nil))
+	toolRegistry.Register(tools.NewShellTool(true, nil, nil))
+	toolRegistry.Register(tools.NewWebTool())
+	toolRegistry.Register(tools.NewCronTool(cronService, messageBus))
+	toolRegistry.Register(tools.NewSpawnTool(nil))
+
+	// Create provider
+	provider := createProvider(cfg)
+
+	// Create agent loop
+	maxIterations := cfg.Agents.MaxToolIterations
+	if maxIterations <= 0 {
+		maxIterations = 40
+	}
+	agentLoop := agent.NewAgentLoop(messageBus, sessionStore, toolRegistry, provider, maxIterations)
+
+	// Create channel manager
+	channelManager := channels.NewManager(messageBus)
+
+	// Handle shutdown
+	go func() {
+		sigCh := make(chan os.Signal, 1)
+		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+		sig := <-sigCh
+		slog.Info("received signal, shutting down", "signal", sig)
+		cancel()
+		channelManager.StopAll()
+		cronService.Stop()
+		messageBus.Close()
+	}()
+
+	// Start cron service
+	if err := cronService.Start(ctx); err != nil {
+		slog.Error("failed to start cron service", "error", err)
+	}
+
+	// Start channel manager
+	if err := channelManager.StartAll(ctx); err != nil {
+		slog.Error("failed to start channels", "error", err)
+	}
+
+	// Start agent loop
+	go func() {
+		if err := agentLoop.Start(ctx); err != nil && err != context.Canceled {
+			slog.Error("agent loop error", "error", err)
+		}
+	}()
+
+	gatewayAddr := fmt.Sprintf("%s:%d", cfg.Gateway.Host, port)
+	slog.Info("gateway starting", "address", gatewayAddr)
+	fmt.Printf("%s Starting nanobot gateway v%s on port %d...\n", logo, version, port)
+
+	<-ctx.Done()
+	slog.Info("gateway stopped")
+}
+
+// ============================================================================
+// Status Implementation
+// ============================================================================
+
+func runStatus(cmd *cobra.Command, args []string) {
+	cfg, err := config.Load(statusConfigFlag)
+	if err != nil {
+		slog.Warn("failed to load config", "error", err)
+		cfg = &config.Config{}
+	}
+
+	// Get config path
+	configPath := statusConfigFlag
+	if configPath == "" {
+		homeDir, _ := os.UserHomeDir()
+		configPath = filepath.Join(homeDir, ".nanobot", "config.json")
+	}
+
+	// Get workspace path
+	workspace := cfg.Agents.Workspace
+	if workspace == "" {
+		homeDir, _ := os.UserHomeDir()
+		workspace = filepath.Join(homeDir, ".nanobot", "workspace")
+	}
+
+	fmt.Printf("%s nanobot Status\n\n", logo)
+
+	// Config status
+	if _, err := os.Stat(configPath); err == nil {
+		fmt.Printf("Config: %s \u2713\n", configPath)
+	} else {
+		fmt.Printf("Config: %s \u2717 (not found)\n", configPath)
+	}
+
+	// Workspace status
+	if _, err := os.Stat(workspace); err == nil {
+		fmt.Printf("Workspace: %s \u2713\n", workspace)
+	} else {
+		fmt.Printf("Workspace: %s \u2717 (not found)\n", workspace)
+	}
+
+	fmt.Println()
+
+	// Model info
+	fmt.Printf("Model: %s\n", cfg.Agents.Model)
+	fmt.Printf("Provider: %s\n", cfg.Agents.Provider)
+
+	// Check API keys
+	if cfg.Providers.OpenAI != nil {
+		if k, ok := cfg.Providers.OpenAI["api_key"].(string); ok && k != "" {
+			fmt.Println("OpenAI: \u2713 configured")
+		} else {
+			fmt.Println("OpenAI: not configured")
+		}
+	}
+
+	if cfg.Providers.OpenRouter != nil {
+		if k, ok := cfg.Providers.OpenRouter["api_key"].(string); ok && k != "" {
+			fmt.Println("OpenRouter: \u2713 configured")
+		} else {
+			fmt.Println("OpenRouter: not configured")
+		}
+	}
+
+	if cfg.Providers.Anthropic != nil {
+		if k, ok := cfg.Providers.Anthropic["api_key"].(string); ok && k != "" {
+			fmt.Println("Anthropic: \u2713 configured")
+		} else {
+			fmt.Println("Anthropic: not configured")
+		}
+	}
+
+	if cfg.Providers.Minimax != nil {
+		if k, ok := cfg.Providers.Minimax["api_key"].(string); ok && k != "" {
+			fmt.Println("MiniMax: \u2713 configured")
+		} else {
+			fmt.Println("MiniMax: not configured")
+		}
+	}
+}
+
+// ============================================================================
+// Channels Implementation
+// ============================================================================
+
+func runChannelsStatus(cmd *cobra.Command, args []string) {
+	cfg, err := config.Load("")
+	if err != nil {
+		cfg = &config.Config{}
+	}
+
+	fmt.Println("Channel Status")
+	fmt.Println("==============")
+	fmt.Println()
+
+	channels := map[string]struct {
+		Name    string
+		Enabled bool
+	}{
+		"telegram": {Name: "Telegram", Enabled: false},
+		"discord":  {Name: "Discord", Enabled: false},
+		"slack":    {Name: "Slack", Enabled: false},
+		"whatsapp": {Name: "WhatsApp", Enabled: false},
+		"feishu":   {Name: "Feishu", Enabled: false},
+		"dingtalk": {Name: "DingTalk", Enabled: false},
+		"wecom":    {Name: "WeCom", Enabled: false},
+		"email":    {Name: "Email", Enabled: false},
+	}
+
+	// Check enabled channels from config
+	// Note: The actual channel enabling is determined by the config
+
+	for name, ch := range channels {
+		enabled := false
+		// Check if channel is configured in config.Channels
+		// This is a simplified check - actual implementation would check the specific channel config
+		_ = name
+		_ = cfg
+
+		status := "\u2717"
+		if enabled {
+			status = "\u2713"
+		}
+		fmt.Printf("%s: %s\n", ch.Name, status)
+	}
+}
+
+func runChannelsLogin(cmd *cobra.Command, args []string) {
+	fmt.Println("Channel login not implemented")
+	fmt.Println("Use 'nanobot gateway' to start the gateway with channel support")
 }

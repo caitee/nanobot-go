@@ -1,6 +1,6 @@
 # Nanobot Go
 
-A lightweight personal AI assistant framework rewritten in Go, inspired by the original [Python nanobot](https://github.com/invsu/nanobot).
+A lightweight personal AI assistant framework rewritten in Go, inspired by the original [Python nanobot](https://github.com/HKUDS/nanobot).
 
 ## Features
 

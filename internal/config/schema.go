@@ -33,6 +33,7 @@ type ProvidersConfig struct {
     Azure      map[string]any `mapstructure:"azure"`
     Anthropic  map[string]any `mapstructure:"anthropic"`
     OpenRouter map[string]any `mapstructure:"openrouter"`
+    Minimax    map[string]any `mapstructure:"minimax"`
 }
 
 // GatewayConfig defines gateway settings

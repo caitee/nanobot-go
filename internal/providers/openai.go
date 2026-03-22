@@ -122,14 +122,24 @@ func (p *OpenAIProvider) parseResponse(result map[string]any) (*LLMResponse, err
     if toolCalls, ok := msg["tool_calls"].([]any); ok {
         for _, tc := range toolCalls {
             if tcMap, ok := tc.(map[string]any); ok {
-                funcMap, _ := tcMap["function"].(map[string]any)
-                args, _ := funcMap["arguments"].(string)
+                funcMap, ok := tcMap["function"].(map[string]any)
+                if !ok {
+                    continue
+                }
+                argsStr, ok := funcMap["arguments"].(string)
+                if !ok {
+                    continue
+                }
                 var argsMap map[string]any
-                json.Unmarshal([]byte(args), &argsMap)
+                if err := json.Unmarshal([]byte(argsStr), &argsMap); err != nil {
+                    continue
+                }
 
+                id, _ := tcMap["id"].(string)
+                name, _ := funcMap["name"].(string)
                 resp.ToolCalls = append(resp.ToolCalls, ToolCall{
-                    ID:        tcMap["id"].(string),
-                    Name:      funcMap["name"].(string),
+                    ID:        id,
+                    Name:      name,
                     Arguments: argsMap,
                 })
             }
@@ -141,9 +151,11 @@ func (p *OpenAIProvider) parseResponse(result map[string]any) (*LLMResponse, err
     }
 
     if usage, ok := result["usage"].(map[string]any); ok {
-        resp.Usage = TokenUsage{
-            PromptTokens:     int(usage["prompt_tokens"].(float64)),
-            CompletionTokens: int(usage["completion_tokens"].(float64)),
+        if promptTokens, ok := usage["prompt_tokens"].(float64); ok {
+            resp.Usage.PromptTokens = int(promptTokens)
+        }
+        if completionTokens, ok := usage["completion_tokens"].(float64); ok {
+            resp.Usage.CompletionTokens = int(completionTokens)
         }
     }
 

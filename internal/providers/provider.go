@@ -1,11 +1,17 @@
 package providers
 
-import "context"
+import (
+	"context"
+	"encoding/json"
+)
 
 // Message represents a chat message
 type Message struct {
-    Role    string
-    Content any // string or []ContentBlock
+    Role       string
+    Content    any // string or []ContentBlock
+    ToolCalls  []ToolCall // for assistant messages
+    ToolCallID string     // for tool result messages
+    Name       string     // for tool result messages
 }
 
 // ContentBlock represents multimodal content
@@ -57,4 +63,41 @@ type LLMProvider interface {
     Chat(ctx context.Context, messages []Message, tools []ToolDef, opts ChatOptions) (*LLMResponse, error)
     ChatWithRetry(ctx context.Context, messages []Message, tools []ToolDef, opts ChatOptions) (*LLMResponse, error)
     GetDefaultModel() string
+}
+
+// ToMap converts a Message to map[string]any for compatibility.
+func (m *Message) ToMap() map[string]any {
+	result := map[string]any{
+		"role": m.Role,
+	}
+	switch c := m.Content.(type) {
+	case string:
+		result["content"] = c
+	case []ContentBlock:
+		blocks := make([]map[string]any, 0, len(c))
+		for _, b := range c {
+			block := map[string]any{"type": b.Type}
+			if b.Text != "" {
+				block["text"] = b.Text
+			}
+			if b.ImageURL != "" {
+				block["image_url"] = b.ImageURL
+			}
+			blocks = append(blocks, block)
+		}
+		result["content"] = blocks
+	default:
+		data, _ := json.Marshal(c)
+		result["content"] = string(data)
+	}
+	if m.ToolCallID != "" {
+		result["tool_call_id"] = m.ToolCallID
+	}
+	if m.Name != "" {
+		result["name"] = m.Name
+	}
+	if len(m.ToolCalls) > 0 {
+		result["tool_calls"] = m.ToolCalls
+	}
+	return result
 }

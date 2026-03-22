@@ -125,7 +125,9 @@ func (c *TelegramChannel) getUpdates(offset int) ([]telegramUpdate, error) {
 		OK     bool             `json:"ok"`
 		Result []telegramUpdate `json:"result"`
 	}
-	json.NewDecoder(resp.Body).Decode(&result)
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("failed to decode response: %w", err)
+	}
 	return result.Result, nil
 }
 
