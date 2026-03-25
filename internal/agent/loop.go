@@ -134,6 +134,7 @@ func (al *AgentLoop) Start(ctx context.Context) error {
 	al.mu.Unlock()
 
 	inboundCh := al.bus.ConsumeInbound()
+	slog.Info("AgentLoop started, waiting for inbound messages")
 
 	// Process inbound messages
 	for {
@@ -142,8 +143,10 @@ func (al *AgentLoop) Start(ctx context.Context) error {
 			return ctx.Err()
 		case msg, ok := <-inboundCh:
 			if !ok {
+				slog.Info("AgentLoop: inbound channel closed")
 				return nil
 			}
+			slog.Info("AgentLoop received inbound message", "content", msg.Content, "session", msg.SessionKey)
 			al.handleMessage(ctx, msg)
 		}
 	}
@@ -197,18 +200,27 @@ func (al *AgentLoop) handleMessage(ctx context.Context, inbound bus.InboundMessa
 			al.mu.Unlock()
 		}()
 
+		slog.Info("AgentLoop processing message", "session", inbound.SessionKey)
 		outbound, err := al.processMessage(msgCtx, inbound, inbound.SessionKey)
+		slog.Info("AgentLoop processMessage returned", "session", inbound.SessionKey, "hasOutbound", outbound != nil, "err", err)
 		if err != nil {
 			slog.Error("process message error", "error", err)
 			return
 		}
 		if outbound != nil {
+			slog.Info("AgentLoop publishing outbound response", "contentLen", len(outbound.Content))
 			al.bus.PublishOutbound(*outbound)
+		} else {
+			slog.Warn("AgentLoop: no outbound to publish, returning without response")
 		}
 	}()
 }
 
 func (al *AgentLoop) processMessage(ctx context.Context, inbound bus.InboundMessage, sessionKey string) (*bus.OutboundMessage, error) {
+	// Publish session start event
+	al.publishAgentEvent(sessionKey, EventSessionStart, nil)
+	slog.Info("processMessage: session started", "session", sessionKey)
+
 	// Get or create session
 	sess := al.sessionStore.GetOrCreate(sessionKey)
 	sess.Messages = append(sess.Messages, session.Message{
@@ -219,41 +231,64 @@ func (al *AgentLoop) processMessage(ctx context.Context, inbound bus.InboundMess
 	// Build context and run agent loop
 	messages := buildMessages(sess)
 	toolDefs := convertToolDefs(al.toolRegistry.GetDefinitions())
+	slog.Info("processMessage: built messages", "count", len(messages))
 
 	for i := 0; i < al.maxIterations; i++ {
 		// Check if context was cancelled (e.g., by /stop)
 		select {
 		case <-ctx.Done():
+			al.publishAgentEvent(sessionKey, EventSessionEnd, map[string]any{"cancelled": true})
 			return nil, ctx.Err()
 		default:
 		}
 
-		resp, err := al.provider.Chat(ctx, messages, toolDefs, providers.ChatOptions{
+		// Publish thinking event
+		al.publishAgentEvent(sessionKey, EventLLMThinking, nil)
+
+		// Single API call — no fake streaming + duplicate call
+		resp, chatErr := al.provider.Chat(ctx, messages, toolDefs, providers.ChatOptions{
 			MaxTokens:   4096,
 			Temperature: 0.7,
 		})
-		if err != nil {
-			// Check if context was cancelled
+		if chatErr != nil {
 			if ctx.Err() != nil {
 				return nil, ctx.Err()
 			}
-			slog.Error("provider error", "error", err)
-			break
+			slog.Error("provider error", "error", chatErr)
+			al.publishAgentEvent(sessionKey, EventLLMFinal, map[string]any{
+				"error": chatErr.Error(),
+			})
+			al.publishAgentEvent(sessionKey, EventSessionEnd, nil)
+			return nil, nil
+		}
+
+		// Publish events for TUI
+		al.publishAgentEvent(sessionKey, EventLLMResponding, nil)
+		if resp.Content != "" {
+			al.publishAgentEvent(sessionKey, EventLLMStreamChunk, bus.StreamChunkData{
+				Delta:    resp.Content,
+				FullText: resp.Content,
+			})
 		}
 
 		messages = append(messages, providers.Message{
-			Role:       "assistant",
-			Content:    resp.Content,
-			ToolCalls:  resp.ToolCalls,
+			Role:      "assistant",
+			Content:   resp.Content,
+			ToolCalls: resp.ToolCalls,
 		})
 
 		if len(resp.ToolCalls) == 0 {
-			// Final response
+			// Final response - no tools. Now mark as done.
+			al.publishAgentEvent(sessionKey, EventLLMFinal, bus.LLMFinalData{
+				Content: resp.Content,
+			})
 			sess.Messages = append(sess.Messages, session.Message{
 				Role:    "assistant",
 				Content: resp.Content,
 			})
 			al.sessionStore.Save(sess)
+			al.publishAgentEvent(sessionKey, EventSessionEnd, nil)
+			slog.Info("processMessage: returning final response", "contentLen", len(resp.Content))
 			return &bus.OutboundMessage{
 				Channel: inbound.Channel,
 				ChatID:  inbound.ChatID,
@@ -262,13 +297,47 @@ func (al *AgentLoop) processMessage(ctx context.Context, inbound bus.InboundMess
 			}, nil
 		}
 
+		// LLM wants to call tools
+		al.publishAgentEvent(sessionKey, EventLLMToolCalls, bus.ToolCallEventData{
+			ToolCalls: convertToolCallInfo(resp.ToolCalls),
+		})
+
 		// Execute tools
 		for _, tc := range resp.ToolCalls {
+			startTime := time.Now()
 			slog.Info("executing tool", "name", tc.Name, "id", tc.ID, "args", tc.Arguments)
+
+			// Publish tool start event
+			al.publishAgentEvent(sessionKey, EventToolStart, bus.ToolCallEventData{
+				ToolCalls: []bus.ToolCallInfo{{
+					ID:   tc.ID,
+					Name: tc.Name,
+					Args: tc.Arguments,
+				}},
+			})
+
 			result, err := al.toolRegistry.Execute(ctx, tc.Name, tc.Arguments)
+			duration := time.Since(startTime)
+
 			if err != nil {
+				al.publishAgentEvent(sessionKey, EventToolError, bus.ToolResultEventData{
+					ToolName:   tc.Name,
+					ToolID:     tc.ID,
+					Success:    false,
+					Error:      err.Error(),
+					DurationMs: duration.Milliseconds(),
+				})
 				result = fmt.Sprintf("error: %v", err)
+			} else {
+				al.publishAgentEvent(sessionKey, EventToolEnd, bus.ToolResultEventData{
+					ToolName:   tc.Name,
+					ToolID:     tc.ID,
+					Success:    true,
+					Result:     "", // Don't expose result by default
+					DurationMs: duration.Milliseconds(),
+				})
 			}
+
 			slog.Info("tool result", "id", tc.ID, "result", fmt.Sprintf("%v", result))
 			messages = append(messages, providers.Message{
 				Role:       "tool",
@@ -276,10 +345,39 @@ func (al *AgentLoop) processMessage(ctx context.Context, inbound bus.InboundMess
 				ToolCallID: tc.ID,
 			})
 		}
+
 	}
 
 	al.sessionStore.Save(sess)
+	al.publishAgentEvent(sessionKey, EventSessionEnd, nil)
 	return nil, nil
+}
+
+// publishAgentEvent is a helper to publish agent events
+func (al *AgentLoop) publishAgentEvent(sessionKey, eventType string, data any) {
+	eventData := make(map[string]any)
+	if data != nil {
+		eventData["data"] = data
+	}
+	al.bus.PublishAgentEvent(bus.AgentEvent{
+		SessionKey: sessionKey,
+		Type:       eventType,
+		Timestamp:  time.Now(),
+		Data:      eventData,
+	})
+}
+
+// convertToolCallInfo converts provider ToolCalls to bus.ToolCallInfo
+func convertToolCallInfo(tcs []providers.ToolCall) []bus.ToolCallInfo {
+	result := make([]bus.ToolCallInfo, len(tcs))
+	for i, tc := range tcs {
+		result[i] = bus.ToolCallInfo{
+			ID:   tc.ID,
+			Name: tc.Name,
+			Args: tc.Arguments,
+		}
+	}
+	return result
 }
 
 // ProcessDirect processes a message directly and returns the outbound payload.

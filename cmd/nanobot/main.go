@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"nanobot-go/internal/agent"
 	"nanobot-go/internal/bus"
@@ -523,21 +524,55 @@ func runAgentInteractive(ctx context.Context, agentLoop *agent.AgentLoop, sessio
 }
 
 type interactiveModel struct {
-	textInput    textinput.Model
-	messageBus   bus.MessageBus
-	sessionKey   string
-	chatID       string
-	waiting      bool
-	messages     []conversationEntry
-	quitting     bool
-	done         chan struct{}
-	mu           sync.Mutex
+	textInput     textinput.Model
+	messageBus    bus.MessageBus
+	sessionKey     string
+	chatID        string
+	waiting       bool
+	messages      []conversationEntry
+	quitting      bool
+	done          chan struct{}
+	mu            sync.Mutex
+	spinnerIdx    int
+	toolEventCh   <-chan bus.ToolEvent
+	agentEventCh  <-chan bus.AgentEvent
+	outboundCh    <-chan bus.OutboundMessage
+}
+
+type toolCallEntry struct {
+	name         string
+	args         string
+	status       string // "pending" | "running" | "done" | "error"
+	result       string
+	durationMs   int64
+	expanded     bool
 }
 
 type conversationEntry struct {
-	role    string
+	role          string
+	content       string
+	toolCalls     []toolCallEntry
+	isLoading     bool
+	streamingText string
+}
+
+var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+
+type spinnerTickMsg struct{}
+
+type responseMsg struct {
 	content string
 }
+
+type toolEventMsg struct {
+	ev bus.ToolEvent
+}
+
+type agentEventMsg struct {
+	ev bus.AgentEvent
+}
+
+type pollTickMsg struct{}
 
 func newInteractiveModel(messageBus bus.MessageBus, sessionKey, chatID string) *interactiveModel {
 	ti := textinput.New()
@@ -546,28 +581,218 @@ func newInteractiveModel(messageBus bus.MessageBus, sessionKey, chatID string) *
 	ti.Prompt = "You: "
 
 	return &interactiveModel{
-		textInput:  ti,
-		messageBus: messageBus,
-		sessionKey: sessionKey,
-		chatID:     chatID,
-		done:       make(chan struct{}),
+		textInput:    ti,
+		messageBus:   messageBus,
+		sessionKey:   sessionKey,
+		chatID:       chatID,
+		done:         make(chan struct{}),
+		toolEventCh:  messageBus.SubscribeToolEvents(),
+		agentEventCh: messageBus.SubscribeAgentEvents(),
+		outboundCh:   messageBus.ConsumeOutbound(),
 	}
 }
 
 func (m *interactiveModel) Init() tea.Cmd {
-	return textinput.Blink
+	return tea.Batch(textinput.Blink, m.tickSpinner(), m.pollEvents())
+}
+
+func (m *interactiveModel) pollEvents() tea.Cmd {
+	return func() tea.Msg {
+		select {
+		case ev := <-m.toolEventCh:
+			return toolEventMsg{ev: ev}
+		case ev := <-m.agentEventCh:
+			return agentEventMsg{ev: ev}
+		case resp, ok := <-m.outboundCh:
+			if !ok {
+				return nil
+			}
+			return responseMsg{content: resp.Content}
+		case <-m.done:
+			return nil
+		case <-time.After(50 * time.Millisecond):
+			return pollTickMsg{}
+		}
+	}
+}
+
+func (m *interactiveModel) tickSpinner() tea.Cmd {
+	return func() tea.Msg {
+		time.Sleep(time.Second / 10)
+		return spinnerTickMsg{}
+	}
 }
 
 func (m *interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
-	case tea.KeyMsg:
+	case pollTickMsg:
+		// Keep polling for events
+		return m, m.pollEvents()
+
+	case spinnerTickMsg:
+		m.mu.Lock()
 		if m.waiting {
-			return m, nil
+			m.spinnerIdx = (m.spinnerIdx + 1) % len(spinnerFrames)
 		}
+		m.mu.Unlock()
+		return m, m.tickSpinner()
+
+	case responseMsg:
+		m.mu.Lock()
+		m.waiting = false
+		for i := len(m.messages) - 1; i >= 0; i-- {
+			if m.messages[i].role == "assistant" && m.messages[i].isLoading {
+				m.messages[i].content = msg.content
+				m.messages[i].isLoading = false
+				break
+			}
+		}
+		m.mu.Unlock()
+		return m, m.pollEvents()
+
+	case toolEventMsg:
+		m.mu.Lock()
+		if msg.ev.SessionKey == m.sessionKey {
+			for i := len(m.messages) - 1; i >= 0; i-- {
+				if m.messages[i].role == "assistant" && m.messages[i].isLoading {
+					entry := &m.messages[i]
+					switch msg.ev.Type {
+					case "tool_start":
+						entry.toolCalls = append(entry.toolCalls, toolCallEntry{
+							name:   msg.ev.ToolName,
+							args:   msg.ev.Args,
+							status: "running",
+						})
+					case "tool_end":
+						for j := range entry.toolCalls {
+							if entry.toolCalls[j].name == msg.ev.ToolName {
+								entry.toolCalls[j].status = "done"
+								entry.toolCalls[j].result = msg.ev.Result
+								break
+							}
+						}
+					case "tool_error":
+						for j := range entry.toolCalls {
+							if entry.toolCalls[j].name == msg.ev.ToolName {
+								entry.toolCalls[j].status = "error"
+								entry.toolCalls[j].result = msg.ev.Result
+								break
+							}
+						}
+					}
+					break
+				}
+			}
+		}
+		m.mu.Unlock()
+		return m, m.pollEvents()
+
+	case agentEventMsg:
+		m.mu.Lock()
+		if msg.ev.SessionKey == m.sessionKey {
+			var loadingIdx int = -1
+			for i := len(m.messages) - 1; i >= 0; i-- {
+				if m.messages[i].role == "assistant" && m.messages[i].isLoading {
+					loadingIdx = i
+					break
+				}
+			}
+			if loadingIdx >= 0 {
+				entry := &m.messages[loadingIdx]
+				switch msg.ev.Type {
+				case "llm_thinking":
+					entry.content = ""
+				case "llm_responding":
+					entry.content = ""
+				case "llm_stream_chunk":
+					if data, ok := msg.ev.Data["data"].(bus.StreamChunkData); ok {
+						entry.streamingText = data.FullText
+						entry.content = data.FullText
+					}
+				case "llm_stream_end":
+					// Stream ended
+				case "llm_final":
+					if data, ok := msg.ev.Data["data"].(bus.LLMFinalData); ok {
+						entry.content = data.Content
+					}
+					m.waiting = false
+					entry.isLoading = false
+				case "llm_tool_calls":
+					if data, ok := msg.ev.Data["data"].(bus.ToolCallEventData); ok {
+						for _, tc := range data.ToolCalls {
+							entry.toolCalls = append(entry.toolCalls, toolCallEntry{
+								name:   tc.Name,
+								args:   formatArgs(tc.Args),
+								status: "pending",
+							})
+						}
+					}
+				case "tool_start":
+					if data, ok := msg.ev.Data["data"].(bus.ToolCallEventData); ok {
+						for _, tc := range data.ToolCalls {
+							found := false
+							for i := range entry.toolCalls {
+								if entry.toolCalls[i].name == tc.Name && (entry.toolCalls[i].status == "pending" || entry.toolCalls[i].status == "") {
+									entry.toolCalls[i].status = "running"
+									entry.toolCalls[i].args = formatArgs(tc.Args)
+									found = true
+									break
+								}
+							}
+							if !found {
+								entry.toolCalls = append(entry.toolCalls, toolCallEntry{
+									name:   tc.Name,
+									args:   formatArgs(tc.Args),
+									status: "running",
+								})
+							}
+						}
+					}
+				case "tool_end":
+					if data, ok := msg.ev.Data["data"].(bus.ToolResultEventData); ok {
+						for i := range entry.toolCalls {
+							if entry.toolCalls[i].name == data.ToolName {
+								if data.Success {
+									entry.toolCalls[i].status = "done"
+								} else {
+									entry.toolCalls[i].status = "error"
+									entry.toolCalls[i].result = data.Error
+								}
+								entry.toolCalls[i].durationMs = data.DurationMs
+								break
+							}
+						}
+					}
+				case "tool_error":
+					if data, ok := msg.ev.Data["data"].(bus.ToolResultEventData); ok {
+						for i := range entry.toolCalls {
+							if entry.toolCalls[i].name == data.ToolName {
+								entry.toolCalls[i].status = "error"
+								entry.toolCalls[i].result = data.Error
+								entry.toolCalls[i].durationMs = data.DurationMs
+								break
+							}
+						}
+					}
+				case "session_end":
+					m.waiting = false
+					entry.isLoading = false
+				}
+			}
+		}
+		m.mu.Unlock()
+		return m, m.pollEvents()
+
+	case tea.KeyMsg:
 		switch msg.Type {
 		case tea.KeyCtrlC, tea.KeyCtrlD:
 			m.quitting = true
 			return m, tea.Quit
+		}
+		if m.waiting {
+			return m, nil
+		}
+		switch msg.Type {
 		case tea.KeyEnter:
 			userInput := strings.TrimSpace(m.textInput.Value())
 			m.textInput.SetValue("")
@@ -581,8 +806,11 @@ func (m *interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.mu.Lock()
 			m.messages = append(m.messages, conversationEntry{role: "user", content: userInput})
+			m.messages = append(m.messages, conversationEntry{role: "assistant", content: "", isLoading: true})
 			m.waiting = true
+			m.spinnerIdx = 0
 			m.mu.Unlock()
+
 			inbound := bus.InboundMessage{
 				Channel:    "cli",
 				SenderID:   "user",
@@ -591,19 +819,42 @@ func (m *interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				SessionKey: m.sessionKey,
 			}
 			m.messageBus.PublishInbound(inbound)
-			go func() {
-				resp := <-m.messageBus.ConsumeOutbound()
-				m.mu.Lock()
-				m.messages = append(m.messages, conversationEntry{role: "assistant", content: resp.Content})
-				m.waiting = false
-				m.mu.Unlock()
-			}()
-			return m, nil
+
+			return m, m.pollEvents()
 		}
 	}
 	var cmd tea.Cmd
 	m.textInput, cmd = m.textInput.Update(msg)
 	return m, cmd
+}
+
+// formatArgs formats tool arguments as a pretty-printed string
+func formatArgs(args map[string]any) string {
+	if args == nil {
+		return "{}"
+	}
+	var lines []string
+	for k, v := range args {
+		lines = append(lines, fmt.Sprintf("%s: %v", k, v))
+	}
+	if len(lines) == 0 {
+		return "{}"
+	}
+	return "{\n  " + strings.Join(lines, "\n  ") + "\n}"
+}
+
+// formatDuration formats duration in milliseconds to a human-readable string
+func formatDuration(ms int64) string {
+	if ms < 0 {
+		return ""
+	}
+	if ms < 1000 {
+		return fmt.Sprintf("%dms", ms)
+	}
+	if ms < 60000 {
+		return fmt.Sprintf("%.1fs", float64(ms)/1000)
+	}
+	return fmt.Sprintf("%.1fm", float64(ms)/60000)
 }
 
 func (m *interactiveModel) View() string {
@@ -612,7 +863,6 @@ func (m *interactiveModel) View() string {
 	}
 	var s strings.Builder
 	m.mu.Lock()
-	// Show conversation history
 	for _, msg := range m.messages {
 		if msg.role == "user" {
 			s.WriteString("\nYou: ")
@@ -620,16 +870,61 @@ func (m *interactiveModel) View() string {
 			s.WriteString("\n")
 		} else {
 			s.WriteString("\nnanobot:\n")
-			s.WriteString(msg.content)
-			s.WriteString("\n")
+			// Show tool calls first (if any)
+			if len(msg.toolCalls) > 0 {
+				for _, tc := range msg.toolCalls {
+					icon := "⚙️ "
+					statusText := ""
+					if tc.status == "done" {
+						icon = "✅ "
+						statusText = fmt.Sprintf(" • %s", formatDuration(tc.durationMs))
+					} else if tc.status == "error" {
+						icon = "❌ "
+						if tc.durationMs > 0 {
+							statusText = fmt.Sprintf(" • %s", formatDuration(tc.durationMs))
+						}
+					} else if tc.status == "running" {
+						icon = "🔄 "
+					} else {
+						icon = "⏳ "
+					}
+					// Tool name line with status
+					s.WriteString(fmt.Sprintf("  %s%s%s\n", icon, tc.name, statusText))
+
+					// Show args (collapsed by default, single line preview)
+					if tc.args != "" {
+						argsLines := strings.Split(tc.args, "\n")
+						if len(argsLines) > 1 {
+							// Multi-line args - show preview
+							s.WriteString(fmt.Sprintf("    Args: %s... (expand with →)\n", strings.TrimSpace(argsLines[0])))
+						} else {
+							// Single line args
+							s.WriteString(fmt.Sprintf("    Args: %s\n", argsLines[0]))
+						}
+					}
+
+					// Show error if failed
+					if tc.status == "error" && tc.result != "" {
+						s.WriteString(fmt.Sprintf("    Error: %s\n", tc.result))
+					}
+				}
+				s.WriteString("\n")
+			}
+			// Show main content or thinking spinner
+			if msg.isLoading {
+				if msg.streamingText != "" {
+					// Show streaming content with cursor (no spinner - content is flowing)
+					s.WriteString(fmt.Sprintf("  %s█\n", msg.streamingText))
+				} else {
+					s.WriteString(fmt.Sprintf("  %s Thinking...\n", spinnerFrames[m.spinnerIdx]))
+				}
+			} else {
+				s.WriteString(msg.content)
+				s.WriteString("\n")
+			}
 		}
 	}
-	waiting := m.waiting
 	m.mu.Unlock()
-	if waiting {
-		s.WriteString("\n(machine is thinking...)\n")
-	}
-	s.WriteString("\r")
 	s.WriteString(m.textInput.View())
 	s.WriteString("\n")
 	return s.String()

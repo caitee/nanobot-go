@@ -71,3 +71,14 @@ func (p *OpenRouterProvider) ChatWithRetry(ctx context.Context, messages []Messa
 func (p *OpenRouterProvider) GetDefaultModel() string {
     return p.DefaultModel
 }
+
+// StreamGenerate fallback - delegates to OpenAI provider
+func (p *OpenRouterProvider) StreamGenerate(ctx context.Context, messages []Message, tools []ToolDef, opts ChatOptions) <-chan StreamResponse {
+    openaiProvider := &OpenAIProvider{
+        BaseURL:     p.BaseURL,
+        APIKey:      p.APIKey,
+        DefaultModel: opts.Model,
+        HTTPClient:  p.HTTPClient,
+    }
+    return openaiProvider.StreamGenerate(ctx, messages, tools, opts)
+}

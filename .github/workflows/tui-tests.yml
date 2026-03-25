@@ -1,0 +1,23 @@
+name: TUI Tests
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+
+      - name: Run all tests
+        run: go test ./... -v
+
+      - name: Run TUI-specific tests
+        run: go test ./cmd/nanobot/... -v -run "Wizard|Interactive"

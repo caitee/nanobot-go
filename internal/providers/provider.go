@@ -62,7 +62,15 @@ type ChatOptions struct {
 type LLMProvider interface {
     Chat(ctx context.Context, messages []Message, tools []ToolDef, opts ChatOptions) (*LLMResponse, error)
     ChatWithRetry(ctx context.Context, messages []Message, tools []ToolDef, opts ChatOptions) (*LLMResponse, error)
+    StreamGenerate(ctx context.Context, messages []Message, tools []ToolDef, opts ChatOptions) <-chan StreamResponse
     GetDefaultModel() string
+}
+
+// StreamResponse represents a chunk of streaming response
+type StreamResponse struct {
+    Chunk   string // Incremental text content
+    Done    bool   // True if this is the final chunk
+    Error   error
 }
 
 // ToMap converts a Message to map[string]any for compatibility.

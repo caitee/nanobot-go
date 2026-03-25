@@ -7,8 +7,9 @@
       "request": "launch",
       "mode": "auto",
       "program": "${workspaceFolder}/cmd/nanobot",
-      "args": ["agent", "-m", "介绍下当前目录的文件", "-s", "cli:direct"],
+      "args": ["agent"],
       "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal"
     },
     {
       "name": "nanobot: gateway",

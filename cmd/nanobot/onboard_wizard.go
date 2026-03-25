@@ -210,7 +210,7 @@ func (m *wizardModel) handleProviderMenu(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.textInput.EchoMode = textinput.EchoPassword
 			m.textInput.Focus()
 		}
-	case "escape":
+	case "esc":
 		m.state = stateMainMenu
 		m.cursor = 0
 	case "ctrl+c":
@@ -250,7 +250,7 @@ func (m *wizardModel) handleAgentSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.textInput.Placeholder = choices[m.cursor]
 			m.textInput.Focus()
 		}
-	case "escape":
+	case "esc":
 		m.state = stateMainMenu
 		m.cursor = 0
 	case "ctrl+c":
@@ -287,7 +287,7 @@ func (m *wizardModel) handleGatewaySettings(msg tea.KeyMsg) (tea.Model, tea.Cmd)
 			m.textInput.Placeholder = choices[m.cursor]
 			m.textInput.Focus()
 		}
-	case "escape":
+	case "esc":
 		m.state = stateMainMenu
 		m.cursor = 0
 	case "ctrl+c":
@@ -327,7 +327,7 @@ func (m *wizardModel) handleToolsSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			m.textInput.Focus()
 		}
-	case "escape":
+	case "esc":
 		m.state = stateMainMenu
 		m.cursor = 0
 	case "ctrl+c":

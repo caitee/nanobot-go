@@ -97,6 +97,51 @@ func (p *OpenAIProvider) GetDefaultModel() string {
     return p.DefaultModel
 }
 
+// StreamGenerate fallback implementation - collects full response and sends as single chunk
+func (p *OpenAIProvider) StreamGenerate(ctx context.Context, messages []Message, tools []ToolDef, opts ChatOptions) <-chan StreamResponse {
+    ch := make(chan StreamResponse, 1)
+    go func() {
+        defer close(ch)
+        resp, err := p.Chat(ctx, messages, tools, opts)
+        if err != nil {
+            ch <- StreamResponse{Error: err}
+            return
+        }
+        // Send content in chunks based on lines for a basic streaming effect
+        lines := splitIntoLines(resp.Content)
+        for _, line := range lines[:len(lines)-1] {
+            ch <- StreamResponse{Chunk: line, Done: false}
+        }
+        if len(lines) > 0 {
+            ch <- StreamResponse{Chunk: lines[len(lines)-1], Done: true}
+        } else {
+            ch <- StreamResponse{Done: true}
+        }
+    }()
+    return ch
+}
+
+func splitIntoLines(s string) []string {
+    if s == "" {
+        return nil
+    }
+    var lines []string
+    start := 0
+    for i := 0; i < len(s); i++ {
+        if s[i] == '\n' {
+            lines = append(lines, s[start:i])
+            start = i + 1
+        }
+    }
+    if start < len(s) {
+        lines = append(lines, s[start:])
+    }
+    if len(lines) == 0 {
+        lines = []string{s}
+    }
+    return lines
+}
+
 func (p *OpenAIProvider) parseResponse(result map[string]any) (*LLMResponse, error) {
     choices, ok := result["choices"].([]any)
     if !ok || len(choices) == 0 {
