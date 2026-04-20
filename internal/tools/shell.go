@@ -18,14 +18,23 @@ func NewShellTool(enabled bool, allow, deny []string) *ShellTool {
 }
 
 func (t *ShellTool) Name() string   { return "shell" }
-func (t *ShellTool) Description() string { return "Execute shell commands" }
+func (t *ShellTool) Description() string { return "Execute shell commands on the local system. Use for running scripts, system commands, or git operations. Returns stdout and stderr output." }
 func (t *ShellTool) Parameters() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"command": map[string]any{"type": "string", "description": "Command to execute"},
+			"command": map[string]any{
+				"type":        "string",
+				"description": "Shell command to execute (e.g., 'ls -la', 'git status', 'python script.py')",
+			},
 		},
 		"required": []any{"command"},
+		"examples": []any{
+			map[string]any{"command": "ls -la"},
+			map[string]any{"command": "git status"},
+			map[string]any{"command": "pwd"},
+			map[string]any{"command": "cat /etc/os-release"},
+		},
 	}
 }
 

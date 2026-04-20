@@ -98,7 +98,7 @@ func NewReadFileTool(workspace, allowedDir string) *ReadFileTool {
 
 func (t *ReadFileTool) Name() string    { return "read_file" }
 func (t *ReadFileTool) Description() string {
-	return "Read the contents of a file. Returns numbered lines with pagination support."
+	return "Read the contents of a text or image file. Returns numbered lines with pagination support. Supports UTF-8 text and common image formats. Use offset and limit for large files."
 }
 
 func (t *ReadFileTool) Parameters() map[string]any {
@@ -110,6 +110,11 @@ func (t *ReadFileTool) Parameters() map[string]any {
 			"limit":   map[string]any{"type": "integer", "description": "Maximum number of lines to read (default 2000)", "minimum": 1},
 		},
 		"required": []any{"path"},
+		"examples": []any{
+			map[string]any{"path": "README.md"},
+			map[string]any{"path": "src/main.go", "offset": 1, "limit": 100},
+			map[string]any{"path": "docs/api.md"},
+		},
 	}
 }
 
@@ -241,7 +246,7 @@ func NewWriteFileTool(workspace, allowedDir string) *WriteFileTool {
 
 func (t *WriteFileTool) Name() string    { return "write_file" }
 func (t *WriteFileTool) Description() string {
-	return "Write content to a file at the given path. Creates parent directories if needed."
+	return "Create or overwrite a file with the given content. Automatically creates parent directories if they don't exist. Use this to create new files or update existing ones."
 }
 
 func (t *WriteFileTool) Parameters() map[string]any {
@@ -252,6 +257,10 @@ func (t *WriteFileTool) Parameters() map[string]any {
 			"content": map[string]any{"type": "string", "description": "The content to write"},
 		},
 		"required": []any{"path", "content"},
+		"examples": []any{
+			map[string]any{"path": "output.txt", "content": "Hello, World!"},
+			map[string]any{"path": "src/config.go", "content": "package main\n\nconst Version = \"1.0.0\""},
+		},
 	}
 }
 
@@ -298,7 +307,7 @@ func NewEditFileTool(workspace, allowedDir string) *EditFileTool {
 
 func (t *EditFileTool) Name() string    { return "edit_file" }
 func (t *EditFileTool) Description() string {
-	return "Edit a file by replacing old_text with new_text. Supports whitespace/line-ending differences. Set replace_all=true to replace every occurrence."
+	return "Precisely edit a file by replacing a specific section (old_text) with new content. Handles whitespace differences. Use replace_all=true to replace every occurrence. Always use exact text from the file - include surrounding context to make the match unique."
 }
 
 func (t *EditFileTool) Parameters() map[string]any {
@@ -306,11 +315,15 @@ func (t *EditFileTool) Parameters() map[string]any {
 		"type": "object",
 		"properties": map[string]any{
 			"path":       map[string]any{"type": "string", "description": "The file path to edit"},
-			"old_text":   map[string]any{"type": "string", "description": "The text to find and replace"},
-			"new_text":   map[string]any{"type": "string", "description": "The text to replace with"},
+			"old_text":   map[string]any{"type": "string", "description": "Exact text to find (must match file content)"},
+			"new_text":   map[string]any{"type": "string", "description": "Replacement text"},
 			"replace_all": map[string]any{"type": "boolean", "description": "Replace all occurrences (default false)"},
 		},
 		"required": []any{"path", "old_text", "new_text"},
+		"examples": []any{
+			map[string]any{"path": "config.go", "old_text": "MaxRetries = 3", "new_text": "MaxRetries = 10"},
+			map[string]any{"path": "main.go", "old_text": "fmt.Println(\"debug\")", "new_text": "// Debug removed"},
+		},
 	}
 }
 
@@ -515,7 +528,7 @@ func NewListDirTool(workspace, allowedDir string) *ListDirTool {
 
 func (t *ListDirTool) Name() string    { return "list_dir" }
 func (t *ListDirTool) Description() string {
-	return "List the contents of a directory. Set recursive=true to explore nested structure. Common noise directories (.git, node_modules, etc.) are auto-ignored."
+	return "List files and subdirectories in a folder. Use recursive=true to see the full tree. Ignores common noise directories (.git, node_modules, __pycache__, etc.)."
 }
 
 func (t *ListDirTool) Parameters() map[string]any {
@@ -527,6 +540,11 @@ func (t *ListDirTool) Parameters() map[string]any {
 			"max_entries": map[string]any{"type": "integer", "description": "Maximum entries to return (default 200)", "minimum": 1},
 		},
 		"required": []any{"path"},
+		"examples": []any{
+			map[string]any{"path": "."},
+			map[string]any{"path": "src", "recursive": true},
+			map[string]any{"path": ".", "recursive": true, "max_entries": 50},
+		},
 	}
 }
 
@@ -639,7 +657,7 @@ func NewGlobTool(workspace, allowedDir string) *GlobTool {
 
 func (t *GlobTool) Name() string    { return "glob" }
 func (t *GlobTool) Description() string {
-	return "Find files matching a glob pattern (e.g., **/*.go, **/*.py). Searches recursively from the given path."
+	return "Find files by glob pattern. ** matches any path, * matches within a directory component, ? matches a single character. Example: **/*.go finds all Go files recursively."
 }
 
 func (t *GlobTool) Parameters() map[string]any {
@@ -647,10 +665,15 @@ func (t *GlobTool) Parameters() map[string]any {
 		"type": "object",
 		"properties": map[string]any{
 			"path":    map[string]any{"type": "string", "description": "The directory path to search from"},
-			"pattern": map[string]any{"type": "string", "description": "Glob pattern to match (e.g., **/*.go)"},
+			"pattern": map[string]any{"type": "string", "description": "Glob pattern (e.g., **/*.go, **/*.py, src/**/*.ts)"},
 			"max_results": map[string]any{"type": "integer", "description": "Maximum results to return (default 100)", "minimum": 1},
 		},
 		"required": []any{"path", "pattern"},
+		"examples": []any{
+			map[string]any{"path": ".", "pattern": "**/*.go"},
+			map[string]any{"path": "src", "pattern": "**/*.test.ts"},
+			map[string]any{"path": ".", "pattern": "**/*.json"},
+		},
 	}
 }
 
@@ -745,7 +768,7 @@ func NewFindTool(workspace, allowedDir string) *FindTool {
 
 func (t *FindTool) Name() string    { return "find" }
 func (t *FindTool) Description() string {
-	return "Search for files containing a text pattern. Returns file paths and line numbers where the pattern is found."
+	return "Grep-style text search across files. Returns file paths and line numbers where the pattern matches. Supports regex. Use file_glob to limit to specific file types."
 }
 
 func (t *FindTool) Parameters() map[string]any {
@@ -753,11 +776,16 @@ func (t *FindTool) Parameters() map[string]any {
 		"type": "object",
 		"properties": map[string]any{
 			"path":     map[string]any{"type": "string", "description": "The directory path to search from"},
-			"pattern":  map[string]any{"type": "string", "description": "Text pattern to search for (supports regex)"},
-			"file_glob": map[string]any{"type": "string", "description": "Optional file glob to limit search (e.g., *.py, *.go)"},
+			"pattern":  map[string]any{"type": "string", "description": "Text or regex pattern to search for"},
+			"file_glob": map[string]any{"type": "string", "description": "Limit to files matching glob (e.g., *.go, *.py)"},
 			"max_results": map[string]any{"type": "integer", "description": "Maximum results to return (default 50)", "minimum": 1},
 		},
 		"required": []any{"path", "pattern"},
+		"examples": []any{
+			map[string]any{"path": "src", "pattern": "TODO"},
+			map[string]any{"path": ".", "pattern": "func main", "file_glob": "*.go"},
+			map[string]any{"path": "src", "pattern": "error:", "file_glob": "*.go"},
+		},
 	}
 }
 

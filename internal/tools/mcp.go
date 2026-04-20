@@ -67,33 +67,63 @@ func (t *MCPTool) ConfigureServer(name string, config *MCPServerConfig) {
 
 // Name and Description for the composite MCP tool
 func (t *MCPTool) Name() string    { return "mcp" }
-func (t *MCPTool) Description() string { return "Call tools from MCP (Model Context Protocol) servers" }
+func (t *MCPTool) Description() string { return "Call tools, list resources, and use prompt templates from MCP (Model Context Protocol) servers. Actions: tools (call a tool), resources (list/read resources), prompts (list/get prompt templates)." }
 
-// Parameters returns the schema for calling an MCP tool
+// Parameters returns the schema for calling MCP tools, resources, or prompts
 func (t *MCPTool) Parameters() map[string]any {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
-
-	props := map[string]any{
-		"server": map[string]any{
-			"type":        "string",
-			"description": "MCP server name",
-		},
-		"tool": map[string]any{
-			"type":        "string",
-			"description": "Tool name on the MCP server",
-		},
-		"arguments": map[string]any{
-			"type":        "object",
-			"description": "Tool arguments as key-value pairs",
-		},
-	}
 
 	// Build enum for server
 	serverNames := make([]string, 0, len(t.servers))
 	for name := range t.servers {
 		serverNames = append(serverNames, name)
 	}
+
+	props := map[string]any{
+		"action": map[string]any{
+			"type":        "string",
+			"enum":        []any{"tools", "resources", "prompts"},
+			"description": "MCP action: tools (call a tool), resources (list/read resources), prompts (list/get prompts)",
+		},
+		"server": map[string]any{
+			"type":        "string",
+			"description": "MCP server name",
+		},
+
+		// Tool-specific params
+		"tool": map[string]any{
+			"type":        "string",
+			"description": "Tool name on the MCP server (for tools action)",
+		},
+		"arguments": map[string]any{
+			"type":        "object",
+			"description": "Tool arguments as key-value pairs (for tools and prompts/get actions)",
+		},
+
+		// Resource-specific params
+		"resource_action": map[string]any{
+			"type":        "string",
+			"enum":        []any{"list", "read"},
+			"description": "Resource action: list or read (for resources action)",
+		},
+		"uri": map[string]any{
+			"type":        "string",
+			"description": "Resource URI to read (for resources/read)",
+		},
+
+		// Prompt-specific params
+		"prompt_action": map[string]any{
+			"type":        "string",
+			"enum":        []any{"list", "get"},
+			"description": "Prompt action: list or get (for prompts action)",
+		},
+		"name": map[string]any{
+			"type":        "string",
+			"description": "Prompt template name (for prompts/get)",
+		},
+	}
+
 	if len(serverNames) > 0 {
 		props["server"].(map[string]any)["enum"] = serverNames
 	}
@@ -101,12 +131,27 @@ func (t *MCPTool) Parameters() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": props,
-		"required": []any{"server", "tool", "arguments"},
+		"required": []any{"action", "server"},
 	}
 }
 
-// Execute handles MCP tool calls
+// Execute handles MCP tool calls, resources, and prompts
 func (t *MCPTool) Execute(ctx context.Context, params map[string]any) (any, error) {
+	action := params["action"] // can be string or nil
+
+	switch action {
+	case "tools", "":
+		return t.executeTool(ctx, params)
+	case "resources":
+		return t.executeResources(ctx, params)
+	case "prompts":
+		return t.executePrompts(ctx, params)
+	default:
+		return nil, fmt.Errorf("unknown MCP action: %s (use: tools, resources, prompts)", action)
+	}
+}
+
+func (t *MCPTool) executeTool(ctx context.Context, params map[string]any) (any, error) {
 	serverName, _ := params["server"].(string)
 	toolName, _ := params["tool"].(string)
 	args, _ := params["arguments"].(map[string]any)
@@ -139,6 +184,102 @@ func (t *MCPTool) Execute(ctx context.Context, params map[string]any) (any, erro
 	default:
 		return nil, fmt.Errorf("unsupported transport: %s", server.Transport)
 	}
+}
+
+// executeResources handles MCP resources/list and resources/read
+func (t *MCPTool) executeResources(ctx context.Context, params map[string]any) (any, error) {
+	serverName, _ := params["server"].(string)
+	resourceAction, _ := params["resource_action"].(string) // "list" or "read"
+	uri, _ := params["uri"].(string)
+
+	if serverName == "" {
+		return nil, fmt.Errorf("server is required for resources action")
+	}
+
+	t.mu.RLock()
+	server, ok := t.servers[serverName]
+	t.mu.RUnlock()
+
+	if !ok {
+		return nil, fmt.Errorf("MCP server not found: %s", serverName)
+	}
+
+	timeout := server.ToolTimeout
+	if timeout <= 0 {
+		timeout = 30
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
+	defer cancel()
+
+	var method string
+	var reqParams map[string]any
+
+	switch resourceAction {
+	case "list", "":
+		method = "resources/list"
+		reqParams = map[string]any{}
+	case "read":
+		if uri == "" {
+			return nil, fmt.Errorf("uri is required for resources/read")
+		}
+		method = "resources/read"
+		reqParams = map[string]any{"uri": uri}
+	default:
+		return nil, fmt.Errorf("unknown resource action: %s (use: list, read)", resourceAction)
+	}
+
+	return t.callMCPMethod(ctx, server, method, reqParams)
+}
+
+// executePrompts handles MCP prompts/list and prompts/get
+func (t *MCPTool) executePrompts(ctx context.Context, params map[string]any) (any, error) {
+	serverName, _ := params["server"].(string)
+	promptAction := params["prompt_action"] // can be string or nil
+	name, _ := params["name"].(string)
+	arguments, _ := params["arguments"].(map[string]any)
+
+	if serverName == "" {
+		return nil, fmt.Errorf("server is required for prompts action")
+	}
+
+	t.mu.RLock()
+	server, ok := t.servers[serverName]
+	t.mu.RUnlock()
+
+	if !ok {
+		return nil, fmt.Errorf("MCP server not found: %s", serverName)
+	}
+
+	timeout := server.ToolTimeout
+	if timeout <= 0 {
+		timeout = 30
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
+	defer cancel()
+
+	var method string
+	var reqParams map[string]any
+
+	switch promptAction {
+	case "list", "":
+		method = "prompts/list"
+		reqParams = map[string]any{}
+	case "get":
+		if name == "" {
+			return nil, fmt.Errorf("name is required for prompts/get")
+		}
+		method = "prompts/get"
+		reqParams = map[string]any{"name": name}
+		if arguments != nil {
+			reqParams["arguments"] = arguments
+		}
+	default:
+		return nil, fmt.Errorf("unknown prompt action: %s (use: list, get)", promptAction)
+	}
+
+	return t.callMCPMethod(ctx, server, method, reqParams)
 }
 
 // callStdio calls an MCP tool via stdio transport
@@ -223,6 +364,73 @@ func (t *MCPTool) callHTTP(ctx context.Context, server *MCPServerConfig, toolNam
 	}
 
 	return "(no output)", nil
+}
+
+// callMCPMethod calls a generic MCP method via HTTP transport
+func (t *MCPTool) callMCPMethod(ctx context.Context, server *MCPServerConfig, method string, params map[string]any) (any, error) {
+	request := map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  method,
+		"params":  params,
+	}
+
+	requestBytes, err := json.Marshal(request)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	endpoint := server.URL
+	if server.Transport == "sse" {
+		endpoint = strings.TrimSuffix(endpoint, "/") + "/sse"
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(requestBytes))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	for k, v := range server.Headers {
+		req.Header.Set(k, v)
+	}
+
+	resp, err := t.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("MCP server error: %d - %s", resp.StatusCode, string(body))
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	var result MCPResponse
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	if result.Error != nil {
+		return nil, fmt.Errorf("MCP error: %s", result.Error.Message)
+	}
+
+	if result.Result == nil {
+		return "(no result)", nil
+	}
+
+	// For resources and prompts, return the structured result
+	if len(result.Result.Content) > 0 {
+		return formatMCPContent(result.Result.Content), nil
+	}
+
+	// Return the raw result for methods that don't have content blocks
+	return result.Result, nil
 }
 
 // MCPJSONRPCRequest represents a JSON-RPC request

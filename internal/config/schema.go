@@ -19,6 +19,7 @@ type AgentDefaults struct {
     Temperature        float64 `mapstructure:"temperature"`
     MaxToolIterations  int     `mapstructure:"max_tool_iterations"`
     ReasoningEffort    string  `mapstructure:"reasoning_effort"`
+    EnableReasoning    bool    `mapstructure:"enable_reasoning"`
 }
 
 // ChannelsConfig defines channels settings

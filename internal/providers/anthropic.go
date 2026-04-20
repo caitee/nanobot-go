@@ -156,16 +156,15 @@ func (p *AnthropicProvider) Chat(ctx context.Context, messages []Message, tools 
 }
 
 func (p *AnthropicProvider) ChatWithRetry(ctx context.Context, messages []Message, tools []ToolDef, opts ChatOptions) (*LLMResponse, error) {
-	var lastErr error
-	for i := 0; i < 3; i++ {
-		resp, err := p.Chat(ctx, messages, tools, opts)
-		if err == nil {
-			return resp, nil
-		}
-		lastErr = err
-		time.Sleep(time.Duration(i+1) * time.Second)
-	}
-	return nil, lastErr
+    retryCfg := opts.RetryConfig
+    if retryCfg == nil {
+        retryCfg = &RetryConfig{
+            MaxAttempts: 3,
+            BaseDelay:  time.Second,
+            MaxDelay:  10 * time.Second,
+        }
+    }
+    return ChatWithRetryConfig(ctx, p, messages, tools, opts, *retryCfg)
 }
 
 func (p *AnthropicProvider) GetDefaultModel() string {

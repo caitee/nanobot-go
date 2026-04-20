@@ -81,16 +81,15 @@ func (p *OpenAIProvider) Chat(ctx context.Context, messages []Message, tools []T
 }
 
 func (p *OpenAIProvider) ChatWithRetry(ctx context.Context, messages []Message, tools []ToolDef, opts ChatOptions) (*LLMResponse, error) {
-    var lastErr error
-    for i := 0; i < 3; i++ {
-        resp, err := p.Chat(ctx, messages, tools, opts)
-        if err == nil {
-            return resp, nil
+    retryCfg := opts.RetryConfig
+    if retryCfg == nil {
+        retryCfg = &RetryConfig{
+            MaxAttempts: 3,
+            BaseDelay:  time.Second,
+            MaxDelay:  10 * time.Second,
         }
-        lastErr = err
-        time.Sleep(time.Duration(i+1) * time.Second)
     }
-    return nil, lastErr
+    return ChatWithRetryConfig(ctx, p, messages, tools, opts, *retryCfg)
 }
 
 func (p *OpenAIProvider) GetDefaultModel() string {

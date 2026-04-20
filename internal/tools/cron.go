@@ -27,7 +27,7 @@ func NewCronTool(cronService *cron.CronService, messageBus bus.MessageBus) *Cron
 
 func (t *CronTool) Name() string    { return "cron" }
 func (t *CronTool) Description() string {
-	return "Schedule reminders and recurring tasks. Actions: add, list, remove."
+	return "Schedule reminders, one-time alerts, or recurring tasks. Use when user wants to be reminded of something, set a timer, or automate periodic messages. Actions: add (schedule), list (show all), remove (cancel)."
 }
 func (t *CronTool) Parameters() map[string]any {
 	return map[string]any{
@@ -36,23 +36,23 @@ func (t *CronTool) Parameters() map[string]any {
 			"action": map[string]any{
 				"type":        "string",
 				"enum":        []any{"add", "list", "remove"},
-				"description": "Action to perform",
+				"description": "Action: add (create scheduled job), list (show all), remove (cancel)",
 			},
 			"message": map[string]any{
 				"type":        "string",
-				"description": "Reminder message (for add)",
+				"description": "Reminder text (for add)",
 			},
 			"every_seconds": map[string]any{
 				"type":        "integer",
-				"description": "Interval in seconds (for recurring tasks)",
+				"description": "Repeat every N seconds (for recurring tasks, e.g. 3600 for hourly)",
 			},
 			"cron_expr": map[string]any{
 				"type":        "string",
-				"description": "Cron expression like '0 9 * * *' (for scheduled tasks)",
+				"description": "Cron expression like '0 9 * * *' for daily at 9am (for scheduled tasks)",
 			},
 			"tz": map[string]any{
 				"type":        "string",
-				"description": "IANA timezone for cron expressions (e.g. 'America/Vancouver')",
+				"description": "IANA timezone (e.g. 'America/Vancouver', 'Asia/Shanghai')",
 			},
 			"at": map[string]any{
 				"type":        "string",
@@ -60,10 +60,17 @@ func (t *CronTool) Parameters() map[string]any {
 			},
 			"job_id": map[string]any{
 				"type":        "string",
-				"description": "Job ID (for remove)",
+				"description": "Job ID to remove (for remove action)",
 			},
 		},
 		"required": []any{"action"},
+		"examples": []any{
+			map[string]any{"action": "add", "message": "Standup meeting in 10 minutes", "at": "2026-04-20T09:50:00"},
+			map[string]any{"action": "add", "message": "Check CI pipeline", "every_seconds": 300},
+			map[string]any{"action": "add", "message": "Daily report", "cron_expr": "0 9 * * *", "tz": "America/Vancouver"},
+			map[string]any{"action": "list"},
+			map[string]any{"action": "remove", "job_id": "abc123"},
+		},
 	}
 }
 

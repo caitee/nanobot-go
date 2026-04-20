@@ -13,6 +13,7 @@ import (
 	"nanobot-go/internal/channels"
 	"nanobot-go/internal/config"
 	"nanobot-go/internal/cron"
+	"nanobot-go/internal/monitoring"
 	"nanobot-go/internal/providers"
 	"nanobot-go/internal/session"
 	"nanobot-go/internal/tools"
@@ -90,7 +91,16 @@ func main() {
 	// (In real implementation, would check cfg.Channels for each enabled channel)
 
 	// Initialize agent loop
-	agentLoop := agent.NewAgentLoop(messageBus, sessionStore, toolRegistry, provider, maxIterations)
+	agentLoop := agent.NewAgentLoop(messageBus, sessionStore, toolRegistry, provider, maxIterations, cfg.Agents.EnableReasoning)
+
+	// Start gateway
+	gatewayAddr := fmt.Sprintf("%s:%d", cfg.Gateway.Host, cfg.Gateway.Port)
+	slog.Info("gateway starting", "address", gatewayAddr)
+
+	// Start health and metrics server on a separate port (gatewayPort+1)
+	healthAddr := fmt.Sprintf("%s:%d", cfg.Gateway.Host, cfg.Gateway.Port+1)
+	healthSrv := monitoring.StartHealthServer(healthAddr)
+	slog.Info("health/metrics server starting", "address", healthAddr)
 
 	// Handle shutdown
 	sigCh := make(chan os.Signal, 1)
@@ -103,6 +113,7 @@ func main() {
 		channelManager.StopAll()
 		cronService.Stop()
 		messageBus.Close()
+		healthSrv.Close()
 	}()
 
 	// Start cron service
@@ -114,10 +125,6 @@ func main() {
 	if err := channelManager.StartAll(ctx); err != nil {
 		slog.Error("failed to start channels", "error", err)
 	}
-
-	// Start gateway
-	gatewayAddr := fmt.Sprintf("%s:%d", cfg.Gateway.Host, cfg.Gateway.Port)
-	slog.Info("gateway starting", "address", gatewayAddr)
 
 	// Start agent loop in background
 	go func() {

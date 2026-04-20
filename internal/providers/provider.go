@@ -56,6 +56,7 @@ type ChatOptions struct {
     MaxTokens      int
     Model          string
     ReasoningEffort string
+    RetryConfig    *RetryConfig // Optional retry configuration
 }
 
 // LLMProvider is the interface for LLM providers

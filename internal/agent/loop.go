@@ -24,24 +24,28 @@ type AgentLoop struct {
 	toolRegistry       tools.ToolRegistry
 	provider           providers.LLMProvider
 	maxIterations      int
+	enableReasoning    bool
 	commands           map[string]CommandHandler
 	mu                 sync.Mutex
 	running            bool
 	startTime          time.Time
 	sessionCancelFuncs map[string]context.CancelFunc
+	reasoningStates    sync.Map // sessionKey -> bool
 }
 
 type CommandHandler func(ctx context.Context, args string, inbound bus.InboundMessage) (string, error)
 
-func NewAgentLoop(bus bus.MessageBus, sessionStore session.SessionStore, toolRegistry tools.ToolRegistry, provider providers.LLMProvider, maxIterations int) *AgentLoop {
+func NewAgentLoop(bus bus.MessageBus, sessionStore session.SessionStore, toolRegistry tools.ToolRegistry, provider providers.LLMProvider, maxIterations int, enableReasoning bool) *AgentLoop {
 	al := &AgentLoop{
 		bus:                bus,
 		sessionStore:       sessionStore,
 		toolRegistry:       toolRegistry,
 		provider:           provider,
 		maxIterations:      maxIterations,
+		enableReasoning:    enableReasoning,
 		commands:           make(map[string]CommandHandler),
 		sessionCancelFuncs: make(map[string]context.CancelFunc),
+		reasoningStates:    sync.Map{},
 	}
 	al.registerDefaultCommands()
 	return al
@@ -53,6 +57,7 @@ func (al *AgentLoop) registerDefaultCommands() {
 	al.commands["restart"] = al.handleRestart
 	al.commands["status"] = al.handleStatus
 	al.commands["new"] = al.handleNew
+	al.commands["reasoning"] = al.handleReasoning
 }
 
 func (al *AgentLoop) handleHelp(ctx context.Context, args string, inbound bus.InboundMessage) (string, error) {
@@ -62,9 +67,46 @@ func (al *AgentLoop) handleHelp(ctx context.Context, args string, inbound bus.In
 		"/stop — Stop the current task",
 		"/restart — Restart the bot",
 		"/status — Show bot status",
+		"/reasoning on|off — Toggle thinking mode",
 		"/help — Show available commands",
 	}
 	return strings.Join(lines, "\n"), nil
+}
+
+func (al *AgentLoop) handleReasoning(ctx context.Context, args string, inbound bus.InboundMessage) (string, error) {
+	args = strings.TrimSpace(strings.ToLower(args))
+	var newState bool
+
+	switch args {
+	case "on", "true", "1", "yes":
+		newState = true
+	case "off", "false", "0", "no":
+		newState = false
+	case "":
+		// Toggle current state
+		if v, ok := al.reasoningStates.Load(inbound.SessionKey); ok {
+			newState = !v.(bool)
+		} else {
+			newState = !al.enableReasoning
+		}
+	default:
+		return "Usage: /reasoning on|off (or /reasoning to toggle)", nil
+	}
+
+	al.reasoningStates.Store(inbound.SessionKey, newState)
+	stateStr := "enabled"
+	if !newState {
+		stateStr = "disabled"
+	}
+	return fmt.Sprintf("Thinking mode: %s", stateStr), nil
+}
+
+// isReasoningEnabled returns whether reasoning is enabled for a session.
+func (al *AgentLoop) isReasoningEnabled(sessionKey string) bool {
+	if v, ok := al.reasoningStates.Load(sessionKey); ok {
+		return v.(bool)
+	}
+	return al.enableReasoning
 }
 
 func (al *AgentLoop) handleStop(ctx context.Context, args string, inbound bus.InboundMessage) (string, error) {
@@ -229,7 +271,7 @@ func (al *AgentLoop) processMessage(ctx context.Context, inbound bus.InboundMess
 	})
 
 	// Build context and run agent loop
-	messages := buildMessages(sess)
+	messages := al.buildMessagesWithReasoning(sess, sessionKey)
 	toolDefs := convertToolDefs(al.toolRegistry.GetDefinitions())
 	slog.Info("processMessage: built messages", "count", len(messages))
 
@@ -245,7 +287,37 @@ func (al *AgentLoop) processMessage(ctx context.Context, inbound bus.InboundMess
 		// Publish thinking event
 		al.publishAgentEvent(sessionKey, EventLLMThinking, nil)
 
-		// Single API call — no fake streaming + duplicate call
+		// Use streaming for response
+		al.publishAgentEvent(sessionKey, EventLLMResponding, nil)
+		var fullText string
+		streamCh := al.provider.StreamGenerate(ctx, messages, toolDefs, providers.ChatOptions{
+			MaxTokens:   4096,
+			Temperature: 0.7,
+		})
+		for chunk := range streamCh {
+			if chunk.Error != nil {
+				slog.Error("stream error", "error", chunk.Error)
+				al.publishAgentEvent(sessionKey, EventLLMFinal, map[string]any{
+					"error": chunk.Error.Error(),
+				})
+				al.publishAgentEvent(sessionKey, EventSessionEnd, nil)
+				return nil, nil
+			}
+			if chunk.Chunk != "" {
+				fullText += chunk.Chunk
+				al.publishAgentEvent(sessionKey, EventLLMStreamChunk, bus.StreamChunkData{
+					Delta:    chunk.Chunk,
+					FullText: fullText,
+				})
+			}
+			if chunk.Done {
+				break
+			}
+		}
+
+		// Build the final response from accumulated content
+		// We need tool calls, so do a non-streaming call to get them properly
+		// This is necessary because streaming doesn't return tool calls in the same way
 		resp, chatErr := al.provider.Chat(ctx, messages, toolDefs, providers.ChatOptions{
 			MaxTokens:   4096,
 			Temperature: 0.7,
@@ -262,14 +334,8 @@ func (al *AgentLoop) processMessage(ctx context.Context, inbound bus.InboundMess
 			return nil, nil
 		}
 
-		// Publish events for TUI
-		al.publishAgentEvent(sessionKey, EventLLMResponding, nil)
-		if resp.Content != "" {
-			al.publishAgentEvent(sessionKey, EventLLMStreamChunk, bus.StreamChunkData{
-				Delta:    resp.Content,
-				FullText: resp.Content,
-			})
-		}
+		// Override content with streamed text
+		resp.Content = fullText
 
 		messages = append(messages, providers.Message{
 			Role:      "assistant",
@@ -422,6 +488,20 @@ func buildMessages(sess *session.Session) []providers.Message {
 			Role:    msg.Role,
 			Content: msg.Content,
 		})
+	}
+	return msgs
+}
+
+// buildMessagesWithReasoning builds messages with reasoning instruction when enabled.
+func (al *AgentLoop) buildMessagesWithReasoning(sess *session.Session, sessionKey string) []providers.Message {
+	msgs := buildMessages(sess)
+	if al.isReasoningEnabled(sessionKey) {
+		// Prepend reasoning instruction as a system message
+		reasoningMsg := providers.Message{
+			Role:    "system",
+			Content: "请展示你的思考过程。在回答时，先写出你的推理和思考步骤，再用中文给出最终答案。",
+		}
+		msgs = append([]providers.Message{reasoningMsg}, msgs...)
 	}
 	return msgs
 }

@@ -441,30 +441,7 @@ func estimateMessageTokens(msg session.Message) int {
 // estimateContentTokens estimates token count for text content using improved char-based estimation.
 // Chinese characters require more tokens than English in cl100k_base encoding.
 func estimateContentTokens(content string) int {
-	if content == "" {
-		return 0
-	}
-
-	// Count Chinese and non-Chinese characters separately
-	// Chinese characters (Unicode range 0x4E00-0x9FFF) typically need ~2x more tokens
-	chineseChars := 0
-	nonChineseChars := 0
-
-	for _, r := range content {
-		if r >= 0x4E00 && r <= 0x9FFF {
-			chineseChars++
-		} else {
-			nonChineseChars++
-		}
-	}
-
-	// Rough ratios for cl100k_base:
-	// - Non-Chinese (ASCII): ~4 chars per token
-	// - Chinese: ~2 chars per token (conservative, Chinese chars are often 2-4 tokens each)
-	chineseTokens := chineseChars / 2
-	nonChineseTokens := nonChineseChars / 4
-
-	return max(0, chineseTokens+nonChineseTokens)
+	return CountTokensFast(content)
 }
 
 // EstimateSessionPromptTokens estimates current prompt size for the normal session history view
@@ -521,7 +498,7 @@ func estimatePromptTokens(messages []providers.Message, tools []providers.ToolDe
 	// Calculate total tokens using improved estimation
 	total := 0
 	for _, part := range parts {
-		total += estimateContentTokens(part)
+		total += CountTokensFast(part)
 	}
 
 	// Per-message overhead: ~4 tokens per message for framing
@@ -557,7 +534,11 @@ func (mc *MemoryConsolidator) MaybeConsolidateByTokens(ctx context.Context, sess
 	}
 
 	lock := mc.getLock(sess.Key)
-	lock.Lock()
+	if !lock.TryLock() {
+		// Another consolidation is already in progress for this session
+		slog.Debug("consolidation already in progress, skipping", "session", sess.Key)
+		return
+	}
 	defer lock.Unlock()
 
 	target := mc.contextWindowTokens / 2
@@ -614,6 +595,17 @@ func (mc *MemoryConsolidator) MaybeConsolidateByTokens(ctx context.Context, sess
 			return
 		}
 	}
+}
+
+// MaybeConsolidateByTokensAsync runs MaybeConsolidateByTokens in a background goroutine.
+// It uses a detached context with a timeout to ensure consolidation completes.
+func (mc *MemoryConsolidator) MaybeConsolidateByTokensAsync(ctx context.Context, sess *session.Session) {
+	go func() {
+		// Use a background context with a generous timeout for consolidation
+		bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
+		mc.MaybeConsolidateByTokens(bgCtx, sess)
+	}()
 }
 
 // getHistory returns unconsolidated messages for LLM input
