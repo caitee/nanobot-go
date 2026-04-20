@@ -358,7 +358,7 @@ func runAgent(cmd *cobra.Command, args []string) {
 	if maxIterations <= 0 {
 		maxIterations = 40
 	}
-	agentLoop := agent.NewAgentLoop(nil, sessionStore, toolRegistry, provider, maxIterations)
+	agentLoop := agent.NewAgentLoop(nil, sessionStore, toolRegistry, provider, maxIterations, false)
 
 	if agentMessageFlag != "" {
 		// Single message mode
@@ -453,7 +453,7 @@ func createProvider(cfg *config.Config) providers.LLMProvider {
 
 func runAgentSingle(ctx context.Context, agentLoop *agent.AgentLoop, sessionStore session.SessionStore, toolRegistry tools.ToolRegistry, provider providers.LLMProvider, maxIterations int) {
 	messageBus := bus.New(100)
-	agentLoop = agent.NewAgentLoop(messageBus, sessionStore, toolRegistry, provider, maxIterations)
+	agentLoop = agent.NewAgentLoop(messageBus, sessionStore, toolRegistry, provider, maxIterations, false)
 
 	// Parse session
 	sessionKey := agentSessionFlag
@@ -495,7 +495,7 @@ func runAgentSingle(ctx context.Context, agentLoop *agent.AgentLoop, sessionStor
 
 func runAgentInteractive(ctx context.Context, agentLoop *agent.AgentLoop, sessionStore session.SessionStore, toolRegistry tools.ToolRegistry, provider providers.LLMProvider, maxIterations int) {
 	messageBus := bus.New(100)
-	agentLoop = agent.NewAgentLoop(messageBus, sessionStore, toolRegistry, provider, maxIterations)
+	agentLoop = agent.NewAgentLoop(messageBus, sessionStore, toolRegistry, provider, maxIterations, false)
 
 	// Parse session
 	sessionKey := agentSessionFlag
@@ -1013,7 +1013,7 @@ func runGateway(cmd *cobra.Command, args []string) {
 	if maxIterations <= 0 {
 		maxIterations = 40
 	}
-	agentLoop := agent.NewAgentLoop(messageBus, sessionStore, toolRegistry, provider, maxIterations)
+	agentLoop := agent.NewAgentLoop(messageBus, sessionStore, toolRegistry, provider, maxIterations, false)
 
 	// Create channel manager
 	channelManager := channels.NewManager(messageBus)
