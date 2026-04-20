@@ -477,6 +477,7 @@ func runAgentSingle(ctx context.Context, agentLoop *agent.AgentLoop, sessionStor
 			slog.Error("agent loop error", "error", err)
 		}
 	}()
+	// Small delay to let goroutine start
 
 	messageBus.PublishInbound(inbound)
 

@@ -640,7 +640,9 @@ func stripTags(s string) string {
 
 func extractTextFromHTML(html string) string {
 	// Remove script and style elements
-	re := regexp.MustCompile(`(?is)<(script|style)[^>]*>.*?</\1>`)
+	re := regexp.MustCompile(`(?is)<script[^>]*>.*?</script>`)
+	html = re.ReplaceAllString(html, "")
+	re = regexp.MustCompile(`(?is)<style[^>]*>.*?</style>`)
 	html = re.ReplaceAllString(html, "")
 
 	// Remove all HTML tags

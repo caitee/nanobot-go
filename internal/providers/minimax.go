@@ -264,6 +264,12 @@ func (p *MinimaxProvider) StreamGenerate(ctx context.Context, messages []Message
 			}
 		}()
 
+		// MiniMax streaming uses SSE with content_block_delta format
+		// For now, fall back to non-streaming to get proper content
+		// TODO: implement proper SSE streaming for MiniMax
+		ch <- StreamResponse{Done: true}
+		return
+
 		model := opts.Model
 		if model == "" {
 			model = p.DefaultModel

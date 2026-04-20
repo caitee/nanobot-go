@@ -204,7 +204,7 @@ func (al *AgentLoop) handleMessage(ctx context.Context, inbound bus.InboundMessa
 	// Handle commands
 	if len(inbound.Content) > 0 && inbound.Content[0] == '/' {
 		parts := splitCommand(inbound.Content)
-		cmd := parts[0]
+		cmd := strings.TrimPrefix(parts[0], "/")
 		args := ""
 		if len(parts) > 1 {
 			args = parts[1]
@@ -334,8 +334,10 @@ func (al *AgentLoop) processMessage(ctx context.Context, inbound bus.InboundMess
 			return nil, nil
 		}
 
-		// Override content with streamed text
-		resp.Content = fullText
+		// Override content with streamed text (only if we actually got streamed content)
+		if fullText != "" {
+			resp.Content = fullText
+		}
 
 		messages = append(messages, providers.Message{
 			Role:      "assistant",
