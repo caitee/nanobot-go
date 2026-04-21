@@ -1,6 +1,7 @@
 package providers
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -265,10 +266,7 @@ func (p *MinimaxProvider) StreamGenerate(ctx context.Context, messages []Message
 		}()
 
 		// MiniMax streaming uses SSE with content_block_delta format
-		// For now, fall back to non-streaming to get proper content
-		// TODO: implement proper SSE streaming for MiniMax
-		ch <- StreamResponse{Done: true}
-		return
+		// StreamGenerate will handle both flat format and event-wrapped format
 
 		model := opts.Model
 		if model == "" {
@@ -403,12 +401,12 @@ func (p *MinimaxProvider) StreamGenerate(ctx context.Context, messages []Message
 			return
 		}
 
-		// Read SSE stream
-		reader := resp.Body
-		buffer := make([]byte, 0, 4096)
+// Read SSE stream using bufio.Scanner for line-by-line processing
+		scanner := bufio.NewScanner(resp.Body)
+		scanner.Buffer(make([]byte, 0, 4096), 1024*1024) // 1MB max token size
 		var fullText string
 
-		for {
+		for scanner.Scan() {
 			select {
 			case <-ctx.Done():
 				ch <- StreamResponse{Done: true, Error: ctx.Err()}
@@ -416,99 +414,84 @@ func (p *MinimaxProvider) StreamGenerate(ctx context.Context, messages []Message
 			default:
 			}
 
-			buf := make([]byte, 1024)
-			n, err := reader.Read(buf)
-			if n > 0 {
-				buffer = append(buffer, buf[:n]...)
-
-				// Process complete lines
-				for {
-					lineEnd := bytes.Index(buffer, []byte("\n"))
-					if lineEnd < 0 {
-						break
-					}
-					line := buffer[:lineEnd]
-					buffer = buffer[lineEnd+1:]
-
-					lineStr := string(line)
-					if !strings.HasPrefix(lineStr, "data: ") {
-						continue
-					}
-
-					data := strings.TrimPrefix(lineStr, "data: ")
-					if data == "[DONE]" {
-						ch <- StreamResponse{Chunk: "", Done: true}
-						return
-					}
-
-					// Parse SSE data
-					var eventData map[string]any
-					if err := json.Unmarshal([]byte(data), &eventData); err != nil {
-						continue
-					}
-
-					// Handle different event types
-					if content, ok := eventData["content"].([]any); ok {
-						for _, block := range content {
-							if blockMap, ok := block.(map[string]any); ok {
-								if blockType, ok := blockMap["type"].(string); ok {
-									switch blockType {
-									case "text":
-										if text, ok := blockMap["text"].(string); ok {
-											fullText += text
-											ch <- StreamResponse{Chunk: text, Done: false}
-										}
-									case "tool_use":
-										// For streaming, we wait until the end to report tool calls
-										// The final event will have all tool calls
-									}
-								}
-							}
-						}
-					}
-
-					// Check for stop reason
-					if stopReason, ok := eventData["stop_reason"].(string); ok && stopReason != "" {
-						ch <- StreamResponse{Chunk: "", Done: true}
-						return
-					}
-				}
+			line := scanner.Text()
+			if line == "" || !strings.HasPrefix(line, "data: ") {
+				continue
 			}
 
-			if err == io.EOF {
-				// Process any remaining data
-				if len(buffer) > 0 {
-					lineStr := string(buffer)
-					if strings.HasPrefix(lineStr, "data: ") {
-						data := strings.TrimPrefix(lineStr, "data: ")
-						if data != "[DONE]" {
-							var eventData map[string]any
-							if err := json.Unmarshal([]byte(data), &eventData); err == nil {
-								if content, ok := eventData["content"].([]any); ok {
-									for _, block := range content {
-										if blockMap, ok := block.(map[string]any); ok {
-											if blockType, ok := blockMap["type"].(string); ok && blockType == "text" {
-												if text, ok := blockMap["text"].(string); ok {
-													fullText += text
-													ch <- StreamResponse{Chunk: text, Done: false}
-												}
-											}
-										}
-									}
-								}
-							}
-						}
-					}
-				}
+			data := strings.TrimPrefix(line, "data: ")
+			if data == "[DONE]" {
 				ch <- StreamResponse{Done: true}
 				return
 			}
 
-			if err != nil {
-				ch <- StreamResponse{Error: err}
-				return
+			// MiniMax sends two SSE formats:
+			// 1. With event wrapper: {"event":"content_block_delta","data":{"type":"...","delta":{...}}}
+			// 2. Direct flat format: {"type":"content_block_delta","index":0,"delta":{...}}
+			var sse struct {
+				Type  string         `json:"type"`
+				Event string         `json:"event"`
+				Index float64        `json:"index"`
+				Delta map[string]any `json:"delta"`
+				Data  map[string]any `json:"data"`
+			}
+			if err := json.Unmarshal([]byte(data), &sse); err != nil {
+				continue
+			}
+
+			// Normalize to unified structure
+			var msgType string
+			var delta map[string]any
+
+			if sse.Type != "" {
+				// Flat format: type is at top level
+				msgType = sse.Type
+				delta = sse.Delta
+			} else if sse.Data != nil {
+				// Wrapped format: type inside data
+				if t, ok := sse.Data["type"].(string); ok {
+					msgType = t
+				}
+				if d, ok := sse.Data["delta"].(map[string]any); ok {
+					delta = d
+				}
+			}
+
+			if delta == nil {
+				continue
+			}
+
+			// Handle content_block_delta events
+			switch msgType {
+			case "content_block_delta":
+				if deltaType, ok := delta["type"].(string); ok {
+					switch deltaType {
+					case "text_delta":
+						if text, ok := delta["text"].(string); ok {
+							fullText += text
+							ch <- StreamResponse{Chunk: text, Done: false}
+						}
+					case "thinking_delta":
+						if thinking, ok := delta["thinking"].(string); ok {
+							fullText += thinking
+							ch <- StreamResponse{Chunk: thinking, Done: false}
+						}
+					}
+				}
+			case "message_delta":
+				if stopReason, ok := sse.Data["stop_reason"].(string); ok && stopReason != "" {
+					ch <- StreamResponse{Done: true}
+					return
+				}
 			}
 		}
+
+		if err := scanner.Err(); err != nil {
+			ch <- StreamResponse{Error: err}
+			return
+		}
+
+		ch <- StreamResponse{Done: true}
 	}()
 	return ch
 }
