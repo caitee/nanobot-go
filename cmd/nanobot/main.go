@@ -599,11 +599,12 @@ type toolCallEntry struct {
 }
 
 type conversationEntry struct {
-	role          string
-	content       string
-	toolCalls     []toolCallEntry
-	isLoading     bool
-	streamingText string
+	role              string
+	content           string
+	toolCalls         []toolCallEntry
+	isLoading         bool
+	streamingText     string
+	streamingReasoning string // Reasoning content streamed separately
 }
 
 var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
@@ -756,14 +757,19 @@ func (m *interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					entry.content = ""
 				case "llm_stream_chunk":
 					if data, ok := msg.ev.Data["data"].(bus.StreamChunkData); ok {
-						entry.streamingText = data.FullText
-						entry.content = data.FullText
+						if data.IsReasoning {
+							entry.streamingReasoning = data.FullText
+						} else {
+							entry.streamingText = data.FullText
+							entry.content = data.FullText
+						}
 					}
 				case "llm_stream_end":
 					// Stream ended
 				case "llm_final":
 					if data, ok := msg.ev.Data["data"].(bus.LLMFinalData); ok {
 						entry.content = data.Content
+						entry.streamingReasoning = data.ReasoningContent
 					}
 					m.waiting = false
 					entry.isLoading = false
@@ -993,9 +999,14 @@ func (m *interactiveModel) View() string {
 
 			// Show main content or thinking spinner
 			if msg.isLoading {
-				if msg.streamingText != "" {
-					// Streaming reasoning: render in gray with cursor
-					s.WriteString(reasoningStyle.Render(msg.streamingText))
+				if msg.streamingText != "" || msg.streamingReasoning != "" {
+					// Show reasoning in gray, then final text in white
+					if msg.streamingReasoning != "" {
+						s.WriteString(reasoningStyle.Render(msg.streamingReasoning))
+					}
+					if msg.streamingText != "" {
+						s.WriteString(msg.streamingText)
+					}
 					s.WriteString("█\n")
 				} else {
 					// Thinking state with spinner

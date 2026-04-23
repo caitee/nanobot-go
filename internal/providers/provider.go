@@ -69,9 +69,10 @@ type LLMProvider interface {
 
 // StreamResponse represents a chunk of streaming response
 type StreamResponse struct {
-    Chunk   string // Incremental text content
-    Done    bool   // True if this is the final chunk
-    Error   error
+    Chunk        string // Incremental text content
+    Done         bool   // True if this is the final chunk
+    Error        error
+    IsReasoning  bool   // True if this chunk is reasoning/thinking content (not final answer)
 }
 
 // ToMap converts a Message to map[string]any for compatibility.

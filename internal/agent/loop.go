@@ -290,6 +290,7 @@ func (al *AgentLoop) processMessage(ctx context.Context, inbound bus.InboundMess
 		// Use streaming for response
 		al.publishAgentEvent(sessionKey, EventLLMResponding, nil)
 		var fullText string
+		var reasoningText string
 		streamCh := al.provider.StreamGenerate(ctx, messages, toolDefs, providers.ChatOptions{
 			MaxTokens:   4096,
 			Temperature: 0.7,
@@ -304,10 +305,15 @@ func (al *AgentLoop) processMessage(ctx context.Context, inbound bus.InboundMess
 				return nil, nil
 			}
 			if chunk.Chunk != "" {
-				fullText += chunk.Chunk
+				if chunk.IsReasoning {
+					reasoningText += chunk.Chunk
+				} else {
+					fullText += chunk.Chunk
+				}
 				al.publishAgentEvent(sessionKey, EventLLMStreamChunk, bus.StreamChunkData{
-					Delta:    chunk.Chunk,
-					FullText: fullText,
+					Delta:       chunk.Chunk,
+					FullText:    fullText,
+					IsReasoning: chunk.IsReasoning,
 				})
 			}
 			if chunk.Done {
@@ -348,7 +354,8 @@ func (al *AgentLoop) processMessage(ctx context.Context, inbound bus.InboundMess
 		if len(resp.ToolCalls) == 0 {
 			// Final response - no tools. Now mark as done.
 			al.publishAgentEvent(sessionKey, EventLLMFinal, bus.LLMFinalData{
-				Content: resp.Content,
+				Content:          resp.Content,
+				ReasoningContent: reasoningText,
 			})
 			sess.Messages = append(sess.Messages, session.Message{
 				Role:    "assistant",

@@ -44,8 +44,9 @@ type AgentEvent struct {
 
 // StreamChunkData holds streaming response chunk data
 type StreamChunkData struct {
-	Delta    string // Incremental text
-	FullText string // Accumulated complete text
+	Delta       string // Incremental text
+	FullText    string // Accumulated complete text
+	IsReasoning bool   // True if this chunk is reasoning content
 }
 
 // ToolCallEventData holds data when LLM requests tool calls
@@ -72,7 +73,8 @@ type ToolResultEventData struct {
 
 // LLMFinalData holds the final LLM response after all tool calls complete
 type LLMFinalData struct {
-	Content string
+	Content          string
+	ReasoningContent string // Separate thinking/reasoning content if available
 }
 
 // ErrorData holds error information
