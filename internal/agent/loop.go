@@ -370,10 +370,11 @@ func (al *AgentLoop) processMessage(ctx context.Context, inbound bus.InboundMess
 			al.publishAgentEvent(sessionKey, EventSessionEnd, nil)
 			slog.Info("processMessage: returning final response", "contentLen", len(resp.Content))
 			return &bus.OutboundMessage{
-				Channel: inbound.Channel,
-				ChatID:  inbound.ChatID,
-				Content: resp.Content,
-				ReplyTo: inbound.SenderID,
+				Channel:  inbound.Channel,
+				ChatID:   inbound.ChatID,
+				Content:  resp.Content,
+				ReplyTo:  inbound.SenderID,
+				Reasoning: finalReasoning,
 			}, nil
 		}
 

@@ -21,7 +21,8 @@ type OutboundMessage struct {
 	Content  string
 	ReplyTo  string
 	Media    []string
-	Metadata map[string]any
+	Reasoning    string
+	Metadata   map[string]any
 }
 
 // ToolEvent represents a tool execution event for UI updates
