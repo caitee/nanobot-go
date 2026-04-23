@@ -578,19 +578,20 @@ func runAgentInteractive(ctx context.Context, agentLoop *agent.AgentLoop, sessio
 }
 
 type interactiveModel struct {
-	textInput     textinput.Model
-	messageBus    bus.MessageBus
-	sessionKey     string
-	chatID        string
-	waiting       bool
-	messages      []conversationEntry
-	quitting      bool
-	done          chan struct{}
-	mu            sync.Mutex
-	spinnerIdx    int
-	toolEventCh   <-chan bus.ToolEvent
-	agentEventCh  <-chan bus.AgentEvent
-	outboundCh    <-chan bus.OutboundMessage
+	textInput        textinput.Model
+	messageBus       bus.MessageBus
+	sessionKey        string
+	chatID           string
+	waiting          bool
+	messages         []conversationEntry
+	quitting         bool
+	done             chan struct{}
+	mu               sync.Mutex
+	spinnerIdx       int
+	toolEventCh      <-chan bus.ToolEvent
+	agentEventCh     <-chan bus.AgentEvent
+	outboundCh       <-chan bus.OutboundMessage
+	responseReceived bool // Track if final response has been received
 }
 
 type toolCallEntry struct {
@@ -695,17 +696,20 @@ func (m *interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case responseMsg:
 		m.mu.Lock()
-		m.waiting = false
-		for i := len(m.messages) - 1; i >= 0; i-- {
-			if m.messages[i].role == "assistant" && m.messages[i].isLoading {
-				// Only update content if it's empty (llm_final might have already set it)
-				if m.messages[i].content == "" {
-					m.messages[i].content = msg.content
+		// Skip if final response already received (llm_final already handled it)
+		if !m.responseReceived {
+			m.waiting = false
+			for i := len(m.messages) - 1; i >= 0; i-- {
+				if m.messages[i].role == "assistant" && m.messages[i].isLoading {
+					// Only update content if it's empty (llm_final might have already set it)
+					if m.messages[i].content == "" {
+						m.messages[i].content = msg.content
+					}
+					// Set reasoning from response (overrides llm_final's reasoning which might have been partial)
+					m.messages[i].streamingReasoning = msg.reasoning
+					m.messages[i].isLoading = false
+					break
 				}
-				// Set reasoning from response (overrides llm_final's reasoning which might have been partial)
-				m.messages[i].streamingReasoning = msg.reasoning
-				m.messages[i].isLoading = false
-				break
 			}
 		}
 		m.mu.Unlock()
@@ -777,6 +781,7 @@ func (m *interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				case "llm_stream_end":
 					// Stream ended
 				case "llm_final":
+					m.responseReceived = true
 					if data, ok := msg.ev.Data["data"].(bus.LLMFinalData); ok {
 						entry.content = data.Content
 						entry.streamingReasoning = data.ReasoningContent
@@ -874,6 +879,7 @@ func (m *interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.messages = append(m.messages, conversationEntry{role: "user", content: userInput})
 			m.messages = append(m.messages, conversationEntry{role: "assistant", content: "", isLoading: true})
 			m.waiting = true
+			m.responseReceived = false
 			m.spinnerIdx = 0
 			m.mu.Unlock()
 
