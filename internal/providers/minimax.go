@@ -473,7 +473,13 @@ func (p *MinimaxProvider) StreamGenerate(ctx context.Context, messages []Message
 						}
 					case "thinking_delta":
 						if thinking, ok := delta["thinking"].(string); ok {
-							fullText += thinking
+							// thinking_delta received
+							ch <- StreamResponse{Chunk: thinking, Done: false, IsReasoning: true}
+						}
+					case "thinking":
+						// Direct thinking content block (not delta)
+						if thinking, ok := delta["thinking"].(string); ok {
+							// thinking block received
 							ch <- StreamResponse{Chunk: thinking, Done: false, IsReasoning: true}
 						}
 					}

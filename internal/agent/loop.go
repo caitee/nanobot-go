@@ -353,9 +353,14 @@ func (al *AgentLoop) processMessage(ctx context.Context, inbound bus.InboundMess
 
 		if len(resp.ToolCalls) == 0 {
 			// Final response - no tools. Now mark as done.
+			// If reasoningText is empty (thinking wasn't streamed), use resp.ReasoningContent
+			finalReasoning := reasoningText
+			if finalReasoning == "" && resp.ReasoningContent != "" {
+				finalReasoning = resp.ReasoningContent
+			}
 			al.publishAgentEvent(sessionKey, EventLLMFinal, bus.LLMFinalData{
 				Content:          resp.Content,
-				ReasoningContent: reasoningText,
+				ReasoningContent: finalReasoning,
 			})
 			sess.Messages = append(sess.Messages, session.Message{
 				Role:    "assistant",
