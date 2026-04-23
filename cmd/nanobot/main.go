@@ -533,8 +533,9 @@ func runAgentSingle(ctx context.Context, agentLoop *agent.AgentLoop, sessionStor
 
 	messageBus.PublishInbound(inbound)
 
-	// Wait for response
+	// Wait for response and print streaming events as they arrive
 	for msg := range messageBus.ConsumeOutbound() {
+		// For single message mode, just print and exit
 		fmt.Println()
 		fmt.Println(assistantLabelStyle.Render("nanobot:"))
 		fmt.Println()
@@ -615,7 +616,8 @@ var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "�
 type spinnerTickMsg struct{}
 
 type responseMsg struct {
-	content string
+	content   string
+	reasoning string
 }
 
 type toolEventMsg struct {
@@ -661,7 +663,7 @@ func (m *interactiveModel) pollEvents() tea.Cmd {
 			if !ok {
 				return nil
 			}
-			return responseMsg{content: resp.Content}
+			return responseMsg{content: resp.Content, reasoning: resp.Reasoning}
 		case <-m.done:
 			return nil
 		case <-time.After(50 * time.Millisecond):
@@ -696,7 +698,12 @@ func (m *interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.waiting = false
 		for i := len(m.messages) - 1; i >= 0; i-- {
 			if m.messages[i].role == "assistant" && m.messages[i].isLoading {
-				m.messages[i].content = msg.content
+				// Only update content if it's empty (llm_final might have already set it)
+				if m.messages[i].content == "" {
+					m.messages[i].content = msg.content
+				}
+				// Set reasoning from response (overrides llm_final's reasoning which might have been partial)
+				m.messages[i].streamingReasoning = msg.reasoning
 				m.messages[i].isLoading = false
 				break
 			}
