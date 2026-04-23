@@ -994,9 +994,8 @@ func (m *interactiveModel) View() string {
 			// Show main content or thinking spinner
 			if msg.isLoading {
 				if msg.streamingText != "" {
-					// Streaming: show with reasoning marker
-					s.WriteString("[思考中...]\n")
-					s.WriteString(msg.streamingText)
+					// Streaming reasoning: render in gray with cursor
+					s.WriteString(reasoningStyle.Render(msg.streamingText))
 					s.WriteString("█\n")
 				} else {
 					// Thinking state with spinner
@@ -1052,6 +1051,19 @@ func (m *interactiveModel) View() string {
 						if len(answerLines) > 0 {
 							s.WriteString(strings.Join(answerLines, "\n"))
 							s.WriteString("\n")
+						} else if len(reasoningLines) > 0 {
+							// No clear answer marker found - assume last 25% is the answer
+							total := len(reasoningLines)
+							answerStart := int(float64(total) * 0.75)
+							if answerStart < total-1 {
+								// Render reasoning portion in gray
+								s.WriteString("\n")
+								s.WriteString(reasoningStyle.Render(strings.Join(reasoningLines[:answerStart], "\n")))
+								s.WriteString("\n")
+								// Answer portion in default color (white)
+								s.WriteString(strings.Join(reasoningLines[answerStart:], "\n"))
+								s.WriteString("\n")
+							}
 						}
 					} else {
 						s.WriteString(content)
