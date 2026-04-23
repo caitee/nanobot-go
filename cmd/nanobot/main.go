@@ -24,6 +24,8 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/glamour"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
 )
 
@@ -38,6 +40,53 @@ var (
    |_| |_|
   AI Assistant
 `
+)
+
+// Lipgloss styles for enhanced TUI
+var (
+	spinnerStyle = lipgloss.NewStyle().
+		Foreground(lipgloss.Color("86")).Bold(true)
+
+	userPromptStyle = lipgloss.NewStyle().
+		Foreground(lipgloss.Color("75")).Bold(true)
+
+	assistantLabelStyle = lipgloss.NewStyle().
+		Foreground(lipgloss.Color("130")).Bold(true)
+
+	toolEntryStyle = lipgloss.NewStyle().
+		Foreground(lipgloss.Color("240"))
+
+	toolRunningStyle = lipgloss.NewStyle().
+		Foreground(lipgloss.Color("75"))
+
+	toolDoneStyle = lipgloss.NewStyle().
+		Foreground(lipgloss.Color("76"))
+
+	toolErrorStyle = lipgloss.NewStyle().
+		Foreground(lipgloss.Color("196"))
+
+	toolIconStyle = lipgloss.NewStyle().
+		Bold(true)
+
+	toolArgsStyle = lipgloss.NewStyle().
+		Foreground(lipgloss.Color("245")).
+		Italic(true)
+
+	toolDurationStyle = lipgloss.NewStyle().
+		Foreground(lipgloss.Color("245"))
+
+	contentStyle = lipgloss.NewStyle().
+		Foreground(lipgloss.Color("white"))
+
+	streamingCursorStyle = lipgloss.NewStyle().
+		Foreground(lipgloss.Color("86")).
+		Bold(true)
+
+	inputStyle = lipgloss.NewStyle().
+		Foreground(lipgloss.Color("252"))
+
+	borderStyle = lipgloss.NewStyle().
+		Foreground(lipgloss.Color("240"))
 )
 
 // ============================================================================
@@ -484,9 +533,15 @@ func runAgentSingle(ctx context.Context, agentLoop *agent.AgentLoop, sessionStor
 	// Wait for response
 	for msg := range messageBus.ConsumeOutbound() {
 		fmt.Println()
-		fmt.Println("nanobot:")
+		fmt.Println(assistantLabelStyle.Render("nanobot:"))
+		fmt.Println()
 		if agentMarkdownFlag {
-			fmt.Println(msg.Content)
+			rendered, err := renderMarkdown(msg.Content)
+			if err == nil {
+				fmt.Println(rendered)
+			} else {
+				fmt.Println(msg.Content)
+			}
 		} else {
 			fmt.Println(msg.Content)
 		}
@@ -858,77 +913,167 @@ func formatDuration(ms int64) string {
 	return fmt.Sprintf("%.1fm", float64(ms)/60000)
 }
 
+// renderMarkdown renders markdown content with glamour
+func renderMarkdown(content string) (string, error) {
+	renderer, err := glamour.NewTermRenderer(
+		glamour.WithAutoStyle(),
+		glamour.WithWordWrap(60),
+	)
+	if err != nil {
+		return content, err
+	}
+	return renderer.Render(content)
+}
+
 func (m *interactiveModel) View() string {
 	if m.quitting {
-		return "\nGoodbye!\n"
+		return "\n\n" + lipgloss.NewStyle().
+			Foreground(lipgloss.Color("245")).
+			Render("Goodbye!\n")
 	}
+
 	var s strings.Builder
 	m.mu.Lock()
+
+	// Draw separator line
+	separator := borderStyle.Render(strings.Repeat("─", min(60, getTerminalWidth())))
+
 	for _, msg := range m.messages {
 		if msg.role == "user" {
-			s.WriteString("\nYou: ")
+			s.WriteString("\n")
+			s.WriteString(userPromptStyle.Render("You:") + " ")
 			s.WriteString(msg.content)
 			s.WriteString("\n")
 		} else {
-			s.WriteString("\nnanobot:\n")
+			s.WriteString("\n")
+			s.WriteString(separator)
+			s.WriteString("\n")
+			s.WriteString(assistantLabelStyle.Render("nanobot") + "\n")
+
 			// Show tool calls first (if any)
 			if len(msg.toolCalls) > 0 {
+				s.WriteString("\n")
 				for _, tc := range msg.toolCalls {
-					icon := "⚙️ "
-					statusText := ""
-					if tc.status == "done" {
-						icon = "✅ "
+					var icon, statusText string
+					var iconStyle lipgloss.Style
+
+					switch tc.status {
+					case "done":
+						icon = "✓"
 						statusText = fmt.Sprintf(" • %s", formatDuration(tc.durationMs))
-					} else if tc.status == "error" {
-						icon = "❌ "
+						iconStyle = toolDoneStyle
+					case "error":
+						icon = "✗"
 						if tc.durationMs > 0 {
 							statusText = fmt.Sprintf(" • %s", formatDuration(tc.durationMs))
 						}
-					} else if tc.status == "running" {
-						icon = "🔄 "
-					} else {
-						icon = "⏳ "
+						iconStyle = toolErrorStyle
+					case "running":
+						icon = spinnerFrames[m.spinnerIdx]
+						statusText = " running..."
+						iconStyle = toolRunningStyle
+					default:
+						icon = "○"
+						statusText = " pending"
+						iconStyle = toolEntryStyle
 					}
-					// Tool name line with status
-					s.WriteString(fmt.Sprintf("  %s%s%s\n", icon, tc.name, statusText))
 
-					// Show args (collapsed by default, single line preview)
+					// Tool entry with styled icon and name
+					s.WriteString("  ")
+					s.WriteString(iconStyle.Render(icon) + " ")
+					s.WriteString(toolEntryStyle.Render(tc.name))
+					s.WriteString(toolDurationStyle.Render(statusText))
+					s.WriteString("\n")
+
+					// Show args (collapsed by default)
 					if tc.args != "" {
 						argsLines := strings.Split(tc.args, "\n")
 						if len(argsLines) > 1 {
 							// Multi-line args - show preview
-							s.WriteString(fmt.Sprintf("    Args: %s... (expand with →)\n", strings.TrimSpace(argsLines[0])))
+							s.WriteString(toolArgsStyle.Render(fmt.Sprintf("    ┌ Args: %s ...", strings.TrimSpace(argsLines[0]))))
+							s.WriteString("\n")
 						} else {
 							// Single line args
-							s.WriteString(fmt.Sprintf("    Args: %s\n", argsLines[0]))
+							s.WriteString(toolArgsStyle.Render(fmt.Sprintf("    └ %s", strings.TrimSpace(argsLines[0]))))
+							s.WriteString("\n")
 						}
 					}
 
 					// Show error if failed
 					if tc.status == "error" && tc.result != "" {
-						s.WriteString(fmt.Sprintf("    Error: %s\n", tc.result))
+						s.WriteString("    ")
+						s.WriteString(toolErrorStyle.Render("✗ Error: ") + tc.result + "\n")
 					}
 				}
 				s.WriteString("\n")
 			}
+
 			// Show main content or thinking spinner
 			if msg.isLoading {
 				if msg.streamingText != "" {
-					// Show streaming content with cursor (no spinner - content is flowing)
-					s.WriteString(fmt.Sprintf("  %s█\n", msg.streamingText))
+					// Streaming content with animated cursor
+					s.WriteString(contentStyle.Render(msg.streamingText))
+					s.WriteString(streamingCursorStyle.Render("▊"))
+					s.WriteString("\n")
 				} else {
-					s.WriteString(fmt.Sprintf("  %s Thinking...\n", spinnerFrames[m.spinnerIdx]))
+					// Thinking state with spinner
+					s.WriteString(spinnerStyle.Render(spinnerFrames[m.spinnerIdx]) + " ")
+					s.WriteString(contentStyle.Render("Thinking...") + "\n")
 				}
 			} else {
-				s.WriteString(msg.content)
+				// Final content - render as markdown for better display
+				rendered, err := renderMarkdown(msg.content)
+				if err == nil {
+					s.WriteString(rendered)
+				} else {
+					s.WriteString(contentStyle.Render(msg.content))
+				}
 				s.WriteString("\n")
 			}
 		}
 	}
 	m.mu.Unlock()
-	s.WriteString(m.textInput.View())
+
+	// Footer separator
+	s.WriteString(separator)
 	s.WriteString("\n")
+
+	// Input field with styled prompt
+	// inputView uses native text input rendering
+	if m.waiting {
+		s.WriteString(waitingStyle.Render("> waiting for response..."))
+		s.WriteString("\n\n")
+	}
+	s.WriteString(inputStyle.Render("➤ ") + m.textInput.Cursor.Style.Render(""))
+	s.WriteString(" ")
+	s.WriteString(m.textInput.Value())
+	s.WriteString("\n")
+
 	return s.String()
+}
+
+// waitingStyle for waiting indicator
+var waitingStyle = lipgloss.NewStyle().
+	Foreground(lipgloss.Color("245")).
+	Italic(true)
+
+// getTerminalWidth returns a reasonable terminal width (fallback to 60)
+func getTerminalWidth() int {
+	// Try to get from environment or use default
+	if w := os.Getenv("COLUMNS"); w != "" {
+		var cw int
+		if _, err := fmt.Sscanf(w, "%d", &cw); err == nil && cw > 0 {
+			return cw
+		}
+	}
+	return 60
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // ============================================================================
