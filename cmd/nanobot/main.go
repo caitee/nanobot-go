@@ -1017,6 +1017,13 @@ func (m *interactiveModel) View() string {
 				// Final content - render reasoning in gray, answer in white
 				content := msg.content
 
+
+				// If we have separate reasoning content (from streaming), render it first
+				if msg.streamingReasoning != "" {
+					s.WriteString(reasoningStyle.Render(msg.streamingReasoning))
+					s.WriteString("\n")
+				}
+
 				// Check if the LLM already used --- markers
 				reasoningStart := strings.Index(content, "--- Reasoning ---")
 				reasoningEnd := strings.LastIndex(content, "---")
