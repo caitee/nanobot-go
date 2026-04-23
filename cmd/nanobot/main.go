@@ -990,19 +990,48 @@ func (m *interactiveModel) View() string {
 			// Show main content or thinking spinner
 			if msg.isLoading {
 				if msg.streamingText != "" {
-					// Plain streaming text without styling (avoid escape issues)
+					// Streaming: show with reasoning marker
+					s.WriteString("[思考中...]\n")
 					s.WriteString(msg.streamingText)
-					s.WriteString("█") // cursor
-					s.WriteString("\n")
+					s.WriteString("█\n")
 				} else {
 					// Thinking state with spinner
 					s.WriteString(spinnerFrames[m.spinnerIdx])
 					s.WriteString(" Thinking...\n")
 				}
 			} else {
-				// Final content - plain text for stability
-				s.WriteString(msg.content)
-				s.WriteString("\n")
+				// Final content - check if there's reasoning embedded
+				content := msg.content
+				lines := strings.Split(content, "\n")
+				if len(lines) > 1 {
+					// Multi-line: try to separate reasoning from answer
+					s.WriteString("\n--- Reasoning ---\n")
+					for i, line := range lines {
+						lower := strings.ToLower(line)
+						// Check if this line starts the final answer
+						if strings.HasPrefix(line, "##") || strings.HasPrefix(line, "**") ||
+							strings.Contains(lower, "final answer") || strings.Contains(lower, "最终答案") ||
+							strings.Contains(lower, "回答:") || strings.Contains(lower, "reply:") ||
+							(strings.Contains(lower, "答案") && i > len(lines)/2) {
+							s.WriteString("---\n\n")
+							s.WriteString(line)
+							s.WriteString("\n")
+							i++
+							for ; i < len(lines); i++ {
+								s.WriteString(lines[i])
+								s.WriteString("\n")
+							}
+							s.WriteString("\n")
+							return s.String()
+						}
+						s.WriteString(line)
+						s.WriteString("\n")
+					}
+					s.WriteString("---\n\n")
+				} else {
+					s.WriteString(content)
+					s.WriteString("\n")
+				}
 			}
 		}
 	}
