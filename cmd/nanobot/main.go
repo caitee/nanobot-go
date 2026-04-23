@@ -1002,35 +1002,63 @@ func (m *interactiveModel) View() string {
 			} else {
 				// Final content - check if there's reasoning embedded
 				content := msg.content
-				lines := strings.Split(content, "\n")
-				if len(lines) > 1 {
-					// Multi-line: try to separate reasoning from answer
-					s.WriteString("\n--- Reasoning ---\n")
-					for i, line := range lines {
-						lower := strings.ToLower(line)
-						// Check if this line starts the final answer
-						if strings.HasPrefix(line, "##") || strings.HasPrefix(line, "**") ||
-							strings.Contains(lower, "final answer") || strings.Contains(lower, "最终答案") ||
-							strings.Contains(lower, "回答:") || strings.Contains(lower, "reply:") ||
-							(strings.Contains(lower, "答案") && i > len(lines)/2) {
-							s.WriteString("---\n\n")
-							s.WriteString(line)
-							s.WriteString("\n")
-							i++
-							for ; i < len(lines); i++ {
-								s.WriteString(lines[i])
-								s.WriteString("\n")
-							}
-							s.WriteString("\n")
-							return s.String()
-						}
-						s.WriteString(line)
+
+				// Check if the LLM already used --- markers (from model-generated reasoning)
+				reasoningStart := strings.Index(content, "--- Reasoning ---")
+				reasoningEnd := strings.LastIndex(content, "---")
+
+				if reasoningStart >= 0 && reasoningEnd > reasoningStart {
+					// LLM used its own --- markers
+					before := content[:reasoningStart]
+					reasoningBlock := content[reasoningStart+len("--- Reasoning ---"):reasoningEnd]
+					after := content[reasoningEnd+len("---"):]
+
+					// Show before (if any) as user prompt style
+					if before != "" {
+						s.WriteString("\n")
+						s.WriteString(before)
 						s.WriteString("\n")
 					}
-					s.WriteString("---\n\n")
-				} else {
-					s.WriteString(content)
+
+					s.WriteString("\n--- Reasoning ---")
+					s.WriteString(reasoningBlock)
+					s.WriteString("---")
+
+					if after != "" {
+						s.WriteString("\n\n")
+						s.WriteString(strings.TrimSpace(after))
+					}
 					s.WriteString("\n")
+				} else {
+					// No explicit markers, try heuristic detection
+					lines := strings.Split(content, "\n")
+					if len(lines) > 1 {
+						s.WriteString("\n--- Reasoning ---\n")
+						for i, line := range lines {
+							lower := strings.ToLower(line)
+							if strings.HasPrefix(line, "##") || strings.HasPrefix(line, "**") ||
+								strings.Contains(lower, "final answer") || strings.Contains(lower, "最终答案") ||
+								strings.Contains(lower, "回答:") || strings.Contains(lower, "reply:") ||
+								(strings.Contains(lower, "答案") && i > len(lines)/2) {
+								s.WriteString("---\n\n")
+								s.WriteString(line)
+								s.WriteString("\n")
+								i++
+								for ; i < len(lines); i++ {
+									s.WriteString(lines[i])
+									s.WriteString("\n")
+								}
+								s.WriteString("\n")
+								return s.String()
+							}
+							s.WriteString(line)
+							s.WriteString("\n")
+						}
+						s.WriteString("---\n\n")
+					} else {
+						s.WriteString(content)
+						s.WriteString("\n")
+					}
 				}
 			}
 		}
