@@ -78,7 +78,8 @@ var (
 		Foreground(lipgloss.Color("white"))
 
 	reasoningStyle = lipgloss.NewStyle().
-		Foreground(lipgloss.Color("245"))
+		Foreground(lipgloss.Color("238")).
+		Italic(true)
 
 	streamingCursorStyle = lipgloss.NewStyle().
 		Foreground(lipgloss.Color("86")).
