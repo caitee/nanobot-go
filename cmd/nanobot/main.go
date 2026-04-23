@@ -24,7 +24,6 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
 )
@@ -535,16 +534,7 @@ func runAgentSingle(ctx context.Context, agentLoop *agent.AgentLoop, sessionStor
 		fmt.Println()
 		fmt.Println(assistantLabelStyle.Render("nanobot:"))
 		fmt.Println()
-		if agentMarkdownFlag {
-			rendered, err := renderMarkdown(msg.Content)
-			if err == nil {
-				fmt.Println(rendered)
-			} else {
-				fmt.Println(msg.Content)
-			}
-		} else {
-			fmt.Println(msg.Content)
-		}
+		fmt.Println(msg.Content)
 		break
 	}
 }
@@ -913,17 +903,6 @@ func formatDuration(ms int64) string {
 	return fmt.Sprintf("%.1fm", float64(ms)/60000)
 }
 
-// renderMarkdown renders markdown content with glamour
-func renderMarkdown(content string) (string, error) {
-	renderer, err := glamour.NewTermRenderer(
-		glamour.WithAutoStyle(),
-		glamour.WithWordWrap(60),
-	)
-	if err != nil {
-		return content, err
-	}
-	return renderer.Render(content)
-}
 
 func (m *interactiveModel) View() string {
 	if m.quitting {
@@ -1011,23 +990,18 @@ func (m *interactiveModel) View() string {
 			// Show main content or thinking spinner
 			if msg.isLoading {
 				if msg.streamingText != "" {
-					// Streaming content with animated cursor
-					s.WriteString(contentStyle.Render(msg.streamingText))
-					s.WriteString(streamingCursorStyle.Render("▊"))
+					// Plain streaming text without styling (avoid escape issues)
+					s.WriteString(msg.streamingText)
+					s.WriteString("█") // cursor
 					s.WriteString("\n")
 				} else {
 					// Thinking state with spinner
-					s.WriteString(spinnerStyle.Render(spinnerFrames[m.spinnerIdx]) + " ")
-					s.WriteString(contentStyle.Render("Thinking...") + "\n")
+					s.WriteString(spinnerFrames[m.spinnerIdx])
+					s.WriteString(" Thinking...\n")
 				}
 			} else {
-				// Final content - render as markdown for better display
-				rendered, err := renderMarkdown(msg.content)
-				if err == nil {
-					s.WriteString(rendered)
-				} else {
-					s.WriteString(contentStyle.Render(msg.content))
-				}
+				// Final content - plain text for stability
+				s.WriteString(msg.content)
 				s.WriteString("\n")
 			}
 		}
