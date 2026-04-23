@@ -1039,14 +1039,12 @@ func (m *interactiveModel) View() string {
 	s.WriteString("\n")
 
 	// Input field with styled prompt
-	// inputView uses native text input rendering
 	if m.waiting {
 		s.WriteString(waitingStyle.Render("> waiting for response..."))
 		s.WriteString("\n\n")
 	}
-	s.WriteString(inputStyle.Render("➤ ") + m.textInput.Cursor.Style.Render(""))
-	s.WriteString(" ")
-	s.WriteString(m.textInput.Value())
+	// Use the text input's native View for proper rendering
+	s.WriteString(m.textInput.View())
 	s.WriteString("\n")
 
 	return s.String()
