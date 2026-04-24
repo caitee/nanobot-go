@@ -135,6 +135,12 @@ func (p *MinimaxProvider) Chat(ctx context.Context, messages []Message, tools []
 		reqBody["temperature"] = opts.Temperature
 	}
 
+	// Enable extended thinking/thinking blocks
+	if opts.ReasoningEffort != "" {
+		reqBody["thinking_effort"] = opts.ReasoningEffort
+	} else {
+		reqBody["thinking_effort"] = "low"
+	}
 	if len(tools) > 0 {
 		// Transform tools to MiniMax/Anthropic format
 		validTools := make([]map[string]any, 0, len(tools))
@@ -352,6 +358,13 @@ func (p *MinimaxProvider) StreamGenerate(ctx context.Context, messages []Message
 
 		if opts.Temperature > 0 {
 			reqBody["temperature"] = opts.Temperature
+		}
+
+		// Enable extended thinking/thinking blocks streaming
+		if opts.ReasoningEffort != "" {
+			reqBody["thinking_effort"] = opts.ReasoningEffort
+		} else {
+			reqBody["thinking_effort"] = "low"
 		}
 
 		if len(tools) > 0 {

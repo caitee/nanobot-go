@@ -305,11 +305,14 @@ func (al *AgentLoop) processMessage(ctx context.Context, inbound bus.InboundMess
 				return nil, nil
 			}
 			if chunk.Chunk != "" {
+				typeLabel := "TEXT"
 				if chunk.IsReasoning {
+					typeLabel = "REASONING"
 					reasoningText += chunk.Chunk
 				} else {
 					fullText += chunk.Chunk
 				}
+				slog.Info("stream chunk", "type", typeLabel, "chunk", chunk.Chunk, "fullTextLen", len(fullText), "reasoningLen", len(reasoningText))
 				al.publishAgentEvent(sessionKey, EventLLMStreamChunk, bus.StreamChunkData{
 					Delta:       chunk.Chunk,
 					FullText:    fullText,
@@ -358,6 +361,7 @@ func (al *AgentLoop) processMessage(ctx context.Context, inbound bus.InboundMess
 			if finalReasoning == "" && resp.ReasoningContent != "" {
 				finalReasoning = resp.ReasoningContent
 			}
+			slog.Info("llm_final event", "contentLen", len(resp.Content), "reasoningLen", len(finalReasoning), "reasoningTextEmpty", reasoningText == "", "respReasoningEmpty", resp.ReasoningContent == "")
 			al.publishAgentEvent(sessionKey, EventLLMFinal, bus.LLMFinalData{
 				Content:          resp.Content,
 				ReasoningContent: finalReasoning,
