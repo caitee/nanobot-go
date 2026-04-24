@@ -580,10 +580,9 @@ func runAgentInteractive(ctx context.Context, agentLoop *agent.AgentLoop, sessio
 type interactiveModel struct {
 	textInput        textinput.Model
 	messageBus       bus.MessageBus
-	sessionKey        string
+	sessionKey       string
 	chatID           string
 	waiting          bool
-	messages         []conversationEntry
 	quitting         bool
 	done             chan struct{}
 	mu               sync.Mutex
@@ -591,10 +590,12 @@ type interactiveModel struct {
 	toolEventCh      <-chan bus.ToolEvent
 	agentEventCh     <-chan bus.AgentEvent
 	outboundCh       <-chan bus.OutboundMessage
-	responseReceived bool   // Track if final response has been received
-	scrollOffset     int    // For scrolling through message history
-	viewportHeight   int    // Terminal height for scroll calculations
-	sessionPath      string // Path to session directory for persistence
+	responseReceived bool
+
+	active          bool
+	toolCalls       []toolCallEntry
+	streamText      string
+	streamReasoning string
 }
 
 type toolCallEntry struct {
@@ -604,15 +605,6 @@ type toolCallEntry struct {
 	result       string
 	durationMs   int64
 	expanded     bool
-}
-
-type conversationEntry struct {
-	role              string
-	content           string
-	toolCalls         []toolCallEntry
-	isLoading         bool
-	streamingText     string
-	streamingReasoning string // Reasoning content streamed separately
 }
 
 var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
@@ -640,62 +632,15 @@ func newInteractiveModel(messageBus bus.MessageBus, sessionKey, chatID string) *
 	ti.Focus()
 	ti.Prompt = "You: "
 
-	// Build session path for message persistence
-	home, _ := os.UserHomeDir()
-	sessionPath := filepath.Join(home, ".nanobot", "sessions", sessionKey)
-
-	m := &interactiveModel{
-		textInput:    ti,
-		messageBus:   messageBus,
-		sessionKey:   sessionKey,
-		chatID:       chatID,
-		done:         make(chan struct{}),
-		toolEventCh:  messageBus.SubscribeToolEvents(),
+	return &interactiveModel{
+		textInput:   ti,
+		messageBus:  messageBus,
+		sessionKey:  sessionKey,
+		chatID:      chatID,
+		done:        make(chan struct{}),
+		toolEventCh: messageBus.SubscribeToolEvents(),
 		agentEventCh: messageBus.SubscribeAgentEvents(),
-		outboundCh:   messageBus.ConsumeOutbound(),
-		scrollOffset: 0,
-		viewportHeight: 40, // Default, will be updated by tea.WindowSizeMsg
-		sessionPath:  sessionPath,
-	}
-
-	// Load persisted messages if available
-	m.loadMessages()
-
-	return m
-}
-
-// loadMessages loads persisted conversation history from disk
-func (m *interactiveModel) loadMessages() {
-	if m.sessionPath == "" {
-		return
-	}
-	msgFile := filepath.Join(m.sessionPath, "messages.json")
-	data, err := os.ReadFile(msgFile)
-	if err != nil {
-		return // No persisted messages yet
-	}
-	if err := json.Unmarshal(data, &m.messages); err != nil {
-		slog.Warn("failed to load messages", "error", err)
-	}
-}
-
-// saveMessages persists conversation history to disk
-func (m *interactiveModel) saveMessages() {
-	if m.sessionPath == "" {
-		return
-	}
-	if err := os.MkdirAll(m.sessionPath, 0755); err != nil {
-		slog.Warn("failed to create session dir", "error", err)
-		return
-	}
-	msgFile := filepath.Join(m.sessionPath, "messages.json")
-	data, err := json.MarshalIndent(m.messages, "", "  ")
-	if err != nil {
-		slog.Warn("failed to marshal messages", "error", err)
-		return
-	}
-	if err := os.WriteFile(msgFile, data, 0644); err != nil {
-		slog.Warn("failed to save messages", "error", err)
+		outboundCh:  messageBus.ConsumeOutbound(),
 	}
 }
 
@@ -732,11 +677,7 @@ func (m *interactiveModel) tickSpinner() tea.Cmd {
 
 func (m *interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
-	case tea.WindowSizeMsg:
-		// Update viewport height for scrolling
-		m.viewportHeight = msg.Height
 	case pollTickMsg:
-		// Keep polling for events
 		return m, m.pollEvents()
 
 	case spinnerTickMsg:
@@ -749,57 +690,43 @@ func (m *interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case responseMsg:
 		m.mu.Lock()
-		// Skip if final response already received (llm_final already handled it)
-		if !m.responseReceived {
+		alreadyReceived := m.responseReceived
+		if !alreadyReceived {
 			m.waiting = false
-			for i := len(m.messages) - 1; i >= 0; i-- {
-				if m.messages[i].role == "assistant" && m.messages[i].isLoading {
-					// Only update content if it's empty (llm_final might have already set it)
-					if m.messages[i].content == "" {
-						m.messages[i].content = msg.content
-					}
-					// Set reasoning from response (overrides llm_final's reasoning which might have been partial)
-					m.messages[i].streamingReasoning = msg.reasoning
-					m.messages[i].isLoading = false
-					m.saveMessages() // Persist on response
-					break
-				}
-			}
+			m.active = false
 		}
 		m.mu.Unlock()
+		if !alreadyReceived {
+			tcs := m.toolCalls
+			m.clearActiveState()
+			output := formatAssistantMessage(tcs, msg.content, msg.reasoning)
+			return m, tea.Batch(m.pollEvents(), tea.Println(output))
+		}
 		return m, m.pollEvents()
 
 	case toolEventMsg:
 		m.mu.Lock()
-		if msg.ev.SessionKey == m.sessionKey {
-			for i := len(m.messages) - 1; i >= 0; i-- {
-				if m.messages[i].role == "assistant" && m.messages[i].isLoading {
-					entry := &m.messages[i]
-					switch msg.ev.Type {
-					case "tool_start":
-						entry.toolCalls = append(entry.toolCalls, toolCallEntry{
-							name:   msg.ev.ToolName,
-							args:   msg.ev.Args,
-							status: "running",
-						})
-					case "tool_end":
-						for j := range entry.toolCalls {
-							if entry.toolCalls[j].name == msg.ev.ToolName {
-								entry.toolCalls[j].status = "done"
-								entry.toolCalls[j].result = msg.ev.Result
-								break
-							}
-						}
-					case "tool_error":
-						for j := range entry.toolCalls {
-							if entry.toolCalls[j].name == msg.ev.ToolName {
-								entry.toolCalls[j].status = "error"
-								entry.toolCalls[j].result = msg.ev.Result
-								break
-							}
-						}
+		if msg.ev.SessionKey == m.sessionKey && m.active {
+			switch msg.ev.Type {
+			case "tool_start":
+				m.toolCalls = append(m.toolCalls, toolCallEntry{
+					name: msg.ev.ToolName, args: msg.ev.Args, status: "running",
+				})
+			case "tool_end":
+				for j := range m.toolCalls {
+					if m.toolCalls[j].name == msg.ev.ToolName {
+						m.toolCalls[j].status = "done"
+						m.toolCalls[j].result = msg.ev.Result
+						break
 					}
-					break
+				}
+			case "tool_error":
+				for j := range m.toolCalls {
+					if m.toolCalls[j].name == msg.ev.ToolName {
+						m.toolCalls[j].status = "error"
+						m.toolCalls[j].result = msg.ev.Result
+						break
+					}
 				}
 			}
 		}
@@ -808,103 +735,89 @@ func (m *interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case agentEventMsg:
 		m.mu.Lock()
-		if msg.ev.SessionKey == m.sessionKey {
-			var loadingIdx int = -1
-			for i := len(m.messages) - 1; i >= 0; i-- {
-				if m.messages[i].role == "assistant" && m.messages[i].isLoading {
-					loadingIdx = i
-					break
+		if msg.ev.SessionKey == m.sessionKey && m.active {
+			switch msg.ev.Type {
+			case "llm_thinking", "llm_responding":
+				m.streamText = ""
+				m.streamReasoning = ""
+			case "llm_stream_chunk":
+				if data, ok := msg.ev.Data["data"].(bus.StreamChunkData); ok {
+					if data.IsReasoning {
+						m.streamReasoning = data.FullText
+					} else {
+						m.streamText = data.FullText
+					}
 				}
-			}
-			if loadingIdx >= 0 {
-				entry := &m.messages[loadingIdx]
-				switch msg.ev.Type {
-				case "llm_thinking":
-					entry.content = ""
-				case "llm_responding":
-					entry.content = ""
-				case "llm_stream_chunk":
-					if data, ok := msg.ev.Data["data"].(bus.StreamChunkData); ok {
-						if data.IsReasoning {
-							entry.streamingReasoning = data.FullText
-						} else {
-							entry.streamingText = data.FullText
-							entry.content = data.FullText
+			case "llm_final":
+				m.responseReceived = true
+				m.waiting = false
+				m.active = false
+				var content, reasoning string
+				if data, ok := msg.ev.Data["data"].(bus.LLMFinalData); ok {
+					content = data.Content
+					reasoning = data.ReasoningContent
+				}
+				tcs := m.toolCalls
+				m.clearActiveState()
+				m.mu.Unlock()
+				output := formatAssistantMessage(tcs, content, reasoning)
+				return m, tea.Batch(m.pollEvents(), tea.Println(output))
+			case "llm_tool_calls":
+				if data, ok := msg.ev.Data["data"].(bus.ToolCallEventData); ok {
+					for _, tc := range data.ToolCalls {
+						m.toolCalls = append(m.toolCalls, toolCallEntry{
+							name: tc.Name, args: formatArgs(tc.Args), status: "pending",
+						})
+					}
+				}
+			case "tool_start":
+				if data, ok := msg.ev.Data["data"].(bus.ToolCallEventData); ok {
+					for _, tc := range data.ToolCalls {
+						found := false
+						for i := range m.toolCalls {
+							if m.toolCalls[i].name == tc.Name && (m.toolCalls[i].status == "pending" || m.toolCalls[i].status == "") {
+								m.toolCalls[i].status = "running"
+								m.toolCalls[i].args = formatArgs(tc.Args)
+								found = true
+								break
+							}
 						}
-					}
-				case "llm_stream_end":
-					// Stream ended
-				case "llm_final":
-					m.responseReceived = true
-					if data, ok := msg.ev.Data["data"].(bus.LLMFinalData); ok {
-						entry.content = data.Content
-						entry.streamingReasoning = data.ReasoningContent
-					}
-					m.waiting = false
-					entry.isLoading = false
-					m.saveMessages() // Persist on final response
-				case "llm_tool_calls":
-					if data, ok := msg.ev.Data["data"].(bus.ToolCallEventData); ok {
-						for _, tc := range data.ToolCalls {
-							entry.toolCalls = append(entry.toolCalls, toolCallEntry{
-								name:   tc.Name,
-								args:   formatArgs(tc.Args),
-								status: "pending",
+						if !found {
+							m.toolCalls = append(m.toolCalls, toolCallEntry{
+								name: tc.Name, args: formatArgs(tc.Args), status: "running",
 							})
 						}
 					}
-				case "tool_start":
-					if data, ok := msg.ev.Data["data"].(bus.ToolCallEventData); ok {
-						for _, tc := range data.ToolCalls {
-							found := false
-							for i := range entry.toolCalls {
-								if entry.toolCalls[i].name == tc.Name && (entry.toolCalls[i].status == "pending" || entry.toolCalls[i].status == "") {
-									entry.toolCalls[i].status = "running"
-									entry.toolCalls[i].args = formatArgs(tc.Args)
-									found = true
-									break
-								}
-							}
-							if !found {
-								entry.toolCalls = append(entry.toolCalls, toolCallEntry{
-									name:   tc.Name,
-									args:   formatArgs(tc.Args),
-									status: "running",
-								})
-							}
-						}
-					}
-				case "tool_end":
-					if data, ok := msg.ev.Data["data"].(bus.ToolResultEventData); ok {
-						for i := range entry.toolCalls {
-							if entry.toolCalls[i].name == data.ToolName {
-								if data.Success {
-									entry.toolCalls[i].status = "done"
-								} else {
-									entry.toolCalls[i].status = "error"
-									entry.toolCalls[i].result = data.Error
-								}
-								entry.toolCalls[i].durationMs = data.DurationMs
-								break
-							}
-						}
-					}
-				case "tool_error":
-					if data, ok := msg.ev.Data["data"].(bus.ToolResultEventData); ok {
-						for i := range entry.toolCalls {
-							if entry.toolCalls[i].name == data.ToolName {
-								entry.toolCalls[i].status = "error"
-								entry.toolCalls[i].result = data.Error
-								entry.toolCalls[i].durationMs = data.DurationMs
-								break
-							}
-						}
-					}
-				case "session_end":
-					m.waiting = false
-					entry.isLoading = false
-					m.saveMessages() // Persist on session end
 				}
+			case "tool_end":
+				if data, ok := msg.ev.Data["data"].(bus.ToolResultEventData); ok {
+					for i := range m.toolCalls {
+						if m.toolCalls[i].name == data.ToolName {
+							if data.Success {
+								m.toolCalls[i].status = "done"
+							} else {
+								m.toolCalls[i].status = "error"
+								m.toolCalls[i].result = data.Error
+							}
+							m.toolCalls[i].durationMs = data.DurationMs
+							break
+						}
+					}
+				}
+			case "tool_error":
+				if data, ok := msg.ev.Data["data"].(bus.ToolResultEventData); ok {
+					for i := range m.toolCalls {
+						if m.toolCalls[i].name == data.ToolName {
+							m.toolCalls[i].status = "error"
+							m.toolCalls[i].result = data.Error
+							m.toolCalls[i].durationMs = data.DurationMs
+							break
+						}
+					}
+				}
+			case "session_end":
+				m.waiting = false
+				m.active = false
 			}
 		}
 		m.mu.Unlock()
@@ -913,6 +826,11 @@ func (m *interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.Type {
 		case tea.KeyCtrlC, tea.KeyCtrlD:
+			if m.active && (m.streamText != "" || m.streamReasoning != "" || len(m.toolCalls) > 0) {
+				output := formatAssistantMessage(m.toolCalls, m.streamText, m.streamReasoning)
+				m.quitting = true
+				return m, tea.Sequence(tea.Println(output), tea.Quit)
+			}
 			m.quitting = true
 			return m, tea.Quit
 		}
@@ -920,18 +838,6 @@ func (m *interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		switch msg.Type {
-		case tea.KeyUp:
-			// Scroll up in message history
-			if m.scrollOffset < len(m.messages)-1 {
-				m.scrollOffset++
-			}
-			return m, nil
-		case tea.KeyDown:
-			// Scroll down in message history
-			if m.scrollOffset > 0 {
-				m.scrollOffset--
-			}
-			return m, nil
 		case tea.KeyEnter:
 			userInput := strings.TrimSpace(m.textInput.Value())
 			m.textInput.SetValue("")
@@ -944,30 +850,166 @@ func (m *interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.Quit
 			}
 			m.mu.Lock()
-			m.messages = append(m.messages, conversationEntry{role: "user", content: userInput})
-			m.messages = append(m.messages, conversationEntry{role: "assistant", content: "", isLoading: true})
+			m.active = true
 			m.waiting = true
 			m.responseReceived = false
 			m.spinnerIdx = 0
-			m.scrollOffset = 0 // Reset scroll to show latest messages
-			m.saveMessages() // Persist messages
+			m.toolCalls = nil
+			m.streamText = ""
+			m.streamReasoning = ""
 			m.mu.Unlock()
 
-			inbound := bus.InboundMessage{
-				Channel:    "cli",
-				SenderID:   "user",
-				ChatID:     m.chatID,
-				Content:    userInput,
-				SessionKey: m.sessionKey,
-			}
-			m.messageBus.PublishInbound(inbound)
+			m.messageBus.PublishInbound(bus.InboundMessage{
+				Channel: "cli", SenderID: "user", ChatID: m.chatID,
+				Content: userInput, SessionKey: m.sessionKey,
+			})
 
-			return m, m.pollEvents()
+			return m, tea.Batch(
+				m.pollEvents(),
+				tea.Println(userPromptStyle.Render("You:")+" "+userInput),
+			)
 		}
 	}
 	var cmd tea.Cmd
 	m.textInput, cmd = m.textInput.Update(msg)
 	return m, cmd
+}
+
+func (m *interactiveModel) clearActiveState() {
+	m.toolCalls = nil
+	m.streamText = ""
+	m.streamReasoning = ""
+}
+
+// formatAssistantMessage renders a complete assistant response for persistent terminal output.
+func formatAssistantMessage(tcs []toolCallEntry, content, reasoning string) string {
+	var b strings.Builder
+	sep := borderStyle.Render(strings.Repeat("─", min(60, getTerminalWidth())))
+
+	b.WriteString(sep)
+	b.WriteString("\n")
+	b.WriteString(assistantLabelStyle.Render("nanobot"))
+	b.WriteString("\n")
+
+	// Tool calls
+	if len(tcs) > 0 {
+		b.WriteString("\n")
+		for _, tc := range tcs {
+			var icon, statusText string
+			var iconStyle lipgloss.Style
+			switch tc.status {
+			case "done":
+				icon = "✓"
+				statusText = fmt.Sprintf(" • %s", formatDuration(tc.durationMs))
+				iconStyle = toolDoneStyle
+			case "error":
+				icon = "✗"
+				if tc.durationMs > 0 {
+					statusText = fmt.Sprintf(" • %s", formatDuration(tc.durationMs))
+				}
+				iconStyle = toolErrorStyle
+			default:
+				icon = "○"
+				iconStyle = toolEntryStyle
+			}
+			b.WriteString("  ")
+			b.WriteString(iconStyle.Render(icon) + " ")
+			b.WriteString(toolEntryStyle.Render(tc.name))
+			b.WriteString(toolDurationStyle.Render(statusText))
+			b.WriteString("\n")
+			if tc.args != "" {
+				argsLines := strings.Split(tc.args, "\n")
+				if len(argsLines) > 1 {
+					b.WriteString(toolArgsStyle.Render(fmt.Sprintf("    ┌ Args: %s ...", strings.TrimSpace(argsLines[0]))))
+					b.WriteString("\n")
+				} else {
+					b.WriteString(toolArgsStyle.Render(fmt.Sprintf("    └ %s", strings.TrimSpace(argsLines[0]))))
+					b.WriteString("\n")
+				}
+			}
+			if tc.status == "error" && tc.result != "" {
+				b.WriteString("    ")
+				b.WriteString(toolErrorStyle.Render("✗ Error: ") + tc.result + "\n")
+			}
+		}
+		b.WriteString("\n")
+	}
+
+	// Reasoning
+	if reasoning != "" {
+		b.WriteString(reasoningStyle.Render(reasoning))
+		b.WriteString("\n")
+	}
+
+	// Content with reasoning-detection
+	b.WriteString(formatContentWithReasoning(content))
+	b.WriteString("\n")
+	return b.String()
+}
+
+// formatContentWithReasoning splits content into reasoning (gray) and answer (white).
+func formatContentWithReasoning(content string) string {
+	if content == "" {
+		return ""
+	}
+
+	// Check if LLM used --- Reasoning --- markers
+	reasoningStart := strings.Index(content, "--- Reasoning ---")
+	reasoningEnd := strings.LastIndex(content, "---")
+	if reasoningStart >= 0 && reasoningEnd > reasoningStart {
+		reasoningBlock := content[reasoningStart+len("--- Reasoning ---") : reasoningEnd]
+		after := content[reasoningEnd+len("---"):]
+		var b strings.Builder
+		b.WriteString(reasoningStyle.Render(reasoningBlock))
+		if strings.TrimSpace(after) != "" {
+			b.WriteString("\n")
+			b.WriteString(strings.TrimSpace(after))
+		}
+		return b.String()
+	}
+
+	// No markers — try heuristic detection
+	lines := strings.Split(content, "\n")
+	if len(lines) <= 1 {
+		return content
+	}
+
+	var reasoningLines, answerLines []string
+	inReasoning := true
+	for i, line := range lines {
+		lower := strings.ToLower(line)
+		if strings.HasPrefix(line, "##") || strings.HasPrefix(line, "**") ||
+			strings.Contains(lower, "final answer") || strings.Contains(lower, "最终答案") ||
+			strings.Contains(lower, "回答:") || strings.Contains(lower, "reply:") ||
+			(strings.Contains(lower, "答案") && i > len(lines)/2) {
+			inReasoning = false
+		}
+		if inReasoning {
+			reasoningLines = append(reasoningLines, line)
+		} else {
+			answerLines = append(answerLines, line)
+		}
+	}
+
+	var b strings.Builder
+	if len(reasoningLines) > 0 {
+		b.WriteString(reasoningStyle.Render(strings.Join(reasoningLines, "\n")))
+		b.WriteString("\n")
+	}
+	if len(answerLines) > 0 {
+		b.WriteString(strings.Join(answerLines, "\n"))
+	} else if len(reasoningLines) > 0 {
+		// No clear answer marker — treat last 25% as answer
+		total := len(reasoningLines)
+		answerStart := int(float64(total) * 0.75)
+		if answerStart < total-1 {
+			b.WriteString("\n")
+			b.WriteString(reasoningStyle.Render(strings.Join(reasoningLines[:answerStart], "\n")))
+			b.WriteString("\n")
+			b.WriteString(strings.Join(reasoningLines[answerStart:], "\n"))
+		}
+	}
+	return b.String()
 }
 
 // formatArgs formats tool arguments as a pretty-printed string
@@ -1007,213 +1049,88 @@ func (m *interactiveModel) View() string {
 			Render("Goodbye!\n")
 	}
 
+	sep := borderStyle.Render(strings.Repeat("─", min(60, getTerminalWidth())))
 	var s strings.Builder
-	m.mu.Lock()
 
-	// Draw separator line
-	separator := borderStyle.Render(strings.Repeat("─", min(60, getTerminalWidth())))
+	if m.active {
+		s.WriteString(sep)
+		s.WriteString("\n")
+		s.WriteString(assistantLabelStyle.Render("nanobot"))
+		s.WriteString("\n")
 
-	// Scroll indicator at top if scrolled up
-	if m.scrollOffset > 0 {
-		scrollStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Italic(true)
-		s.WriteString(scrollStyle.Render(fmt.Sprintf("↑ %d more messages above (↓ scroll down)", m.scrollOffset)))
-		s.WriteString("\n\n")
-	}
-
-	// Calculate visible message range
-	msgCount := len(m.messages)
-	visibleCount := 15 // Number of message pairs to show at once
-	startIdx := m.scrollOffset
-	endIdx := msgCount
-	if endIdx > startIdx + visibleCount {
-		endIdx = startIdx + visibleCount
-	}
-
-	for i := startIdx; i < endIdx; i++ {
-		msg := m.messages[i]
-		if msg.role == "user" {
+		// Tool calls with live status
+		if len(m.toolCalls) > 0 {
 			s.WriteString("\n")
-			s.WriteString(userPromptStyle.Render("You:") + " ")
-			s.WriteString(msg.content)
+			for _, tc := range m.toolCalls {
+				var icon, statusText string
+				var iconStyle lipgloss.Style
+				switch tc.status {
+				case "done":
+					icon = "✓"
+					statusText = fmt.Sprintf(" • %s", formatDuration(tc.durationMs))
+					iconStyle = toolDoneStyle
+				case "error":
+					icon = "✗"
+					if tc.durationMs > 0 {
+						statusText = fmt.Sprintf(" • %s", formatDuration(tc.durationMs))
+					}
+					iconStyle = toolErrorStyle
+				case "running":
+					icon = spinnerFrames[m.spinnerIdx]
+					statusText = " running..."
+					iconStyle = toolRunningStyle
+				default:
+					icon = "○"
+					statusText = " pending"
+					iconStyle = toolEntryStyle
+				}
+				s.WriteString("  ")
+				s.WriteString(iconStyle.Render(icon) + " ")
+				s.WriteString(toolEntryStyle.Render(tc.name))
+				s.WriteString(toolDurationStyle.Render(statusText))
+				s.WriteString("\n")
+				if tc.args != "" {
+					argsLines := strings.Split(tc.args, "\n")
+					if len(argsLines) > 1 {
+						s.WriteString(toolArgsStyle.Render(fmt.Sprintf("    ┌ Args: %s ...", strings.TrimSpace(argsLines[0]))))
+						s.WriteString("\n")
+					} else {
+						s.WriteString(toolArgsStyle.Render(fmt.Sprintf("    └ %s", strings.TrimSpace(argsLines[0]))))
+						s.WriteString("\n")
+					}
+				}
+				if tc.status == "error" && tc.result != "" {
+					s.WriteString("    ")
+					s.WriteString(toolErrorStyle.Render("✗ Error: ") + tc.result + "\n")
+				}
+			}
+			s.WriteString("\n")
+		}
+
+		// Streaming content
+		if m.streamText != "" || m.streamReasoning != "" {
+			if m.streamReasoning != "" {
+				s.WriteString(reasoningStyle.Render(m.streamReasoning))
+				s.WriteString("\n")
+			}
+			if m.streamText != "" {
+				s.WriteString(m.streamText)
+			}
+			s.WriteString(streamingCursorStyle.Render("█"))
 			s.WriteString("\n")
 		} else {
-			s.WriteString("\n")
-			s.WriteString(separator)
-			s.WriteString("\n")
-			s.WriteString(assistantLabelStyle.Render("nanobot") + "\n")
-
-			// Show tool calls first (if any)
-			if len(msg.toolCalls) > 0 {
-				s.WriteString("\n")
-				for _, tc := range msg.toolCalls {
-					var icon, statusText string
-					var iconStyle lipgloss.Style
-
-					switch tc.status {
-					case "done":
-						icon = "✓"
-						statusText = fmt.Sprintf(" • %s", formatDuration(tc.durationMs))
-						iconStyle = toolDoneStyle
-					case "error":
-						icon = "✗"
-						if tc.durationMs > 0 {
-							statusText = fmt.Sprintf(" • %s", formatDuration(tc.durationMs))
-						}
-						iconStyle = toolErrorStyle
-					case "running":
-						icon = spinnerFrames[m.spinnerIdx]
-						statusText = " running..."
-						iconStyle = toolRunningStyle
-					default:
-						icon = "○"
-						statusText = " pending"
-						iconStyle = toolEntryStyle
-					}
-
-					// Tool entry with styled icon and name
-					s.WriteString("  ")
-					s.WriteString(iconStyle.Render(icon) + " ")
-					s.WriteString(toolEntryStyle.Render(tc.name))
-					s.WriteString(toolDurationStyle.Render(statusText))
-					s.WriteString("\n")
-
-					// Show args (collapsed by default)
-					if tc.args != "" {
-						argsLines := strings.Split(tc.args, "\n")
-						if len(argsLines) > 1 {
-							// Multi-line args - show preview
-							s.WriteString(toolArgsStyle.Render(fmt.Sprintf("    ┌ Args: %s ...", strings.TrimSpace(argsLines[0]))))
-							s.WriteString("\n")
-						} else {
-							// Single line args
-							s.WriteString(toolArgsStyle.Render(fmt.Sprintf("    └ %s", strings.TrimSpace(argsLines[0]))))
-							s.WriteString("\n")
-						}
-					}
-
-					// Show error if failed
-					if tc.status == "error" && tc.result != "" {
-						s.WriteString("    ")
-						s.WriteString(toolErrorStyle.Render("✗ Error: ") + tc.result + "\n")
-					}
-				}
-				s.WriteString("\n")
-			}
-
-			// Show main content or thinking spinner
-			if msg.isLoading {
-				if msg.streamingText != "" || msg.streamingReasoning != "" {
-					// Show reasoning in gray, then final text in white
-					if msg.streamingReasoning != "" {
-						s.WriteString(reasoningStyle.Render(msg.streamingReasoning))
-					}
-					if msg.streamingText != "" {
-						s.WriteString(msg.streamingText)
-					}
-					s.WriteString("█\n")
-				} else {
-					// Thinking state with spinner
-					s.WriteString(spinnerFrames[m.spinnerIdx])
-					s.WriteString(" Thinking...\n")
-				}
-			} else {
-				// Final content - render reasoning in gray, answer in white
-				content := msg.content
-
-
-				// If we have separate reasoning content (from streaming), render it first
-				if msg.streamingReasoning != "" {
-					s.WriteString(reasoningStyle.Render(msg.streamingReasoning))
-					s.WriteString("\n")
-				}
-
-				// Check if the LLM already used --- markers
-				reasoningStart := strings.Index(content, "--- Reasoning ---")
-				reasoningEnd := strings.LastIndex(content, "---")
-
-				if reasoningStart >= 0 && reasoningEnd > reasoningStart {
-					// LLM used its own --- markers
-					reasoningBlock := content[reasoningStart+len("--- Reasoning ---"):reasoningEnd]
-					after := content[reasoningEnd+len("---"):]
-
-					s.WriteString(reasoningStyle.Render(reasoningBlock))
-					if after != "" {
-						s.WriteString("\n")
-						s.WriteString(strings.TrimSpace(after))
-					}
-					s.WriteString("\n")
-				} else {
-					// No explicit markers, try heuristic detection
-					lines := strings.Split(content, "\n")
-					if len(lines) > 1 {
-						var reasoningLines []string
-						var answerLines []string
-						inReasoning := true
-
-						for i, line := range lines {
-							lower := strings.ToLower(line)
-							if strings.HasPrefix(line, "##") || strings.HasPrefix(line, "**") ||
-								strings.Contains(lower, "final answer") || strings.Contains(lower, "最终答案") ||
-								strings.Contains(lower, "回答:") || strings.Contains(lower, "reply:") ||
-								(strings.Contains(lower, "答案") && i > len(lines)/2) {
-								inReasoning = false
-							}
-							if inReasoning {
-								reasoningLines = append(reasoningLines, line)
-							} else {
-								answerLines = append(answerLines, line)
-							}
-						}
-
-						if len(reasoningLines) > 0 {
-							s.WriteString(reasoningStyle.Render(strings.Join(reasoningLines, "\n")))
-							s.WriteString("\n")
-						}
-						if len(answerLines) > 0 {
-							s.WriteString(strings.Join(answerLines, "\n"))
-							s.WriteString("\n")
-						} else if len(reasoningLines) > 0 {
-							// No clear answer marker found - assume last 25% is the answer
-							total := len(reasoningLines)
-							answerStart := int(float64(total) * 0.75)
-							if answerStart < total-1 {
-								// Render reasoning portion in gray
-								s.WriteString("\n")
-								s.WriteString(reasoningStyle.Render(strings.Join(reasoningLines[:answerStart], "\n")))
-								s.WriteString("\n")
-								// Answer portion in default color (white)
-								s.WriteString(strings.Join(reasoningLines[answerStart:], "\n"))
-								s.WriteString("\n")
-							}
-						}
-					} else {
-						s.WriteString(content)
-						s.WriteString("\n")
-					}
-				}
-			}
+			s.WriteString(spinnerStyle.Render(spinnerFrames[m.spinnerIdx]))
+			s.WriteString(" Thinking...\n")
 		}
 	}
 
-	// Scroll indicator at bottom if there are more messages below
-	if len(m.messages) > endIdx {
-		scrollStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Italic(true)
-		s.WriteString("\n")
-		s.WriteString(scrollStyle.Render(fmt.Sprintf("↓ %d more messages below (↑ scroll up)", len(m.messages)-endIdx)))
-	}
-
-	m.mu.Unlock()
-
-	// Footer separator
-	s.WriteString(separator)
+	// Footer
+	s.WriteString(sep)
 	s.WriteString("\n")
-
-	// Input field with styled prompt
 	if m.waiting {
 		s.WriteString(waitingStyle.Render("> waiting for response..."))
 		s.WriteString("\n\n")
 	}
-	// Use the text input's native View for proper rendering
 	s.WriteString(m.textInput.View())
 	s.WriteString("\n")
 

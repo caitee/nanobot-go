@@ -305,17 +305,18 @@ func (al *AgentLoop) processMessage(ctx context.Context, inbound bus.InboundMess
 				return nil, nil
 			}
 			if chunk.Chunk != "" {
-				typeLabel := "TEXT"
+				totalText := fullText
 				if chunk.IsReasoning {
-					typeLabel = "REASONING"
 					reasoningText += chunk.Chunk
+					totalText = reasoningText
 				} else {
 					fullText += chunk.Chunk
+					totalText = fullText
 				}
-				slog.Info("stream chunk", "type", typeLabel, "chunk", chunk.Chunk, "fullTextLen", len(fullText), "reasoningLen", len(reasoningText))
+				slog.Info("stream chunk", "isReasoning", chunk.IsReasoning, "chunk", chunk.Chunk, "fullTextLen", len(fullText), "reasoningLen", len(reasoningText))
 				al.publishAgentEvent(sessionKey, EventLLMStreamChunk, bus.StreamChunkData{
 					Delta:       chunk.Chunk,
-					FullText:    fullText,
+					FullText:    totalText,
 					IsReasoning: chunk.IsReasoning,
 				})
 			}
