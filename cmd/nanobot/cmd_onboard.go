@@ -4,14 +4,147 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/user"
 	"path/filepath"
 
-	"github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/bubbles/textinput"
-	"github.com/charmbracelet/lipgloss"
 	"nanobot-go/internal/config"
+
+	"github.com/spf13/cobra"
+	"os/user"
+
+	"github.com/charmbracelet/bubbles/textinput"
+	"github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
+
+var onboardCmd = &cobra.Command{
+	Use:   "onboard",
+	Short: "Initialize nanobot configuration and workspace",
+	Run:   runOnboard,
+}
+
+var onboardWizardFlag bool
+var onboardWorkspaceFlag string
+var onboardConfigFlag string
+
+func init() {
+	onboardCmd.Flags().BoolVarP(&onboardWizardFlag, "wizard", "w", false, "Use interactive configuration wizard")
+	onboardCmd.Flags().StringVarP(&onboardWorkspaceFlag, "workspace", "", "", "Workspace directory")
+	onboardCmd.Flags().StringVarP(&onboardConfigFlag, "config", "c", "", "Path to config file")
+}
+
+func runOnboard(cmd *cobra.Command, args []string) {
+	configPath := onboardConfigFlag
+	if configPath == "" {
+		homeDir, err := os.UserHomeDir()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error getting home directory: %v\n", err)
+			os.Exit(1)
+		}
+		configPath = filepath.Join(homeDir, ".nanobot", "config.json")
+	}
+
+	configDir := filepath.Dir(configPath)
+	if err := os.MkdirAll(configDir, 0755); err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating config directory: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Run wizard if requested
+	if onboardWizardFlag {
+		_, saved, err := RunWizard()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error running wizard: %v\n", err)
+			os.Exit(1)
+		}
+		if !saved {
+			fmt.Println("Wizard cancelled, no changes made.")
+			return
+		}
+		fmt.Println()
+		fmt.Printf("Configuration saved to %s\n", configPath)
+		fmt.Println()
+		printOnboardNextSteps(configPath)
+		return
+	}
+
+	// Non-interactive mode: check if config exists
+	if _, err := os.Stat(configPath); err == nil {
+		fmt.Printf("Config already exists at %s\n", configPath)
+		fmt.Println("Use --wizard flag for interactive configuration, or manually edit the config file.")
+		return
+	}
+
+	// Create default configuration
+	cfg := config.Config{
+		Agents: config.AgentDefaults{
+			Model:               "claude-opus-4-5",
+			Provider:            "auto",
+			MaxTokens:           8192,
+			ContextWindowTokens: 65536,
+			Temperature:         0.1,
+			MaxToolIterations:   40,
+		},
+		Gateway: config.GatewayConfig{
+			Host: "0.0.0.0",
+			Port: 18790,
+		},
+		Tools: config.ToolsConfig{
+			Web: config.WebConfig{
+				SearchProvider: "brave",
+			},
+		},
+		Channels: config.ChannelsConfig{
+			SendProgress:  true,
+			SendToolHints: true,
+		},
+	}
+
+	// Apply workspace override if specified
+	if onboardWorkspaceFlag != "" {
+		cfg.Agents.Workspace = onboardWorkspaceFlag
+	}
+
+	// Save config
+	file, err := os.Create(configPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating config file: %v\n", err)
+		os.Exit(1)
+	}
+	defer file.Close()
+
+	encoder := json.NewEncoder(file)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(cfg); err != nil {
+		fmt.Fprintf(os.Stderr, "Error writing config file: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Create workspace directory
+	workspace := cfg.Agents.Workspace
+	if workspace == "" {
+		homeDir, _ := os.UserHomeDir()
+		workspace = filepath.Join(homeDir, ".nanobot", "workspace")
+	}
+	if err := os.MkdirAll(workspace, 0755); err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating workspace: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Println()
+	fmt.Printf("Created config at %s\n", configPath)
+	fmt.Printf("Created workspace at %s\n", workspace)
+	fmt.Println()
+	printOnboardNextSteps(configPath)
+}
+
+func printOnboardNextSteps(configPath string) {
+	fmt.Println("Next steps:")
+	fmt.Printf("  1. Add your API key to %s\n", configPath)
+	fmt.Println("     Get one at: https://openrouter.ai/keys")
+	fmt.Printf("  2. Chat: ./nanobot agent -m \"Hello!\"\n")
+	fmt.Println()
+	fmt.Println("Want Telegram/WhatsApp? See: https://github.com/HKUDS/nanobot#-chat-apps")
+}
 
 // Wizard state
 type wizardState int
@@ -64,34 +197,6 @@ type wizardModel struct {
 	textInput     textinput.Model
 	quitting      bool
 	saved         bool
-}
-
-func newWizardModel() *wizardModel {
-	return &wizardModel{
-		cfg: config.Config{
-			Agents: config.AgentDefaults{
-				Model:               "claude-opus-4-5",
-				Provider:            "auto",
-				MaxTokens:           8192,
-				ContextWindowTokens: 65536,
-				Temperature:         0.1,
-				MaxToolIterations:    40,
-			},
-			Gateway: config.GatewayConfig{
-				Host: "0.0.0.0",
-				Port: 18790,
-			},
-			Tools: config.ToolsConfig{
-				Web: config.WebConfig{
-					SearchProvider: "brave",
-				},
-			},
-			Providers: config.ProvidersConfig{},
-		},
-		state:       stateMainMenu,
-		cursor:      0,
-		fieldCursor: 0,
-	}
 }
 
 func (m *wizardModel) Init() tea.Cmd {
@@ -611,8 +716,8 @@ func (m *wizardModel) viewProviderMenu() string {
 
 func (m *wizardModel) viewAgentSettings() string {
 	fields := []struct {
-		name   string
-		value  string
+		name  string
+		value string
 	}{
 		{"Model", m.cfg.Agents.Model},
 		{"Temperature", fmt.Sprintf("%f", m.cfg.Agents.Temperature)},
@@ -630,7 +735,7 @@ func (m *wizardModel) viewAgentSettings() string {
 		display := fmt.Sprintf("%s: %s", fieldStyle.Render(f.name), valueStyle.Render(f.value))
 		if m.cursor == i {
 			cursor = selectedStyle.Render("► ")
-			display = selectedStyle.Render(f.name + ": ") + valueStyle.Render(f.value)
+			display = selectedStyle.Render(f.name+": ") + valueStyle.Render(f.value)
 		}
 		s += fmt.Sprintf("%s%s\n", cursor, display)
 	}
@@ -648,8 +753,8 @@ func (m *wizardModel) viewAgentSettings() string {
 
 func (m *wizardModel) viewGatewaySettings() string {
 	fields := []struct {
-		name   string
-		value  string
+		name  string
+		value string
 	}{
 		{"Host", m.cfg.Gateway.Host},
 		{"Port", fmt.Sprintf("%d", m.cfg.Gateway.Port)},
@@ -664,7 +769,7 @@ func (m *wizardModel) viewGatewaySettings() string {
 		display := fmt.Sprintf("%s: %s", fieldStyle.Render(f.name), valueStyle.Render(f.value))
 		if m.cursor == i {
 			cursor = selectedStyle.Render("► ")
-			display = selectedStyle.Render(f.name + ": ") + valueStyle.Render(f.value)
+			display = selectedStyle.Render(f.name+": ") + valueStyle.Render(f.value)
 		}
 		s += fmt.Sprintf("%s%s\n", cursor, display)
 	}
@@ -682,8 +787,8 @@ func (m *wizardModel) viewGatewaySettings() string {
 
 func (m *wizardModel) viewToolsSettings() string {
 	fields := []struct {
-		name   string
-		value  string
+		name  string
+		value string
 	}{
 		{"Web Search Provider", m.cfg.Tools.Web.SearchProvider},
 		{"Web Search API Key", maskString(m.cfg.Tools.Web.SearchAPIKey)},
@@ -698,7 +803,7 @@ func (m *wizardModel) viewToolsSettings() string {
 		display := fmt.Sprintf("%s: %s", fieldStyle.Render(f.name), valueStyle.Render(f.value))
 		if m.cursor == i {
 			cursor = selectedStyle.Render("► ")
-			display = selectedStyle.Render(f.name + ": ") + valueStyle.Render(f.value)
+			display = selectedStyle.Render(f.name+": ") + valueStyle.Render(f.value)
 		}
 		s += fmt.Sprintf("%s%s\n", cursor, display)
 	}
@@ -850,12 +955,12 @@ func saveConfig(cfg *config.Config, path string) error {
 	// Simple JSON output
 	importance := map[string]any{
 		"agents": map[string]any{
-			"model":                cfg.Agents.Model,
-			"provider":             cfg.Agents.Provider,
-			"max_tokens":           cfg.Agents.MaxTokens,
+			"model":                 cfg.Agents.Model,
+			"provider":              cfg.Agents.Provider,
+			"max_tokens":            cfg.Agents.MaxTokens,
 			"context_window_tokens": cfg.Agents.ContextWindowTokens,
 			"temperature":           cfg.Agents.Temperature,
-			"max_tool_iterations":  cfg.Agents.MaxToolIterations,
+			"max_tool_iterations":   cfg.Agents.MaxToolIterations,
 		},
 		"gateway": map[string]any{
 			"host": cfg.Gateway.Host,
