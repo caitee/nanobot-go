@@ -591,7 +591,10 @@ type interactiveModel struct {
 	toolEventCh      <-chan bus.ToolEvent
 	agentEventCh     <-chan bus.AgentEvent
 	outboundCh       <-chan bus.OutboundMessage
-	responseReceived bool // Track if final response has been received
+	responseReceived bool   // Track if final response has been received
+	scrollOffset     int    // For scrolling through message history
+	viewportHeight   int    // Terminal height for scroll calculations
+	sessionPath      string // Path to session directory for persistence
 }
 
 type toolCallEntry struct {
@@ -637,7 +640,11 @@ func newInteractiveModel(messageBus bus.MessageBus, sessionKey, chatID string) *
 	ti.Focus()
 	ti.Prompt = "You: "
 
-	return &interactiveModel{
+	// Build session path for message persistence
+	home, _ := os.UserHomeDir()
+	sessionPath := filepath.Join(home, ".nanobot", "sessions", sessionKey)
+
+	m := &interactiveModel{
 		textInput:    ti,
 		messageBus:   messageBus,
 		sessionKey:   sessionKey,
@@ -646,6 +653,49 @@ func newInteractiveModel(messageBus bus.MessageBus, sessionKey, chatID string) *
 		toolEventCh:  messageBus.SubscribeToolEvents(),
 		agentEventCh: messageBus.SubscribeAgentEvents(),
 		outboundCh:   messageBus.ConsumeOutbound(),
+		scrollOffset: 0,
+		viewportHeight: 40, // Default, will be updated by tea.WindowSizeMsg
+		sessionPath:  sessionPath,
+	}
+
+	// Load persisted messages if available
+	m.loadMessages()
+
+	return m
+}
+
+// loadMessages loads persisted conversation history from disk
+func (m *interactiveModel) loadMessages() {
+	if m.sessionPath == "" {
+		return
+	}
+	msgFile := filepath.Join(m.sessionPath, "messages.json")
+	data, err := os.ReadFile(msgFile)
+	if err != nil {
+		return // No persisted messages yet
+	}
+	if err := json.Unmarshal(data, &m.messages); err != nil {
+		slog.Warn("failed to load messages", "error", err)
+	}
+}
+
+// saveMessages persists conversation history to disk
+func (m *interactiveModel) saveMessages() {
+	if m.sessionPath == "" {
+		return
+	}
+	if err := os.MkdirAll(m.sessionPath, 0755); err != nil {
+		slog.Warn("failed to create session dir", "error", err)
+		return
+	}
+	msgFile := filepath.Join(m.sessionPath, "messages.json")
+	data, err := json.MarshalIndent(m.messages, "", "  ")
+	if err != nil {
+		slog.Warn("failed to marshal messages", "error", err)
+		return
+	}
+	if err := os.WriteFile(msgFile, data, 0644); err != nil {
+		slog.Warn("failed to save messages", "error", err)
 	}
 }
 
@@ -682,6 +732,9 @@ func (m *interactiveModel) tickSpinner() tea.Cmd {
 
 func (m *interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		// Update viewport height for scrolling
+		m.viewportHeight = msg.Height
 	case pollTickMsg:
 		// Keep polling for events
 		return m, m.pollEvents()
@@ -708,6 +761,7 @@ func (m *interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					// Set reasoning from response (overrides llm_final's reasoning which might have been partial)
 					m.messages[i].streamingReasoning = msg.reasoning
 					m.messages[i].isLoading = false
+					m.saveMessages() // Persist on response
 					break
 				}
 			}
@@ -788,6 +842,7 @@ func (m *interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					m.waiting = false
 					entry.isLoading = false
+					m.saveMessages() // Persist on final response
 				case "llm_tool_calls":
 					if data, ok := msg.ev.Data["data"].(bus.ToolCallEventData); ok {
 						for _, tc := range data.ToolCalls {
@@ -848,6 +903,7 @@ func (m *interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				case "session_end":
 					m.waiting = false
 					entry.isLoading = false
+					m.saveMessages() // Persist on session end
 				}
 			}
 		}
@@ -864,6 +920,18 @@ func (m *interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		switch msg.Type {
+		case tea.KeyUp:
+			// Scroll up in message history
+			if m.scrollOffset < len(m.messages)-1 {
+				m.scrollOffset++
+			}
+			return m, nil
+		case tea.KeyDown:
+			// Scroll down in message history
+			if m.scrollOffset > 0 {
+				m.scrollOffset--
+			}
+			return m, nil
 		case tea.KeyEnter:
 			userInput := strings.TrimSpace(m.textInput.Value())
 			m.textInput.SetValue("")
@@ -881,6 +949,8 @@ func (m *interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.waiting = true
 			m.responseReceived = false
 			m.spinnerIdx = 0
+			m.scrollOffset = 0 // Reset scroll to show latest messages
+			m.saveMessages() // Persist messages
 			m.mu.Unlock()
 
 			inbound := bus.InboundMessage{
@@ -943,7 +1013,24 @@ func (m *interactiveModel) View() string {
 	// Draw separator line
 	separator := borderStyle.Render(strings.Repeat("─", min(60, getTerminalWidth())))
 
-	for _, msg := range m.messages {
+	// Scroll indicator at top if scrolled up
+	if m.scrollOffset > 0 {
+		scrollStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Italic(true)
+		s.WriteString(scrollStyle.Render(fmt.Sprintf("↑ %d more messages above (↓ scroll down)", m.scrollOffset)))
+		s.WriteString("\n\n")
+	}
+
+	// Calculate visible message range
+	msgCount := len(m.messages)
+	visibleCount := 15 // Number of message pairs to show at once
+	startIdx := m.scrollOffset
+	endIdx := msgCount
+	if endIdx > startIdx + visibleCount {
+		endIdx = startIdx + visibleCount
+	}
+
+	for i := startIdx; i < endIdx; i++ {
+		msg := m.messages[i]
 		if msg.role == "user" {
 			s.WriteString("\n")
 			s.WriteString(userPromptStyle.Render("You:") + " ")
@@ -1107,6 +1194,14 @@ func (m *interactiveModel) View() string {
 			}
 		}
 	}
+
+	// Scroll indicator at bottom if there are more messages below
+	if len(m.messages) > endIdx {
+		scrollStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Italic(true)
+		s.WriteString("\n")
+		s.WriteString(scrollStyle.Render(fmt.Sprintf("↓ %d more messages below (↑ scroll up)", len(m.messages)-endIdx)))
+	}
+
 	m.mu.Unlock()
 
 	// Footer separator
