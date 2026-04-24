@@ -24,6 +24,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
 )
@@ -39,6 +40,12 @@ var (
    |_| |_|
   AI Assistant
 `
+
+	// Markdown renderer using glamour
+	mdRenderer, _ = glamour.NewTermRenderer(
+		glamour.WithStandardStyle("dark"),
+		glamour.WithWordWrap(60),
+	)
 )
 
 // Lipgloss styles for enhanced TUI
@@ -542,7 +549,7 @@ func runAgentSingle(ctx context.Context, agentLoop *agent.AgentLoop, sessionStor
 		if msg.Reasoning != "" {
 			fmt.Println(reasoningStyle.Render(msg.Reasoning))
 		}
-		fmt.Println(msg.Content)
+		fmt.Print(renderMarkdown(msg.Content))
 		break
 	}
 }
@@ -596,6 +603,7 @@ type interactiveModel struct {
 	toolCalls       []toolCallEntry
 	streamText      string
 	streamReasoning string
+	status          string // Current agent status
 }
 
 type toolCallEntry struct {
@@ -737,10 +745,16 @@ func (m *interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.mu.Lock()
 		if msg.ev.SessionKey == m.sessionKey && m.active {
 			switch msg.ev.Type {
-			case "llm_thinking", "llm_responding":
+			case "llm_thinking":
+				m.status = "thinking"
+				m.streamText = ""
+				m.streamReasoning = ""
+			case "llm_responding":
+				m.status = "responding"
 				m.streamText = ""
 				m.streamReasoning = ""
 			case "llm_stream_chunk":
+				m.status = "streaming"
 				if data, ok := msg.ev.Data["data"].(bus.StreamChunkData); ok {
 					if data.IsReasoning {
 						m.streamReasoning = data.FullText
@@ -749,6 +763,7 @@ func (m *interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 			case "llm_final":
+				m.status = "done"
 				m.responseReceived = true
 				m.waiting = false
 				m.active = false
@@ -763,6 +778,7 @@ func (m *interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				output := formatAssistantMessage(tcs, content, reasoning)
 				return m, tea.Batch(m.pollEvents(), tea.Println(output))
 			case "llm_tool_calls":
+				m.status = "using tools"
 				if data, ok := msg.ev.Data["data"].(bus.ToolCallEventData); ok {
 					for _, tc := range data.ToolCalls {
 						m.toolCalls = append(m.toolCalls, toolCallEntry{
@@ -942,13 +958,15 @@ func formatAssistantMessage(tcs []toolCallEntry, content, reasoning string) stri
 	}
 
 	// Content with reasoning-detection
-	b.WriteString(formatContentWithReasoning(content))
+	b.WriteString(formatContentWithReasoning(content, reasoning))
 	b.WriteString("\n")
 	return b.String()
 }
 
 // formatContentWithReasoning splits content into reasoning (gray) and answer (white).
-func formatContentWithReasoning(content string) string {
+// The reasoning parameter is the extracted reasoning content (passed separately).
+// The content is rendered as markdown for nice formatting.
+func formatContentWithReasoning(content string, reasoning string) string {
 	if content == "" {
 		return ""
 	}
@@ -963,7 +981,7 @@ func formatContentWithReasoning(content string) string {
 		b.WriteString(reasoningStyle.Render(reasoningBlock))
 		if strings.TrimSpace(after) != "" {
 			b.WriteString("\n")
-			b.WriteString(strings.TrimSpace(after))
+			b.WriteString(renderMarkdown(strings.TrimSpace(after)))
 		}
 		return b.String()
 	}
@@ -971,7 +989,7 @@ func formatContentWithReasoning(content string) string {
 	// No markers — try heuristic detection
 	lines := strings.Split(content, "\n")
 	if len(lines) <= 1 {
-		return content
+		return renderMarkdown(content)
 	}
 
 	var reasoningLines, answerLines []string
@@ -997,7 +1015,7 @@ func formatContentWithReasoning(content string) string {
 		b.WriteString("\n")
 	}
 	if len(answerLines) > 0 {
-		b.WriteString(strings.Join(answerLines, "\n"))
+		b.WriteString(renderMarkdown(strings.Join(answerLines, "\n")))
 	} else if len(reasoningLines) > 0 {
 		// No clear answer marker — treat last 25% as answer
 		total := len(reasoningLines)
@@ -1006,7 +1024,7 @@ func formatContentWithReasoning(content string) string {
 			b.WriteString("\n")
 			b.WriteString(reasoningStyle.Render(strings.Join(reasoningLines[:answerStart], "\n")))
 			b.WriteString("\n")
-			b.WriteString(strings.Join(reasoningLines[answerStart:], "\n"))
+			b.WriteString(renderMarkdown(strings.Join(reasoningLines[answerStart:], "\n")))
 		}
 	}
 	return b.String()
@@ -1108,26 +1126,29 @@ func (m *interactiveModel) View() string {
 		}
 
 		// Streaming content
-		if m.streamText != "" || m.streamReasoning != "" {
-			if m.streamReasoning != "" {
-				s.WriteString(reasoningStyle.Render(m.streamReasoning))
-				s.WriteString("\n")
-			}
-			if m.streamText != "" {
-				s.WriteString(m.streamText)
-			}
-			s.WriteString(streamingCursorStyle.Render("█"))
+		if m.streamReasoning != "" {
+			s.WriteString(reasoningStyle.Render(m.streamReasoning))
 			s.WriteString("\n")
-		} else {
+		}
+		if m.streamText != "" {
+			s.WriteString(renderMarkdown(m.streamText))
+		}
+
+		// Status indicator during active streaming
+		if m.status != "" && m.status != "done" {
+			s.WriteString("\n")
 			s.WriteString(spinnerStyle.Render(spinnerFrames[m.spinnerIdx]))
-			s.WriteString(" Thinking...\n")
+			s.WriteString(" ")
+			s.WriteString(toolRunningStyle.Render(m.status + "..."))
+			s.WriteString("\n")
 		}
 	}
 
 	// Footer
 	s.WriteString(sep)
 	s.WriteString("\n")
-	if m.waiting {
+	// Only show waiting when waiting for a new turn, not during streaming
+	if m.waiting && !m.active {
 		s.WriteString(waitingStyle.Render("> waiting for response..."))
 		s.WriteString("\n\n")
 	}
@@ -1152,6 +1173,18 @@ func getTerminalWidth() int {
 		}
 	}
 	return 60
+}
+
+// renderMarkdown renders markdown content using glamour
+func renderMarkdown(content string) string {
+	if content == "" {
+		return ""
+	}
+	rendered, err := mdRenderer.Render(content)
+	if err != nil {
+		return content
+	}
+	return strings.TrimSuffix(rendered, "\n")
 }
 
 func min(a, b int) int {
