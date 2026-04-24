@@ -16,32 +16,47 @@ type InboundMessage struct {
 
 // OutboundMessage represents a message to send to a chat channel
 type OutboundMessage struct {
-	Channel  string
-	ChatID   string
-	Content  string
-	ReplyTo  string
-	Media    []string
-	Reasoning    string
-	Metadata   map[string]any
-}
-
-// ToolEvent represents a tool execution event for UI updates
-type ToolEvent struct {
-	SessionKey string
-	Type       string // "tool_start" | "tool_end" | "tool_error"
-	ToolName   string
-	ToolID     string
-	Args       string
-	Result     string
+	Channel   string
+	ChatID    string
+	Content   string
+	ReplyTo   string
+	Media     []string
+	Reasoning string
+	Metadata  map[string]any
 }
 
 // AgentEvent represents a detailed agent state event for UI updates
 type AgentEvent struct {
 	SessionKey string
-	Type      string         // Event type (see agent/events.go constants)
-	Timestamp time.Time
-	Data      map[string]any // Event-specific data
+	Type       AgentEventType
+	Timestamp  time.Time
+	Data       any // Event-specific payload
 }
+
+// AgentEventType is the enum-like string type for agent event kinds.
+type AgentEventType string
+
+// Agent event type constants.
+const (
+	// LLM related events
+	EventLLMThinking    AgentEventType = "llm_thinking"     // Agent started thinking
+	EventLLMResponding  AgentEventType = "llm_responding"   // Agent started generating response
+	EventLLMStreamChunk AgentEventType = "llm_stream_chunk" // Streaming content chunk received
+	EventLLMStreamEnd   AgentEventType = "llm_stream_end"   // Streaming ended
+	EventLLMToolCalls   AgentEventType = "llm_tool_calls"   // LLM requested tool calls
+	EventLLMFinal       AgentEventType = "llm_final"        // Final response completed
+
+	// Tool related events
+	EventToolStart    AgentEventType = "tool_start"    // Tool execution started
+	EventToolProgress AgentEventType = "tool_progress" // Tool execution progress update
+	EventToolEnd      AgentEventType = "tool_end"      // Tool execution completed
+	EventToolError    AgentEventType = "tool_error"    // Tool execution failed
+
+	// Session related events
+	EventSessionStart    AgentEventType = "session_start"    // Session started
+	EventSessionEnd      AgentEventType = "session_end"      // Session ended
+	EventCommandReceived AgentEventType = "command_received" // Command received (e.g., /help, /stop)
+)
 
 // StreamChunkData holds streaming response chunk data
 type StreamChunkData struct {
@@ -50,16 +65,11 @@ type StreamChunkData struct {
 	IsReasoning bool   // True if this chunk is reasoning content
 }
 
-// ToolCallEventData holds data when LLM requests tool calls
-type ToolCallEventData struct {
-	ToolCalls []ToolCallInfo
-}
-
 // ToolCallInfo represents a single tool call request
 type ToolCallInfo struct {
-	ID       string
-	Name     string
-	Args     map[string]any
+	ID   string
+	Name string
+	Args map[string]any
 }
 
 // ToolResultEventData holds tool execution result data
@@ -76,9 +86,10 @@ type ToolResultEventData struct {
 type LLMFinalData struct {
 	Content          string
 	ReasoningContent string // Separate thinking/reasoning content if available
+	Error            string // Non-empty when generation failed
 }
 
-// ErrorData holds error information
-type ErrorData struct {
-	Message string
+// SessionEndData holds session completion metadata.
+type SessionEndData struct {
+	Cancelled bool
 }

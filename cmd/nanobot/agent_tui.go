@@ -23,7 +23,6 @@ type interactiveModel struct {
 	done             chan struct{}
 	mu               sync.Mutex
 	spinnerIdx       int
-	toolEventCh      <-chan bus.ToolEvent
 	agentEventCh     <-chan bus.AgentEvent
 	outboundCh       <-chan bus.OutboundMessage
 	responseReceived bool
@@ -51,10 +50,6 @@ type responseMsg struct {
 	reasoning string
 }
 
-type toolEventMsg struct {
-	ev bus.ToolEvent
-}
-
 type agentEventMsg struct {
 	ev bus.AgentEvent
 }
@@ -73,7 +68,6 @@ func newInteractiveModel(messageBus bus.MessageBus, sessionKey, chatID string) *
 		sessionKey:   sessionKey,
 		chatID:       chatID,
 		done:         make(chan struct{}),
-		toolEventCh:  messageBus.SubscribeToolEvents(),
 		agentEventCh: messageBus.SubscribeAgentEvents(),
 		outboundCh:   messageBus.ConsumeOutbound(),
 	}
@@ -86,8 +80,6 @@ func (m *interactiveModel) Init() tea.Cmd {
 func (m *interactiveModel) pollEvents() tea.Cmd {
 	return func() tea.Msg {
 		select {
-		case ev := <-m.toolEventCh:
-			return toolEventMsg{ev: ev}
 		case ev := <-m.agentEventCh:
 			return agentEventMsg{ev: ev}
 		case resp, ok := <-m.outboundCh:
@@ -139,101 +131,73 @@ func (m *interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, m.pollEvents()
 
-	case toolEventMsg:
-		m.mu.Lock()
-		if msg.ev.SessionKey == m.sessionKey && m.active {
-			switch msg.ev.Type {
-			case "tool_start":
-				m.toolCalls = append(m.toolCalls, toolCallEntry{
-					name: msg.ev.ToolName, args: msg.ev.Args, status: "running",
-				})
-			case "tool_end":
-				for j := range m.toolCalls {
-					if m.toolCalls[j].name == msg.ev.ToolName {
-						m.toolCalls[j].status = "done"
-						m.toolCalls[j].result = msg.ev.Result
-						break
-					}
-				}
-			case "tool_error":
-				for j := range m.toolCalls {
-					if m.toolCalls[j].name == msg.ev.ToolName {
-						m.toolCalls[j].status = "error"
-						m.toolCalls[j].result = msg.ev.Result
-						break
-					}
-				}
-			}
-		}
-		m.mu.Unlock()
-		return m, m.pollEvents()
-
 	case agentEventMsg:
 		m.mu.Lock()
 		if msg.ev.SessionKey == m.sessionKey && m.active {
 			switch msg.ev.Type {
-			case "llm_thinking":
+			case bus.EventLLMThinking:
 				m.status = "thinking"
 				m.streamText = ""
 				m.streamReasoning = ""
-			case "llm_responding":
+			case bus.EventLLMResponding:
 				m.status = "responding"
 				m.streamText = ""
 				m.streamReasoning = ""
-			case "llm_stream_chunk":
+			case bus.EventLLMStreamChunk:
 				m.status = "streaming"
-				if data, ok := msg.ev.Data["data"].(bus.StreamChunkData); ok {
+				if data, ok := msg.ev.Data.(bus.StreamChunkData); ok {
 					if data.IsReasoning {
 						m.streamReasoning = data.FullText
 					} else {
 						m.streamText = data.FullText
 					}
 				}
-			case "llm_final":
+			case bus.EventLLMFinal:
 				m.status = "done"
 				m.responseReceived = true
 				m.waiting = false
 				m.active = false
 				var content, reasoning string
-				if data, ok := msg.ev.Data["data"].(bus.LLMFinalData); ok {
+				if data, ok := msg.ev.Data.(bus.LLMFinalData); ok {
 					content = data.Content
 					reasoning = data.ReasoningContent
+					if data.Error != "" && content == "" {
+						content = "Error: " + data.Error
+					}
 				}
 				tcs := m.toolCalls
 				m.clearActiveState()
 				m.mu.Unlock()
 				output := formatAssistantMessage(tcs, content, reasoning)
 				return m, tea.Batch(m.pollEvents(), tea.Println(output))
-			case "llm_tool_calls":
+			case bus.EventLLMToolCalls:
 				m.status = "using tools"
-				if data, ok := msg.ev.Data["data"].(bus.ToolCallEventData); ok {
-					for _, tc := range data.ToolCalls {
+				if data, ok := msg.ev.Data.([]bus.ToolCallInfo); ok {
+					for _, tc := range data {
 						m.toolCalls = append(m.toolCalls, toolCallEntry{
 							name: tc.Name, args: formatArgs(tc.Args), status: "pending",
 						})
 					}
 				}
-			case "tool_start":
-				if data, ok := msg.ev.Data["data"].(bus.ToolCallEventData); ok {
-					for _, tc := range data.ToolCalls {
-						found := false
-						for i := range m.toolCalls {
-							if m.toolCalls[i].name == tc.Name && (m.toolCalls[i].status == "pending" || m.toolCalls[i].status == "") {
-								m.toolCalls[i].status = "running"
-								m.toolCalls[i].args = formatArgs(tc.Args)
-								found = true
-								break
-							}
-						}
-						if !found {
-							m.toolCalls = append(m.toolCalls, toolCallEntry{
-								name: tc.Name, args: formatArgs(tc.Args), status: "running",
-							})
+			case bus.EventToolStart:
+				if data, ok := msg.ev.Data.(bus.ToolCallInfo); ok {
+					found := false
+					for i := range m.toolCalls {
+						if m.toolCalls[i].name == data.Name && (m.toolCalls[i].status == "pending" || m.toolCalls[i].status == "") {
+							m.toolCalls[i].status = "running"
+							m.toolCalls[i].args = formatArgs(data.Args)
+							found = true
+							break
 						}
 					}
+					if !found {
+						m.toolCalls = append(m.toolCalls, toolCallEntry{
+							name: data.Name, args: formatArgs(data.Args), status: "running",
+						})
+					}
 				}
-			case "tool_end":
-				if data, ok := msg.ev.Data["data"].(bus.ToolResultEventData); ok {
+			case bus.EventToolEnd:
+				if data, ok := msg.ev.Data.(bus.ToolResultEventData); ok {
 					for i := range m.toolCalls {
 						if m.toolCalls[i].name == data.ToolName {
 							if data.Success {
@@ -247,8 +211,8 @@ func (m *interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						}
 					}
 				}
-			case "tool_error":
-				if data, ok := msg.ev.Data["data"].(bus.ToolResultEventData); ok {
+			case bus.EventToolError:
+				if data, ok := msg.ev.Data.(bus.ToolResultEventData); ok {
 					for i := range m.toolCalls {
 						if m.toolCalls[i].name == data.ToolName {
 							m.toolCalls[i].status = "error"
@@ -258,7 +222,7 @@ func (m *interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						}
 					}
 				}
-			case "session_end":
+			case bus.EventSessionEnd:
 				m.waiting = false
 				m.active = false
 			}

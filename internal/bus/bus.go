@@ -10,32 +10,29 @@ import (
 type MessageBus interface {
 	PublishInbound(msg InboundMessage)
 	PublishOutbound(msg OutboundMessage)
-	PublishToolEvent(event ToolEvent)
 	PublishAgentEvent(event AgentEvent)
 	ConsumeInbound() <-chan InboundMessage
 	ConsumeOutbound() <-chan OutboundMessage
-	SubscribeToolEvents() <-chan ToolEvent
 	SubscribeAgentEvents() <-chan AgentEvent
 	Close()
 }
 
 // messageBus implements MessageBus using buffered channels
 type messageBus struct {
-	inbound     chan InboundMessage
-	outbound    chan OutboundMessage
-	toolSubs    []chan ToolEvent
-	agentSubs   []chan AgentEvent
-	subMu       sync.RWMutex
-	wg          sync.WaitGroup
-	closed      atomic.Bool
-	closeOnce   sync.Once
+	inbound   chan InboundMessage
+	outbound  chan OutboundMessage
+	agentSubs []chan AgentEvent
+	subMu     sync.RWMutex
+	wg        sync.WaitGroup
+	closed    atomic.Bool
+	closeOnce sync.Once
 }
 
 // New creates a new MessageBus with specified buffer size
 func New(bufferSize int) MessageBus {
 	return &messageBus{
-		inbound:   make(chan InboundMessage, bufferSize),
-		outbound:  make(chan OutboundMessage, bufferSize),
+		inbound:  make(chan InboundMessage, bufferSize),
+		outbound: make(chan OutboundMessage, bufferSize),
 	}
 }
 
@@ -61,35 +58,12 @@ func (b *messageBus) PublishOutbound(msg OutboundMessage) {
 	}
 }
 
-func (b *messageBus) PublishToolEvent(event ToolEvent) {
-	if b.closed.Load() {
-		return
-	}
-	b.subMu.RLock()
-	defer b.subMu.RUnlock()
-	for _, ch := range b.toolSubs {
-		select {
-		case ch <- event:
-		default:
-			// Don't block if subscriber is slow
-		}
-	}
-}
-
 func (b *messageBus) ConsumeInbound() <-chan InboundMessage {
 	return b.inbound
 }
 
 func (b *messageBus) ConsumeOutbound() <-chan OutboundMessage {
 	return b.outbound
-}
-
-func (b *messageBus) SubscribeToolEvents() <-chan ToolEvent {
-	ch := make(chan ToolEvent, 100)
-	b.subMu.Lock()
-	b.toolSubs = append(b.toolSubs, ch)
-	b.subMu.Unlock()
-	return ch
 }
 
 func (b *messageBus) PublishAgentEvent(event AgentEvent) {

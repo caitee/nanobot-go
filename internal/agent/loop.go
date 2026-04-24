@@ -260,7 +260,7 @@ func (al *AgentLoop) handleMessage(ctx context.Context, inbound bus.InboundMessa
 
 func (al *AgentLoop) processMessage(ctx context.Context, inbound bus.InboundMessage, sessionKey string) (*bus.OutboundMessage, error) {
 	// Publish session start event
-	al.publishAgentEvent(sessionKey, EventSessionStart, nil)
+	al.publishAgentEvent(sessionKey, bus.EventSessionStart, nil)
 	slog.Info("processMessage: session started", "session", sessionKey)
 
 	// Get or create session
@@ -279,16 +279,16 @@ func (al *AgentLoop) processMessage(ctx context.Context, inbound bus.InboundMess
 		// Check if context was cancelled (e.g., by /stop)
 		select {
 		case <-ctx.Done():
-			al.publishAgentEvent(sessionKey, EventSessionEnd, map[string]any{"cancelled": true})
+			al.publishAgentEvent(sessionKey, bus.EventSessionEnd, bus.SessionEndData{Cancelled: true})
 			return nil, ctx.Err()
 		default:
 		}
 
 		// Publish thinking event
-		al.publishAgentEvent(sessionKey, EventLLMThinking, nil)
+		al.publishAgentEvent(sessionKey, bus.EventLLMThinking, nil)
 
 		// Use streaming for response
-		al.publishAgentEvent(sessionKey, EventLLMResponding, nil)
+		al.publishAgentEvent(sessionKey, bus.EventLLMResponding, nil)
 		var fullText string
 		var reasoningText string
 		streamCh := al.provider.StreamGenerate(ctx, messages, toolDefs, providers.ChatOptions{
@@ -298,10 +298,10 @@ func (al *AgentLoop) processMessage(ctx context.Context, inbound bus.InboundMess
 		for chunk := range streamCh {
 			if chunk.Error != nil {
 				slog.Error("stream error", "error", chunk.Error)
-				al.publishAgentEvent(sessionKey, EventLLMFinal, map[string]any{
-					"error": chunk.Error.Error(),
+				al.publishAgentEvent(sessionKey, bus.EventLLMFinal, bus.LLMFinalData{
+					Error: chunk.Error.Error(),
 				})
-				al.publishAgentEvent(sessionKey, EventSessionEnd, nil)
+				al.publishAgentEvent(sessionKey, bus.EventSessionEnd, bus.SessionEndData{})
 				return nil, nil
 			}
 			if chunk.Chunk != "" {
@@ -314,7 +314,7 @@ func (al *AgentLoop) processMessage(ctx context.Context, inbound bus.InboundMess
 					totalText = fullText
 				}
 				slog.Info("stream chunk", "isReasoning", chunk.IsReasoning, "chunk", chunk.Chunk, "fullTextLen", len(fullText), "reasoningLen", len(reasoningText))
-				al.publishAgentEvent(sessionKey, EventLLMStreamChunk, bus.StreamChunkData{
+				al.publishAgentEvent(sessionKey, bus.EventLLMStreamChunk, bus.StreamChunkData{
 					Delta:       chunk.Chunk,
 					FullText:    totalText,
 					IsReasoning: chunk.IsReasoning,
@@ -337,10 +337,10 @@ func (al *AgentLoop) processMessage(ctx context.Context, inbound bus.InboundMess
 				return nil, ctx.Err()
 			}
 			slog.Error("provider error", "error", chatErr)
-			al.publishAgentEvent(sessionKey, EventLLMFinal, map[string]any{
-				"error": chatErr.Error(),
+			al.publishAgentEvent(sessionKey, bus.EventLLMFinal, bus.LLMFinalData{
+				Error: chatErr.Error(),
 			})
-			al.publishAgentEvent(sessionKey, EventSessionEnd, nil)
+			al.publishAgentEvent(sessionKey, bus.EventSessionEnd, bus.SessionEndData{})
 			return nil, nil
 		}
 
@@ -363,7 +363,7 @@ func (al *AgentLoop) processMessage(ctx context.Context, inbound bus.InboundMess
 				finalReasoning = resp.ReasoningContent
 			}
 			slog.Info("llm_final event", "contentLen", len(resp.Content), "reasoningLen", len(finalReasoning), "reasoningTextEmpty", reasoningText == "", "respReasoningEmpty", resp.ReasoningContent == "")
-			al.publishAgentEvent(sessionKey, EventLLMFinal, bus.LLMFinalData{
+			al.publishAgentEvent(sessionKey, bus.EventLLMFinal, bus.LLMFinalData{
 				Content:          resp.Content,
 				ReasoningContent: finalReasoning,
 			})
@@ -372,21 +372,19 @@ func (al *AgentLoop) processMessage(ctx context.Context, inbound bus.InboundMess
 				Content: resp.Content,
 			})
 			al.sessionStore.Save(sess)
-			al.publishAgentEvent(sessionKey, EventSessionEnd, nil)
+			al.publishAgentEvent(sessionKey, bus.EventSessionEnd, bus.SessionEndData{})
 			slog.Info("processMessage: returning final response", "contentLen", len(resp.Content))
 			return &bus.OutboundMessage{
-				Channel:  inbound.Channel,
-				ChatID:   inbound.ChatID,
-				Content:  resp.Content,
-				ReplyTo:  inbound.SenderID,
+				Channel:   inbound.Channel,
+				ChatID:    inbound.ChatID,
+				Content:   resp.Content,
+				ReplyTo:   inbound.SenderID,
 				Reasoning: finalReasoning,
 			}, nil
 		}
 
 		// LLM wants to call tools
-		al.publishAgentEvent(sessionKey, EventLLMToolCalls, bus.ToolCallEventData{
-			ToolCalls: convertToolCallInfo(resp.ToolCalls),
-		})
+		al.publishAgentEvent(sessionKey, bus.EventLLMToolCalls, convertToolCallInfo(resp.ToolCalls))
 
 		// Execute tools
 		for _, tc := range resp.ToolCalls {
@@ -394,19 +392,17 @@ func (al *AgentLoop) processMessage(ctx context.Context, inbound bus.InboundMess
 			slog.Info("executing tool", "name", tc.Name, "id", tc.ID, "args", tc.Arguments)
 
 			// Publish tool start event
-			al.publishAgentEvent(sessionKey, EventToolStart, bus.ToolCallEventData{
-				ToolCalls: []bus.ToolCallInfo{{
-					ID:   tc.ID,
-					Name: tc.Name,
-					Args: tc.Arguments,
-				}},
+			al.publishAgentEvent(sessionKey, bus.EventToolStart, bus.ToolCallInfo{
+				ID:   tc.ID,
+				Name: tc.Name,
+				Args: tc.Arguments,
 			})
 
 			result, err := al.toolRegistry.Execute(ctx, tc.Name, tc.Arguments)
 			duration := time.Since(startTime)
 
 			if err != nil {
-				al.publishAgentEvent(sessionKey, EventToolError, bus.ToolResultEventData{
+				al.publishAgentEvent(sessionKey, bus.EventToolError, bus.ToolResultEventData{
 					ToolName:   tc.Name,
 					ToolID:     tc.ID,
 					Success:    false,
@@ -415,7 +411,7 @@ func (al *AgentLoop) processMessage(ctx context.Context, inbound bus.InboundMess
 				})
 				result = fmt.Sprintf("error: %v", err)
 			} else {
-				al.publishAgentEvent(sessionKey, EventToolEnd, bus.ToolResultEventData{
+				al.publishAgentEvent(sessionKey, bus.EventToolEnd, bus.ToolResultEventData{
 					ToolName:   tc.Name,
 					ToolID:     tc.ID,
 					Success:    true,
@@ -435,21 +431,17 @@ func (al *AgentLoop) processMessage(ctx context.Context, inbound bus.InboundMess
 	}
 
 	al.sessionStore.Save(sess)
-	al.publishAgentEvent(sessionKey, EventSessionEnd, nil)
+	al.publishAgentEvent(sessionKey, bus.EventSessionEnd, bus.SessionEndData{})
 	return nil, nil
 }
 
 // publishAgentEvent is a helper to publish agent events
-func (al *AgentLoop) publishAgentEvent(sessionKey, eventType string, data any) {
-	eventData := make(map[string]any)
-	if data != nil {
-		eventData["data"] = data
-	}
+func (al *AgentLoop) publishAgentEvent(sessionKey string, eventType bus.AgentEventType, data any) {
 	al.bus.PublishAgentEvent(bus.AgentEvent{
 		SessionKey: sessionKey,
 		Type:       eventType,
 		Timestamp:  time.Now(),
-		Data:      eventData,
+		Data:       data,
 	})
 }
 
