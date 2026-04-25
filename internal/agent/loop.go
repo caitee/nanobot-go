@@ -370,6 +370,9 @@ func (al *AgentLoop) processMessage(ctx context.Context, inbound bus.InboundMess
 				Content:   resp.Content,
 				ReplyTo:   inbound.SenderID,
 				Reasoning: finalReasoning,
+				Metadata: map[string]any{
+					bus.OutboundMetadataAgentEventFinal: true,
+				},
 			}, nil
 		}
 

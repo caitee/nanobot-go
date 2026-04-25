@@ -25,6 +25,12 @@ type OutboundMessage struct {
 	Metadata  map[string]any
 }
 
+const (
+	// OutboundMetadataAgentEventFinal marks an outbound response whose final
+	// content was already published through EventLLMFinal for rich UIs.
+	OutboundMetadataAgentEventFinal = "agent_event_final"
+)
+
 // AgentEvent represents a detailed agent state event for UI updates
 type AgentEvent struct {
 	SessionKey string

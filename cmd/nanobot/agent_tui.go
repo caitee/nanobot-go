@@ -28,6 +28,7 @@ type interactiveModel struct {
 	responseReceived bool
 
 	active          bool
+	history         []string
 	toolCalls       []toolCallEntry
 	streamText      string
 	streamReasoning string
@@ -35,6 +36,7 @@ type interactiveModel struct {
 }
 
 type toolCallEntry struct {
+	id         string
 	name       string
 	args       string
 	status     string // "pending" | "running" | "done" | "error"
@@ -46,8 +48,10 @@ type toolCallEntry struct {
 type spinnerTickMsg struct{}
 
 type responseMsg struct {
-	content   string
-	reasoning string
+	content         string
+	reasoning       string
+	agentEventFinal bool
+	fallback        bool
 }
 
 type agentEventMsg struct {
@@ -86,7 +90,11 @@ func (m *interactiveModel) pollEvents() tea.Cmd {
 			if !ok {
 				return nil
 			}
-			return responseMsg{content: resp.Content, reasoning: resp.Reasoning}
+			return responseMsg{
+				content:         resp.Content,
+				reasoning:       resp.Reasoning,
+				agentEventFinal: outboundFromAgentEventFinal(resp),
+			}
 		case <-m.done:
 			return nil
 		case <-time.After(50 * time.Millisecond):
@@ -99,6 +107,14 @@ func (m *interactiveModel) tickSpinner() tea.Cmd {
 	return func() tea.Msg {
 		time.Sleep(time.Second / 10)
 		return spinnerTickMsg{}
+	}
+}
+
+func (m *interactiveModel) deferResponse(msg responseMsg) tea.Cmd {
+	return func() tea.Msg {
+		time.Sleep(100 * time.Millisecond)
+		msg.fallback = true
+		return msg
 	}
 }
 
@@ -117,19 +133,13 @@ func (m *interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case responseMsg:
 		m.mu.Lock()
-		alreadyReceived := m.responseReceived
-		if !alreadyReceived {
-			m.waiting = false
-			m.active = false
+		if msg.agentEventFinal && !msg.fallback && m.active && !m.responseReceived {
+			m.mu.Unlock()
+			return m, tea.Batch(m.pollEvents(), m.deferResponse(msg))
 		}
+		cmd := m.finalizeAssistantMessage(msg.content, msg.reasoning)
 		m.mu.Unlock()
-		if !alreadyReceived {
-			tcs := m.toolCalls
-			m.clearActiveState()
-			output := formatAssistantMessage(tcs, msg.content, msg.reasoning)
-			return m, tea.Batch(m.pollEvents(), tea.Println(output))
-		}
-		return m, m.pollEvents()
+		return m, cmd
 
 	case agentEventMsg:
 		m.mu.Lock()
@@ -153,10 +163,6 @@ func (m *interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 			case bus.EventLLMFinal:
-				m.status = "done"
-				m.responseReceived = true
-				m.waiting = false
-				m.active = false
 				var content, reasoning string
 				if data, ok := msg.ev.LLMFinal(); ok {
 					content = data.Content
@@ -165,61 +171,47 @@ func (m *interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						content = "Error: " + data.Error
 					}
 				}
-				tcs := m.toolCalls
-				m.clearActiveState()
+				cmd := m.finalizeAssistantMessage(content, reasoning)
 				m.mu.Unlock()
-				output := formatAssistantMessage(tcs, content, reasoning)
-				return m, tea.Batch(m.pollEvents(), tea.Println(output))
+				return m, cmd
 			case bus.EventLLMToolCalls:
 				m.status = "using tools"
 				if toolCalls, ok := msg.ev.ToolCalls(); ok {
 					for _, tc := range toolCalls {
 						m.toolCalls = append(m.toolCalls, toolCallEntry{
-							name: tc.Name, args: formatArgs(tc.Args), status: "pending",
+							id: tc.ID, name: tc.Name, args: formatArgs(tc.Args), status: "pending",
 						})
 					}
 				}
 			case bus.EventToolStart:
 				if data, ok := msg.ev.ToolCall(); ok {
-					found := false
-					for i := range m.toolCalls {
-						if m.toolCalls[i].name == data.Name && (m.toolCalls[i].status == "pending" || m.toolCalls[i].status == "") {
-							m.toolCalls[i].status = "running"
-							m.toolCalls[i].args = formatArgs(data.Args)
-							found = true
-							break
-						}
-					}
-					if !found {
+					if idx := m.findToolCall(data.ID, data.Name, "pending", ""); idx >= 0 {
+						m.toolCalls[idx].status = "running"
+						m.toolCalls[idx].args = formatArgs(data.Args)
+					} else {
 						m.toolCalls = append(m.toolCalls, toolCallEntry{
-							name: data.Name, args: formatArgs(data.Args), status: "running",
+							id: data.ID, name: data.Name, args: formatArgs(data.Args), status: "running",
 						})
 					}
 				}
 			case bus.EventToolEnd:
 				if data, ok := msg.ev.ToolResult(); ok {
-					for i := range m.toolCalls {
-						if m.toolCalls[i].name == data.ToolName {
-							if data.Success {
-								m.toolCalls[i].status = "done"
-							} else {
-								m.toolCalls[i].status = "error"
-								m.toolCalls[i].result = data.Error
-							}
-							m.toolCalls[i].durationMs = data.DurationMs
-							break
+					if idx := m.findToolCall(data.ToolID, data.ToolName); idx >= 0 {
+						if data.Success {
+							m.toolCalls[idx].status = "done"
+						} else {
+							m.toolCalls[idx].status = "error"
+							m.toolCalls[idx].result = data.Error
 						}
+						m.toolCalls[idx].durationMs = data.DurationMs
 					}
 				}
 			case bus.EventToolError:
 				if data, ok := msg.ev.ToolResult(); ok {
-					for i := range m.toolCalls {
-						if m.toolCalls[i].name == data.ToolName {
-							m.toolCalls[i].status = "error"
-							m.toolCalls[i].result = data.Error
-							m.toolCalls[i].durationMs = data.DurationMs
-							break
-						}
+					if idx := m.findToolCall(data.ToolID, data.ToolName); idx >= 0 {
+						m.toolCalls[idx].status = "error"
+						m.toolCalls[idx].result = data.Error
+						m.toolCalls[idx].durationMs = data.DurationMs
 					}
 				}
 			case bus.EventSessionEnd:
@@ -234,9 +226,13 @@ func (m *interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.Type {
 		case tea.KeyCtrlC, tea.KeyCtrlD:
 			if m.active && (m.streamText != "" || m.streamReasoning != "" || len(m.toolCalls) > 0) {
-				output := formatAssistantMessage(m.toolCalls, m.streamText, m.streamReasoning)
+				output := formatAssistantMessage(append([]toolCallEntry(nil), m.toolCalls...), m.streamText, m.streamReasoning)
+				m.appendHistory(output)
+				m.clearActiveState()
+				m.active = false
+				m.waiting = false
 				m.quitting = true
-				return m, tea.Sequence(tea.Println(output), tea.Quit)
+				return m, tea.Quit
 			}
 			m.quitting = true
 			return m, tea.Quit
@@ -264,6 +260,8 @@ func (m *interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.toolCalls = nil
 			m.streamText = ""
 			m.streamReasoning = ""
+			m.status = ""
+			m.appendHistory(userPromptStyle.Render("You:") + " " + userInput)
 			m.mu.Unlock()
 
 			m.messageBus.PublishInbound(bus.InboundMessage{
@@ -271,15 +269,28 @@ func (m *interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				Content: userInput, SessionKey: m.sessionKey,
 			})
 
-			return m, tea.Batch(
-				m.pollEvents(),
-				tea.Println(userPromptStyle.Render("You:")+" "+userInput),
-			)
+			return m, m.pollEvents()
 		}
 	}
 	var cmd tea.Cmd
 	m.textInput, cmd = m.textInput.Update(msg)
 	return m, cmd
+}
+
+func (m *interactiveModel) finalizeAssistantMessage(content, reasoning string) tea.Cmd {
+	if m.responseReceived {
+		return m.pollEvents()
+	}
+	m.responseReceived = true
+	m.waiting = false
+	m.active = false
+	m.status = "done"
+
+	toolCalls := append([]toolCallEntry(nil), m.toolCalls...)
+	m.clearActiveState()
+	output := formatAssistantMessage(toolCalls, content, reasoning)
+	m.appendHistory(output)
+	return m.pollEvents()
 }
 
 func (m *interactiveModel) clearActiveState() {
@@ -288,19 +299,73 @@ func (m *interactiveModel) clearActiveState() {
 	m.streamReasoning = ""
 }
 
-func (m *interactiveModel) View() string {
-	if m.quitting {
-		return "\n\n" + lipgloss.NewStyle().
-			Foreground(lipgloss.Color("245")).
-			Render("Goodbye!\n")
+func (m *interactiveModel) findToolCall(id, name string, statuses ...string) int {
+	statusAllowed := func(status string) bool {
+		if len(statuses) == 0 {
+			return true
+		}
+		for _, allowed := range statuses {
+			if status == allowed {
+				return true
+			}
+		}
+		return false
 	}
 
+	if id != "" {
+		for i := range m.toolCalls {
+			if m.toolCalls[i].id == id && statusAllowed(m.toolCalls[i].status) {
+				return i
+			}
+		}
+	}
+	for i := range m.toolCalls {
+		if m.toolCalls[i].name == name && statusAllowed(m.toolCalls[i].status) {
+			return i
+		}
+	}
+	return -1
+}
+
+func (m *interactiveModel) appendHistory(entry string) {
+	entry = strings.TrimRight(entry, "\n")
+	if entry != "" {
+		m.history = append(m.history, entry)
+	}
+}
+
+func outboundFromAgentEventFinal(msg bus.OutboundMessage) bool {
+	v, ok := msg.Metadata[bus.OutboundMetadataAgentEventFinal]
+	if !ok {
+		return false
+	}
+	fromEvent, ok := v.(bool)
+	return ok && fromEvent
+}
+
+func (m *interactiveModel) View() string {
 	sep := borderStyle.Render(strings.Repeat("─", min(60, getTerminalWidth())))
 	var s strings.Builder
 
-	if m.active {
-		s.WriteString(sep)
+	if len(m.history) > 0 {
+		s.WriteString(strings.Join(m.history, "\n\n"))
 		s.WriteString("\n")
+	}
+
+	if m.quitting {
+		if s.Len() > 0 {
+			s.WriteString("\n")
+		}
+		s.WriteString(lipgloss.NewStyle().
+			Foreground(lipgloss.Color("245")).
+			Render("Goodbye!\n"))
+		return s.String()
+	}
+
+	if m.active {
+		if len(m.history) > 0 {
+			s.WriteString("\n")
+		}
 		s.WriteString(assistantLabelStyle.Render("nanobot"))
 		s.WriteString("\n")
 
@@ -353,13 +418,12 @@ func (m *interactiveModel) View() string {
 			s.WriteString("\n")
 		}
 
-		// Streaming content
+		// Keep reasoning live, but defer assistant text until the final message.
+		// Rendering long streamed text in the normal terminal buffer leaves stale
+		// frames in scrollback, which looks like duplicated responses.
 		if m.streamReasoning != "" {
 			s.WriteString(reasoningStyle.Render(m.streamReasoning))
 			s.WriteString("\n")
-		}
-		if m.streamText != "" {
-			s.WriteString(renderMarkdown(m.streamText))
 		}
 
 		// Status indicator during active streaming
