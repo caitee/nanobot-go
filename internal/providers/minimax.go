@@ -97,9 +97,9 @@ func (p *MinimaxProvider) Chat(ctx context.Context, messages []Message, tools []
 		// Add tool_use blocks from ToolCalls (assistant messages with tool calls)
 		for _, tc := range msg.ToolCalls {
 			toolUse := map[string]any{
-				"type": "tool_use",
-				"id":   tc.ID,
-				"name": tc.Name,
+				"type":  "tool_use",
+				"id":    tc.ID,
+				"name":  tc.Name,
 				"input": tc.Arguments,
 			}
 			contentBlocks = append(contentBlocks, toolUse)
@@ -107,7 +107,7 @@ func (p *MinimaxProvider) Chat(ctx context.Context, messages []Message, tools []
 
 		content := contentBlocks
 
-			role := msg.Role
+		role := msg.Role
 		// For tool results, Anthropic/MiniMax expects role "user" with tool_use_id in content
 		minimaxMsg := map[string]any{
 			"role":    role,
@@ -153,8 +153,8 @@ func (p *MinimaxProvider) Chat(ctx context.Context, messages []Message, tools []
 				params = map[string]any{"type": "object"}
 			}
 			validTools = append(validTools, map[string]any{
-				"name":        t.Name,
-				"description": t.Description,
+				"name":         t.Name,
+				"description":  t.Description,
 				"input_schema": params,
 			})
 		}
@@ -245,19 +245,78 @@ func (p *MinimaxProvider) Chat(ctx context.Context, messages []Message, tools []
 }
 
 func (p *MinimaxProvider) ChatWithRetry(ctx context.Context, messages []Message, tools []ToolDef, opts ChatOptions) (*LLMResponse, error) {
-    retryCfg := opts.RetryConfig
-    if retryCfg == nil {
-        retryCfg = &RetryConfig{
-            MaxAttempts: 3,
-            BaseDelay:  time.Second,
-            MaxDelay:  10 * time.Second,
-        }
-    }
-    return ChatWithRetryConfig(ctx, p, messages, tools, opts, *retryCfg)
+	retryCfg := opts.RetryConfig
+	if retryCfg == nil {
+		retryCfg = &RetryConfig{
+			MaxAttempts: 3,
+			BaseDelay:   time.Second,
+			MaxDelay:    10 * time.Second,
+		}
+	}
+	return ChatWithRetryConfig(ctx, p, messages, tools, opts, *retryCfg)
 }
 
 func (p *MinimaxProvider) GetDefaultModel() string {
 	return p.DefaultModel
+}
+
+type minimaxStreamToolCall struct {
+	ID        string
+	Name      string
+	InputJSON string
+	Arguments map[string]any
+}
+
+func finalizeMinimaxStreamToolCalls(blocks map[int]*minimaxStreamToolCall, order []int) []ToolCall {
+	toolCalls := make([]ToolCall, 0, len(order))
+	for _, index := range order {
+		block := blocks[index]
+		if block == nil || block.Name == "" {
+			continue
+		}
+
+		args := block.Arguments
+		if args == nil {
+			args = map[string]any{}
+			if strings.TrimSpace(block.InputJSON) != "" {
+				if err := json.Unmarshal([]byte(block.InputJSON), &args); err != nil {
+					log.Printf("failed to parse streamed tool input: id=%s name=%s input=%q error=%v", block.ID, block.Name, block.InputJSON, err)
+				}
+			}
+		}
+
+		toolCalls = append(toolCalls, ToolCall{
+			ID:        block.ID,
+			Name:      block.Name,
+			Arguments: args,
+		})
+	}
+	return toolCalls
+}
+
+func asMap(v any) map[string]any {
+	if m, ok := v.(map[string]any); ok {
+		return m
+	}
+	return nil
+}
+
+func stringValue(v any) string {
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return ""
+}
+
+func intValue(v any) (int, bool) {
+	switch n := v.(type) {
+	case float64:
+		return int(n), true
+	case int:
+		return n, true
+	default:
+		return 0, false
+	}
 }
 
 // StreamGenerate implements streaming response for MiniMax API using SSE
@@ -326,9 +385,9 @@ func (p *MinimaxProvider) StreamGenerate(ctx context.Context, messages []Message
 			// Add tool_use blocks from ToolCalls
 			for _, tc := range msg.ToolCalls {
 				toolUse := map[string]any{
-					"type": "tool_use",
-					"id":   tc.ID,
-					"name": tc.Name,
+					"type":  "tool_use",
+					"id":    tc.ID,
+					"name":  tc.Name,
 					"input": tc.Arguments,
 				}
 				contentBlocks = append(contentBlocks, toolUse)
@@ -378,8 +437,8 @@ func (p *MinimaxProvider) StreamGenerate(ctx context.Context, messages []Message
 					params = map[string]any{"type": "object"}
 				}
 				validTools = append(validTools, map[string]any{
-					"name":        t.Name,
-					"description": t.Description,
+					"name":         t.Name,
+					"description":  t.Description,
 					"input_schema": params,
 				})
 			}
@@ -414,15 +473,30 @@ func (p *MinimaxProvider) StreamGenerate(ctx context.Context, messages []Message
 			return
 		}
 
-// Read SSE stream using bufio.Scanner for line-by-line processing
+		// Read SSE stream using bufio.Scanner for line-by-line processing
 		scanner := bufio.NewScanner(resp.Body)
 		scanner.Buffer(make([]byte, 0, 4096), 1024*1024) // 1MB max token size
 		var fullText string
+		var reasoningText string
+		var finishReason string
+		toolCallBlocks := make(map[int]*minimaxStreamToolCall)
+		toolCallOrder := make([]int, 0)
+		doneResponse := func() StreamResponse {
+			return StreamResponse{
+				Done:             true,
+				Content:          fullText,
+				ToolCalls:        finalizeMinimaxStreamToolCalls(toolCallBlocks, toolCallOrder),
+				FinishReason:     finishReason,
+				ReasoningContent: reasoningText,
+			}
+		}
 
 		for scanner.Scan() {
 			select {
 			case <-ctx.Done():
-				ch <- StreamResponse{Done: true, Error: ctx.Err()}
+				resp := doneResponse()
+				resp.Error = ctx.Err()
+				ch <- resp
 				return
 			default:
 			}
@@ -434,49 +508,63 @@ func (p *MinimaxProvider) StreamGenerate(ctx context.Context, messages []Message
 
 			data := strings.TrimPrefix(line, "data: ")
 			if data == "[DONE]" {
-				ch <- StreamResponse{Done: true}
+				ch <- doneResponse()
 				return
 			}
 
-			// MiniMax sends two SSE formats:
-			// 1. With event wrapper: {"event":"content_block_delta","data":{"type":"...","delta":{...}}}
-			// 2. Direct flat format: {"type":"content_block_delta","index":0,"delta":{...}}
-			var sse struct {
-				Type  string         `json:"type"`
-				Event string         `json:"event"`
-				Index float64        `json:"index"`
-				Delta map[string]any `json:"delta"`
-				Data  map[string]any `json:"data"`
-			}
-			if err := json.Unmarshal([]byte(data), &sse); err != nil {
+			var event map[string]any
+			if err := json.Unmarshal([]byte(data), &event); err != nil {
 				continue
 			}
 
-			// Normalize to unified structure
-			var msgType string
-			var delta map[string]any
-
-			if sse.Type != "" {
-				// Flat format: type is at top level
-				msgType = sse.Type
-				delta = sse.Delta
-			} else if sse.Data != nil {
-				// Wrapped format: type inside data
-				if t, ok := sse.Data["type"].(string); ok {
-					msgType = t
-				}
-				if d, ok := sse.Data["delta"].(map[string]any); ok {
-					delta = d
-				}
+			// MiniMax may wrap the Anthropic event in {"event":"...","data":{...}}.
+			payload := event
+			if dataPayload := asMap(event["data"]); dataPayload != nil {
+				payload = dataPayload
 			}
 
-			if delta == nil {
-				continue
+			msgType := stringValue(payload["type"])
+			if msgType == "" {
+				msgType = stringValue(event["type"])
+			}
+			if msgType == "" {
+				msgType = stringValue(event["event"])
 			}
 
-			// Handle content_block_delta events
+			index, hasIndex := intValue(payload["index"])
+			if !hasIndex {
+				index, hasIndex = intValue(event["index"])
+			}
+			if !hasIndex {
+				index = 0
+			}
+
 			switch msgType {
+			case "content_block_start":
+				block := asMap(payload["content_block"])
+				if stringValue(block["type"]) != "tool_use" {
+					continue
+				}
+
+				if _, ok := toolCallBlocks[index]; !ok {
+					toolCallOrder = append(toolCallOrder, index)
+				}
+
+				streamTool := toolCallBlocks[index]
+				if streamTool == nil {
+					streamTool = &minimaxStreamToolCall{}
+					toolCallBlocks[index] = streamTool
+				}
+				streamTool.ID = stringValue(block["id"])
+				streamTool.Name = stringValue(block["name"])
+				if input := asMap(block["input"]); input != nil {
+					streamTool.Arguments = input
+				}
 			case "content_block_delta":
+				delta := asMap(payload["delta"])
+				if delta == nil {
+					continue
+				}
 				if deltaType, ok := delta["type"].(string); ok {
 					switch deltaType {
 					case "text_delta":
@@ -486,27 +574,43 @@ func (p *MinimaxProvider) StreamGenerate(ctx context.Context, messages []Message
 						}
 					case "thinking_delta":
 						if thinking, ok := delta["thinking"].(string); ok {
-							// thinking_delta received
+							reasoningText += thinking
 							ch <- StreamResponse{Chunk: thinking, Done: false, IsReasoning: true}
 						}
 					case "thinking":
 						// Direct thinking content block (not delta)
 						if thinking, ok := delta["thinking"].(string); ok {
-							// thinking block received
+							reasoningText += thinking
 							ch <- StreamResponse{Chunk: thinking, Done: false, IsReasoning: true}
 						}
+					case "input_json_delta":
+						streamTool := toolCallBlocks[index]
+						if streamTool == nil {
+							streamTool = &minimaxStreamToolCall{}
+							toolCallBlocks[index] = streamTool
+							toolCallOrder = append(toolCallOrder, index)
+						}
+						streamTool.InputJSON += stringValue(delta["partial_json"])
 					}
 				}
 			case "message_delta":
-				if stopReason, ok := sse.Data["stop_reason"].(string); ok && stopReason != "" {
-					ch <- StreamResponse{Done: true}
-					return
+				if delta := asMap(payload["delta"]); delta != nil {
+					finishReason = stringValue(delta["stop_reason"])
 				}
+				if finishReason == "" {
+					finishReason = stringValue(payload["stop_reason"])
+				}
+			case "message_stop":
+				ch <- doneResponse()
+				return
 			case "thinking":
 				// Direct thinking content block (not a delta)
-				if thinking, ok := sse.Data["thinking"].(string); ok {
+				delta := asMap(payload["delta"])
+				if thinking := stringValue(payload["thinking"]); thinking != "" {
+					reasoningText += thinking
 					ch <- StreamResponse{Chunk: thinking, Done: false, IsReasoning: true}
-				} else if thinking, ok := delta["thinking"].(string); ok {
+				} else if thinking := stringValue(delta["thinking"]); thinking != "" {
+					reasoningText += thinking
 					ch <- StreamResponse{Chunk: thinking, Done: false, IsReasoning: true}
 				}
 			}
@@ -517,7 +621,7 @@ func (p *MinimaxProvider) StreamGenerate(ctx context.Context, messages []Message
 			return
 		}
 
-		ch <- StreamResponse{Done: true}
+		ch <- doneResponse()
 	}()
 	return ch
 }

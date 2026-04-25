@@ -291,6 +291,7 @@ func (al *AgentLoop) processMessage(ctx context.Context, inbound bus.InboundMess
 		al.publishAgentEvent(sessionKey, bus.EventLLMResponding, nil)
 		var fullText string
 		var reasoningText string
+		resp := &providers.LLMResponse{}
 		streamCh := al.provider.StreamGenerate(ctx, messages, toolDefs, providers.ChatOptions{
 			MaxTokens:   4096,
 			Temperature: 0.7,
@@ -321,32 +322,21 @@ func (al *AgentLoop) processMessage(ctx context.Context, inbound bus.InboundMess
 				})
 			}
 			if chunk.Done {
+				resp.Content = chunk.Content
+				resp.ToolCalls = chunk.ToolCalls
+				resp.FinishReason = chunk.FinishReason
+				resp.Usage = chunk.Usage
+				resp.ReasoningContent = chunk.ReasoningContent
 				break
 			}
 		}
 
-		// Build the final response from accumulated content
-		// We need tool calls, so do a non-streaming call to get them properly
-		// This is necessary because streaming doesn't return tool calls in the same way
-		resp, chatErr := al.provider.Chat(ctx, messages, toolDefs, providers.ChatOptions{
-			MaxTokens:   4096,
-			Temperature: 0.7,
-		})
-		if chatErr != nil {
-			if ctx.Err() != nil {
-				return nil, ctx.Err()
-			}
-			slog.Error("provider error", "error", chatErr)
-			al.publishAgentEvent(sessionKey, bus.EventLLMFinal, bus.LLMFinalData{
-				Error: chatErr.Error(),
-			})
-			al.publishAgentEvent(sessionKey, bus.EventSessionEnd, bus.SessionEndData{})
-			return nil, nil
-		}
-
 		// Override content with streamed text (only if we actually got streamed content)
-		if fullText != "" {
+		if resp.Content == "" && fullText != "" {
 			resp.Content = fullText
+		}
+		if resp.ReasoningContent == "" && reasoningText != "" {
+			resp.ReasoningContent = reasoningText
 		}
 
 		messages = append(messages, providers.Message{

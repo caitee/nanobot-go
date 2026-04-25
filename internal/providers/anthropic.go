@@ -26,7 +26,7 @@ func NewAnthropicProvider(apiKey, baseURL, defaultModel string) *AnthropicProvid
 		APIKey:       apiKey,
 		BaseURL:      baseURL,
 		DefaultModel: defaultModel,
-		HTTPClient:  &http.Client{Timeout: 60 * time.Second},
+		HTTPClient:   &http.Client{Timeout: 60 * time.Second},
 	}
 }
 
@@ -156,15 +156,15 @@ func (p *AnthropicProvider) Chat(ctx context.Context, messages []Message, tools 
 }
 
 func (p *AnthropicProvider) ChatWithRetry(ctx context.Context, messages []Message, tools []ToolDef, opts ChatOptions) (*LLMResponse, error) {
-    retryCfg := opts.RetryConfig
-    if retryCfg == nil {
-        retryCfg = &RetryConfig{
-            MaxAttempts: 3,
-            BaseDelay:  time.Second,
-            MaxDelay:  10 * time.Second,
-        }
-    }
-    return ChatWithRetryConfig(ctx, p, messages, tools, opts, *retryCfg)
+	retryCfg := opts.RetryConfig
+	if retryCfg == nil {
+		retryCfg = &RetryConfig{
+			MaxAttempts: 3,
+			BaseDelay:   time.Second,
+			MaxDelay:    10 * time.Second,
+		}
+	}
+	return ChatWithRetryConfig(ctx, p, messages, tools, opts, *retryCfg)
 }
 
 func (p *AnthropicProvider) GetDefaultModel() string {
@@ -181,16 +181,7 @@ func (p *AnthropicProvider) StreamGenerate(ctx context.Context, messages []Messa
 			ch <- StreamResponse{Error: err}
 			return
 		}
-		// Send content in chunks based on lines for a basic streaming effect
-		lines := splitIntoLines(resp.Content)
-		for _, line := range lines[:len(lines)-1] {
-			ch <- StreamResponse{Chunk: line, Done: false}
-		}
-		if len(lines) > 0 {
-			ch <- StreamResponse{Chunk: lines[len(lines)-1], Done: true}
-		} else {
-			ch <- StreamResponse{Done: true}
-		}
+		emitStreamingResponse(ch, resp)
 	}()
 	return ch
 }

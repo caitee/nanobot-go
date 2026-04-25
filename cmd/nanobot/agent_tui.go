@@ -145,7 +145,7 @@ func (m *interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.streamReasoning = ""
 			case bus.EventLLMStreamChunk:
 				m.status = "streaming"
-				if data, ok := msg.ev.Data.(bus.StreamChunkData); ok {
+				if data, ok := msg.ev.StreamChunk(); ok {
 					if data.IsReasoning {
 						m.streamReasoning = data.FullText
 					} else {
@@ -158,7 +158,7 @@ func (m *interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.waiting = false
 				m.active = false
 				var content, reasoning string
-				if data, ok := msg.ev.Data.(bus.LLMFinalData); ok {
+				if data, ok := msg.ev.LLMFinal(); ok {
 					content = data.Content
 					reasoning = data.ReasoningContent
 					if data.Error != "" && content == "" {
@@ -172,15 +172,15 @@ func (m *interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.Batch(m.pollEvents(), tea.Println(output))
 			case bus.EventLLMToolCalls:
 				m.status = "using tools"
-				if data, ok := msg.ev.Data.([]bus.ToolCallInfo); ok {
-					for _, tc := range data {
+				if toolCalls, ok := msg.ev.ToolCalls(); ok {
+					for _, tc := range toolCalls {
 						m.toolCalls = append(m.toolCalls, toolCallEntry{
 							name: tc.Name, args: formatArgs(tc.Args), status: "pending",
 						})
 					}
 				}
 			case bus.EventToolStart:
-				if data, ok := msg.ev.Data.(bus.ToolCallInfo); ok {
+				if data, ok := msg.ev.ToolCall(); ok {
 					found := false
 					for i := range m.toolCalls {
 						if m.toolCalls[i].name == data.Name && (m.toolCalls[i].status == "pending" || m.toolCalls[i].status == "") {
@@ -197,7 +197,7 @@ func (m *interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 			case bus.EventToolEnd:
-				if data, ok := msg.ev.Data.(bus.ToolResultEventData); ok {
+				if data, ok := msg.ev.ToolResult(); ok {
 					for i := range m.toolCalls {
 						if m.toolCalls[i].name == data.ToolName {
 							if data.Success {
@@ -212,7 +212,7 @@ func (m *interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 			case bus.EventToolError:
-				if data, ok := msg.ev.Data.(bus.ToolResultEventData); ok {
+				if data, ok := msg.ev.ToolResult(); ok {
 					for i := range m.toolCalls {
 						if m.toolCalls[i].name == data.ToolName {
 							m.toolCalls[i].status = "error"

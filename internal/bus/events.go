@@ -33,6 +33,60 @@ type AgentEvent struct {
 	Data       any // Event-specific payload
 }
 
+// StreamChunk returns the payload for EventLLMStreamChunk.
+func (e AgentEvent) StreamChunk() (StreamChunkData, bool) {
+	if e.Type != EventLLMStreamChunk {
+		return StreamChunkData{}, false
+	}
+	data, ok := e.Data.(StreamChunkData)
+	return data, ok
+}
+
+// LLMFinal returns the payload for EventLLMFinal.
+func (e AgentEvent) LLMFinal() (LLMFinalData, bool) {
+	if e.Type != EventLLMFinal {
+		return LLMFinalData{}, false
+	}
+	data, ok := e.Data.(LLMFinalData)
+	return data, ok
+}
+
+// ToolCalls returns the payload for EventLLMToolCalls.
+func (e AgentEvent) ToolCalls() ([]ToolCallInfo, bool) {
+	if e.Type != EventLLMToolCalls {
+		return nil, false
+	}
+	data, ok := e.Data.([]ToolCallInfo)
+	return data, ok
+}
+
+// ToolCall returns the payload for EventToolStart.
+func (e AgentEvent) ToolCall() (ToolCallInfo, bool) {
+	if e.Type != EventToolStart {
+		return ToolCallInfo{}, false
+	}
+	data, ok := e.Data.(ToolCallInfo)
+	return data, ok
+}
+
+// ToolResult returns the payload for EventToolEnd and EventToolError.
+func (e AgentEvent) ToolResult() (ToolResultEventData, bool) {
+	if e.Type != EventToolEnd && e.Type != EventToolError {
+		return ToolResultEventData{}, false
+	}
+	data, ok := e.Data.(ToolResultEventData)
+	return data, ok
+}
+
+// SessionEnd returns the payload for EventSessionEnd.
+func (e AgentEvent) SessionEnd() (SessionEndData, bool) {
+	if e.Type != EventSessionEnd {
+		return SessionEndData{}, false
+	}
+	data, ok := e.Data.(SessionEndData)
+	return data, ok
+}
+
 // AgentEventType is the enum-like string type for agent event kinds.
 type AgentEventType string
 
