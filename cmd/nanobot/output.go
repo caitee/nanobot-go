@@ -15,6 +15,8 @@ func formatAssistantMessage(rounds []thinkingRound, content, reasoning string) s
 
 	b.WriteString(sep)
 	b.WriteString("\n")
+	b.WriteString(spinnerStyle.Render("✦"))
+	b.WriteString(" ")
 	b.WriteString(assistantLabelStyle.Render("nanobot"))
 	b.WriteString("\n")
 
@@ -156,14 +158,23 @@ func formatArgs(args map[string]any) string {
 	return strings.Join(parts, ", ")
 }
 
-// truncateStr collapses newlines and truncates a string to maxLen characters
+// truncateStr collapses newlines and truncates a string to maxLen display width.
+// Uses lipgloss.Width for correct CJK/unicode width calculation.
 func truncateStr(s string, maxLen int) string {
 	s = strings.ReplaceAll(s, "\n", " ")
 	s = strings.TrimSpace(s)
-	if len(s) > maxLen {
-		return s[:maxLen] + "..."
+	if lipgloss.Width(s) <= maxLen {
+		return s
 	}
-	return s
+	// Truncate by display width
+	result := []rune(s)
+	for i := len(result); i > 0; i-- {
+		candidate := string(result[:i])
+		if lipgloss.Width(candidate)+3 <= maxLen { // +3 for "..."
+			return candidate + "..."
+		}
+	}
+	return "..."
 }
 
 // renderToolCallBlock renders a tool call's args/result/error as compact lines

@@ -74,7 +74,7 @@ func newInteractiveModel(messageBus bus.MessageBus, sessionKey, chatID string) *
 	ti := textinput.New()
 	ti.Placeholder = "Type a message..."
 	ti.Focus()
-	ti.Prompt = "You: "
+	ti.Prompt = "> "
 
 	return &interactiveModel{
 		textInput:    ti,
@@ -267,12 +267,12 @@ func (m *interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.rounds = nil
 			m.currentRound = nil
 			m.streamText = ""
-			m.status = ""
+			m.status = "waiting"
 			m.mu.Unlock()
 
-			// Print separator + user message above the view for clear distinction
-			sep := borderStyle.Render(strings.Repeat("─", getTerminalWidth()))
-			userMsg := sep + "\n" + userPromptStyle.Render("You:") + " " + userInput
+			// Print user message with background highlight, add blank line for spacing
+			padded := userInput + strings.Repeat(" ", max(0, getTerminalWidth()-lipgloss.Width(userInput)))
+			userMsg := "\n" + userMessageStyle.Render(padded)
 			cmd := m.printAbove(userMsg)
 
 			m.messageBus.PublishInbound(bus.InboundMessage{
@@ -551,7 +551,12 @@ func (m *interactiveModel) View() string {
 	}
 
 	if m.active {
-		s.WriteString(assistantLabelStyle.Render("nanobot:"))
+		// Show nanobot header in live view
+		s.WriteString(sep)
+		s.WriteString("\n")
+		s.WriteString(spinnerStyle.Render("✦"))
+		s.WriteString(" ")
+		s.WriteString(assistantLabelStyle.Render("nanobot"))
 		s.WriteString("\n")
 
 		// Display completed rounds in order
@@ -569,25 +574,24 @@ func (m *interactiveModel) View() string {
 			}
 			s.WriteString(m.renderRound(*m.currentRound, true))
 		}
-
-		// Status indicator during active streaming
-		if m.status != "" && m.status != "done" {
-			s.WriteString("\n")
-			s.WriteString(spinnerStyle.Render(spinnerFrames[m.spinnerIdx]))
-			s.WriteString(" ")
-			s.WriteString(toolRunningStyle.Render(m.status + "..."))
-		}
 	}
 
 	// Footer
 	s.WriteString("\n")
-	s.WriteString(sep)
-	s.WriteString("\n")
-	// Only show waiting when waiting for a new turn, not during streaming
-	if m.waiting && !m.active {
-		s.WriteString(waitingStyle.Render("> waiting for response..."))
+	// Show nanobot status bar when active or waiting
+	if m.active && m.status != "" && m.status != "done" {
+		s.WriteString(spinnerStyle.Render(spinnerFrames[m.spinnerIdx]))
+		s.WriteString(" ")
+		s.WriteString(toolRunningStyle.Render(m.status))
+		s.WriteString("\n")
+	} else if m.waiting && !m.active {
+		s.WriteString(spinnerStyle.Render(spinnerFrames[m.spinnerIdx]))
+		s.WriteString(" ")
+		s.WriteString(waitingStyle.Render("waiting"))
 		s.WriteString("\n")
 	}
+	s.WriteString(sep)
+	s.WriteString("\n")
 	s.WriteString(m.textInput.View())
 	s.WriteString("\n")
 

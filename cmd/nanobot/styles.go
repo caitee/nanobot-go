@@ -220,6 +220,10 @@ var (
 	userPromptStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("75")).Bold(true)
 
+	userMessageStyle = lipgloss.NewStyle().
+				Background(lipgloss.Color("236")).
+				Foreground(lipgloss.Color("252"))
+
 	assistantLabelStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("130")).Bold(true)
 
