@@ -348,7 +348,23 @@ func (m *interactiveModel) renderRound(round thinkingRound, isLive bool) string 
 
 	// Reasoning for this round
 	if round.reasoning != "" {
-		s.WriteString(renderReasoningMarkdown(round.reasoning))
+		renderedReasoning := renderReasoningMarkdown(round.reasoning)
+		// Limit reasoning display to last maxReasoningLines visible lines
+		const maxReasoningLines = 5
+		lines := strings.Split(renderedReasoning, "\n")
+		// Strip trailing empty lines from the rendered output
+		for len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) == "" {
+			lines = lines[:len(lines)-1]
+		}
+		if len(lines) > maxReasoningLines {
+			// Show scroll indicator and last N lines
+			hidden := len(lines) - maxReasoningLines
+			s.WriteString(reasoningStyle.Render(fmt.Sprintf("  ⋮ (%d more lines)", hidden)))
+			s.WriteString("\n")
+			s.WriteString(strings.Join(lines[len(lines)-maxReasoningLines:], "\n"))
+		} else {
+			s.WriteString(strings.Join(lines, "\n"))
+		}
 		s.WriteString("\n")
 	}
 

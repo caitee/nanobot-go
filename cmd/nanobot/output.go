@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/charmbracelet/glamour"
@@ -251,6 +252,7 @@ func renderReasoningMarkdown(content string) string {
 	if content == "" {
 		return ""
 	}
+	content = preprocessMath(content)
 	renderer := getReasoningRenderer()
 	if renderer == nil {
 		// Fallback: plain reasoningStyle if renderer failed to init
@@ -263,11 +265,45 @@ func renderReasoningMarkdown(content string) string {
 	return strings.TrimSuffix(rendered, "\n")
 }
 
+// preprocessMath converts LaTeX math delimiters into code spans/blocks so that
+// glamour (which has no math support) preserves formulas instead of mangling them.
+// Block math ($$...$$) becomes fenced code blocks; inline math ($...$) becomes
+// backtick code spans.
+var (
+	// Match block math: $$ ... $$ (possibly multiline)
+	reBlockMath = regexp.MustCompile(`(?s)\$\$(.+?)\$\$`)
+	// Match inline math: $ ... $ (single line, non-greedy)
+	reInlineMath = regexp.MustCompile(`\$([^$\n]+?)\$`)
+)
+
+func preprocessMath(content string) string {
+	// First, replace block math with fenced code blocks
+	content = reBlockMath.ReplaceAllStringFunc(content, func(m string) string {
+		inner := strings.TrimSpace(m[2 : len(m)-2])
+		// If it's a single line, use inline code style for compactness
+		if !strings.Contains(inner, "\n") {
+			return "`" + inner + "`"
+		}
+		return "```\n" + inner + "\n```"
+	})
+	// Then, replace remaining inline math with backtick code spans
+	content = reInlineMath.ReplaceAllStringFunc(content, func(m string) string {
+		inner := m[1 : len(m)-1]
+		// Skip if already inside backticks (contains backtick)
+		if strings.Contains(inner, "`") {
+			return m
+		}
+		return "`" + inner + "`"
+	})
+	return content
+}
+
 // renderMarkdown renders markdown content using glamour
 func renderMarkdown(content string) string {
 	if content == "" {
 		return ""
 	}
+	content = preprocessMath(content)
 	renderer := getMarkdownRenderer()
 	if renderer == nil {
 		return content
