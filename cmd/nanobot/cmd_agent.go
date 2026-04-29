@@ -244,6 +244,7 @@ func runAgentInteractive(ctx context.Context, agentLoop *agent.AgentLoop, sessio
 	// Create text input for line editing
 	model := newInteractiveModel(messageBus, sessionKey, chatID)
 	p := tea.NewProgram(model, tea.WithoutSignals())
+	model.SetProgram(p)
 	if _, err := p.Run(); err != nil {
 		slog.Error("interactive mode error", "error", err)
 	}

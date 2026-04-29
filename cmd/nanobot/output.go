@@ -44,20 +44,7 @@ func formatAssistantMessage(tcs []toolCallEntry, content, reasoning string) stri
 			b.WriteString(toolEntryStyle.Render(tc.name))
 			b.WriteString(toolDurationStyle.Render(statusText))
 			b.WriteString("\n")
-			if tc.args != "" {
-				argsLines := strings.Split(tc.args, "\n")
-				if len(argsLines) > 1 {
-					b.WriteString(toolArgsStyle.Render(fmt.Sprintf("    ┌ Args: %s ...", strings.TrimSpace(argsLines[0]))))
-					b.WriteString("\n")
-				} else {
-					b.WriteString(toolArgsStyle.Render(fmt.Sprintf("    └ %s", strings.TrimSpace(argsLines[0]))))
-					b.WriteString("\n")
-				}
-			}
-			if tc.status == "error" && tc.result != "" {
-				b.WriteString("    ")
-				b.WriteString(toolErrorStyle.Render("✗ Error: ") + tc.result + "\n")
-			}
+			b.WriteString(renderToolCallBlock(tc))
 		}
 		b.WriteString("\n")
 	}
@@ -80,6 +67,11 @@ func formatAssistantMessage(tcs []toolCallEntry, content, reasoning string) stri
 func formatContentWithReasoning(content string, reasoning string) string {
 	if content == "" {
 		return ""
+	}
+
+	// If reasoning was provided separately (extended thinking), content is just the answer
+	if reasoning != "" {
+		return renderMarkdown(content)
 	}
 
 	// Check if LLM used --- Reasoning --- markers
@@ -141,19 +133,54 @@ func formatContentWithReasoning(content string, reasoning string) string {
 	return b.String()
 }
 
-// formatArgs formats tool arguments as a pretty-printed string
+// formatArgs formats tool arguments as a compact single-line string
 func formatArgs(args map[string]any) string {
-	if args == nil {
-		return "{}"
+	if args == nil || len(args) == 0 {
+		return ""
 	}
-	var lines []string
+	var parts []string
 	for k, v := range args {
-		lines = append(lines, fmt.Sprintf("%s: %v", k, v))
+		s := fmt.Sprintf("%v", v)
+		s = strings.ReplaceAll(s, "\n", " ")
+		parts = append(parts, fmt.Sprintf("%s: %s", k, s))
 	}
-	if len(lines) == 0 {
-		return "{}"
+	if len(parts) == 1 {
+		return parts[0]
 	}
-	return "{\n  " + strings.Join(lines, "\n  ") + "\n}"
+	return strings.Join(parts, ", ")
+}
+
+// truncateStr collapses newlines and truncates a string to maxLen characters
+func truncateStr(s string, maxLen int) string {
+	s = strings.ReplaceAll(s, "\n", " ")
+	s = strings.TrimSpace(s)
+	if len(s) > maxLen {
+		return s[:maxLen] + "..."
+	}
+	return s
+}
+
+// renderToolCallBlock renders a tool call's args/result/error as compact lines
+func renderToolCallBlock(tc toolCallEntry) string {
+	var b strings.Builder
+	maxWidth := getTerminalWidth() - 12 // padding for prefix
+	if maxWidth < 40 {
+		maxWidth = 40
+	}
+	hasResult := (tc.status == "done" && tc.result != "") || (tc.status == "error" && tc.result != "")
+	if tc.args != "" {
+		prefix := "    ┌ "
+		if !hasResult {
+			prefix = "    └ "
+		}
+		b.WriteString(toolArgsStyle.Render(prefix+"Args: "+truncateStr(tc.args, maxWidth)) + "\n")
+	}
+	if tc.status == "error" && tc.result != "" {
+		b.WriteString("    └ " + toolErrorStyle.Render("Error: "+truncateStr(tc.result, maxWidth)) + "\n")
+	} else if tc.status == "done" && tc.result != "" {
+		b.WriteString(toolArgsStyle.Render("    └ Result: "+truncateStr(tc.result, maxWidth)) + "\n")
+	}
+	return b.String()
 }
 
 // formatDuration formats duration in milliseconds to a human-readable string

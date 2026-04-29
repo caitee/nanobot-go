@@ -26,9 +26,9 @@ type interactiveModel struct {
 	agentEventCh     <-chan bus.AgentEvent
 	outboundCh       <-chan bus.OutboundMessage
 	responseReceived bool
+	program          *tea.Program // Reference to the program for printing
 
 	active          bool
-	history         []string
 	toolCalls       []toolCallEntry
 	streamText      string
 	streamReasoning string
@@ -75,6 +75,10 @@ func newInteractiveModel(messageBus bus.MessageBus, sessionKey, chatID string) *
 		agentEventCh: messageBus.SubscribeAgentEvents(),
 		outboundCh:   messageBus.ConsumeOutbound(),
 	}
+}
+
+func (m *interactiveModel) SetProgram(p *tea.Program) {
+	m.program = p
 }
 
 func (m *interactiveModel) Init() tea.Cmd {
@@ -199,6 +203,7 @@ func (m *interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if idx := m.findToolCall(data.ToolID, data.ToolName); idx >= 0 {
 						if data.Success {
 							m.toolCalls[idx].status = "done"
+							m.toolCalls[idx].result = data.Result
 						} else {
 							m.toolCalls[idx].status = "error"
 							m.toolCalls[idx].result = data.Error
@@ -227,12 +232,12 @@ func (m *interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case tea.KeyCtrlC, tea.KeyCtrlD:
 			if m.active && (m.streamText != "" || m.streamReasoning != "" || len(m.toolCalls) > 0) {
 				output := formatAssistantMessage(append([]toolCallEntry(nil), m.toolCalls...), m.streamText, m.streamReasoning)
-				m.appendHistory(output)
+				cmd := m.printAbove(output)
 				m.clearActiveState()
 				m.active = false
 				m.waiting = false
 				m.quitting = true
-				return m, tea.Quit
+				return m, tea.Batch(cmd, tea.Quit)
 			}
 			m.quitting = true
 			return m, tea.Quit
@@ -261,15 +266,18 @@ func (m *interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.streamText = ""
 			m.streamReasoning = ""
 			m.status = ""
-			m.appendHistory(userPromptStyle.Render("You:") + " " + userInput)
 			m.mu.Unlock()
+
+			// Print user message above the view
+			userMsg := userPromptStyle.Render("You:") + " " + userInput
+			cmd := m.printAbove(userMsg)
 
 			m.messageBus.PublishInbound(bus.InboundMessage{
 				Channel: "cli", SenderID: "user", ChatID: m.chatID,
 				Content: userInput, SessionKey: m.sessionKey,
 			})
 
-			return m, m.pollEvents()
+			return m, tea.Batch(cmd, m.pollEvents())
 		}
 	}
 	var cmd tea.Cmd
@@ -289,8 +297,20 @@ func (m *interactiveModel) finalizeAssistantMessage(content, reasoning string) t
 	toolCalls := append([]toolCallEntry(nil), m.toolCalls...)
 	m.clearActiveState()
 	output := formatAssistantMessage(toolCalls, content, reasoning)
-	m.appendHistory(output)
-	return m.pollEvents()
+	return tea.Batch(m.printAbove(output), m.pollEvents())
+}
+
+func (m *interactiveModel) printAbove(content string) tea.Cmd {
+	content = strings.TrimRight(content, "\n")
+	if content == "" {
+		return nil
+	}
+	return func() tea.Msg {
+		if m.program != nil {
+			m.program.Println(content)
+		}
+		return nil
+	}
 }
 
 func (m *interactiveModel) clearActiveState() {
@@ -327,13 +347,6 @@ func (m *interactiveModel) findToolCall(id, name string, statuses ...string) int
 	return -1
 }
 
-func (m *interactiveModel) appendHistory(entry string) {
-	entry = strings.TrimRight(entry, "\n")
-	if entry != "" {
-		m.history = append(m.history, entry)
-	}
-}
-
 func outboundFromAgentEventFinal(msg bus.OutboundMessage) bool {
 	v, ok := msg.Metadata[bus.OutboundMetadataAgentEventFinal]
 	if !ok {
@@ -347,15 +360,7 @@ func (m *interactiveModel) View() string {
 	sep := borderStyle.Render(strings.Repeat("─", min(60, getTerminalWidth())))
 	var s strings.Builder
 
-	if len(m.history) > 0 {
-		s.WriteString(strings.Join(m.history, "\n\n"))
-		s.WriteString("\n")
-	}
-
 	if m.quitting {
-		if s.Len() > 0 {
-			s.WriteString("\n")
-		}
 		s.WriteString(lipgloss.NewStyle().
 			Foreground(lipgloss.Color("245")).
 			Render("Goodbye!\n"))
@@ -363,9 +368,6 @@ func (m *interactiveModel) View() string {
 	}
 
 	if m.active {
-		if len(m.history) > 0 {
-			s.WriteString("\n")
-		}
 		s.WriteString(assistantLabelStyle.Render("nanobot"))
 		s.WriteString("\n")
 
@@ -400,19 +402,26 @@ func (m *interactiveModel) View() string {
 				s.WriteString(toolEntryStyle.Render(tc.name))
 				s.WriteString(toolDurationStyle.Render(statusText))
 				s.WriteString("\n")
+				// Use compact display for args and results
+				maxWidth := getTerminalWidth() - 12
+				if maxWidth < 40 {
+					maxWidth = 40
+				}
+				hasResult := (tc.status == "done" && tc.result != "") || (tc.status == "error" && tc.result != "")
 				if tc.args != "" {
-					argsLines := strings.Split(tc.args, "\n")
-					if len(argsLines) > 1 {
-						s.WriteString(toolArgsStyle.Render(fmt.Sprintf("    ┌ Args: %s ...", strings.TrimSpace(argsLines[0]))))
-						s.WriteString("\n")
-					} else {
-						s.WriteString(toolArgsStyle.Render(fmt.Sprintf("    └ %s", strings.TrimSpace(argsLines[0]))))
-						s.WriteString("\n")
+					prefix := "    ┌ "
+					if !hasResult {
+						prefix = "    └ "
 					}
+					s.WriteString(toolArgsStyle.Render(prefix + "Args: " + truncateStr(tc.args, maxWidth)))
+					s.WriteString("\n")
 				}
 				if tc.status == "error" && tc.result != "" {
-					s.WriteString("    ")
-					s.WriteString(toolErrorStyle.Render("✗ Error: ") + tc.result + "\n")
+					s.WriteString("    └ " + toolErrorStyle.Render("Error: "+truncateStr(tc.result, maxWidth)))
+					s.WriteString("\n")
+				} else if tc.status == "done" && tc.result != "" {
+					s.WriteString(toolArgsStyle.Render("    └ Result: " + truncateStr(tc.result, maxWidth)))
+					s.WriteString("\n")
 				}
 			}
 			s.WriteString("\n")
