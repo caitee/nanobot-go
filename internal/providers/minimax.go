@@ -276,13 +276,18 @@ func finalizeMinimaxStreamToolCalls(blocks map[int]*minimaxStreamToolCall, order
 		}
 
 		args := block.Arguments
-		if args == nil {
+		// Prefer InputJSON if available (streamed deltas), otherwise use Arguments from content_block_start
+		if strings.TrimSpace(block.InputJSON) != "" {
 			args = map[string]any{}
-			if strings.TrimSpace(block.InputJSON) != "" {
-				if err := json.Unmarshal([]byte(block.InputJSON), &args); err != nil {
-					log.Printf("failed to parse streamed tool input: id=%s name=%s input=%q error=%v", block.ID, block.Name, block.InputJSON, err)
+			if err := json.Unmarshal([]byte(block.InputJSON), &args); err != nil {
+				log.Printf("failed to parse streamed tool input: id=%s name=%s input=%q error=%v", block.ID, block.Name, block.InputJSON, err)
+				// Fallback to Arguments if JSON parsing fails
+				if block.Arguments != nil {
+					args = block.Arguments
 				}
 			}
+		} else if args == nil {
+			args = map[string]any{}
 		}
 
 		toolCalls = append(toolCalls, ToolCall{
