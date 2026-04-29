@@ -31,8 +31,10 @@ type interactiveModel struct {
 	active          bool
 	rounds          []thinkingRound // All completed rounds
 	currentRound    *thinkingRound  // Current round being built
-	streamText      string
-	status          string // Current agent status
+	streamText      string          // Full text received from stream
+	displayedText   string          // Text currently displayed (typewriter effect)
+	typewriterQueue []rune          // Queue of runes waiting to be displayed
+	status          string          // Current agent status
 }
 
 // thinkingRound represents one round of thinking + tool calls
@@ -70,6 +72,8 @@ type agentEventBatchMsg struct {
 
 type pollTickMsg struct{}
 
+type typewriterTickMsg struct{}
+
 func newInteractiveModel(messageBus bus.MessageBus, sessionKey, chatID string) *interactiveModel {
 	ti := textinput.New()
 	ti.Placeholder = "Type a message..."
@@ -92,7 +96,7 @@ func (m *interactiveModel) SetProgram(p *tea.Program) {
 }
 
 func (m *interactiveModel) Init() tea.Cmd {
-	return tea.Batch(textinput.Blink, m.tickSpinner(), m.pollEvents())
+	return tea.Batch(textinput.Blink, m.tickSpinner(), m.pollEvents(), m.tickTypewriter())
 }
 
 func (m *interactiveModel) pollEvents() tea.Cmd {
@@ -143,6 +147,13 @@ func (m *interactiveModel) tickSpinner() tea.Cmd {
 	}
 }
 
+func (m *interactiveModel) tickTypewriter() tea.Cmd {
+	return func() tea.Msg {
+		time.Sleep(15 * time.Millisecond)
+		return typewriterTickMsg{}
+	}
+}
+
 func (m *interactiveModel) deferResponse(msg responseMsg) tea.Cmd {
 	return func() tea.Msg {
 		time.Sleep(100 * time.Millisecond)
@@ -163,6 +174,26 @@ func (m *interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.mu.Unlock()
 		return m, m.tickSpinner()
+
+	case typewriterTickMsg:
+		m.mu.Lock()
+		if len(m.typewriterQueue) > 0 {
+			// If queue is large (new chunk arrived), accelerate
+			charsPerTick := 1
+			qLen := len(m.typewriterQueue)
+			if qLen > 80 {
+				charsPerTick = 8
+			} else if qLen > 40 {
+				charsPerTick = 4
+			} else if qLen > 20 {
+				charsPerTick = 2
+			}
+			n := min(charsPerTick, len(m.typewriterQueue))
+			m.displayedText += string(m.typewriterQueue[:n])
+			m.typewriterQueue = m.typewriterQueue[n:]
+		}
+		m.mu.Unlock()
+		return m, m.tickTypewriter()
 
 	case responseMsg:
 		m.mu.Lock()
@@ -267,6 +298,8 @@ func (m *interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.rounds = nil
 			m.currentRound = nil
 			m.streamText = ""
+			m.displayedText = ""
+			m.typewriterQueue = nil
 			m.status = "waiting"
 			m.mu.Unlock()
 
@@ -297,6 +330,12 @@ func (m *interactiveModel) finalizeAssistantMessage(content, reasoning string) t
 	m.active = false
 	m.status = "done"
 
+	// Flush any remaining typewriter queue immediately
+	if len(m.typewriterQueue) > 0 {
+		m.displayedText += string(m.typewriterQueue)
+		m.typewriterQueue = nil
+	}
+
 	output := m.formatFinalMessage(content, reasoning)
 	m.clearActiveState()
 	return tea.Batch(m.printAbove(output), m.pollEvents())
@@ -311,7 +350,7 @@ func (m *interactiveModel) formatCurrentState() string {
 	if m.currentRound != nil && (m.currentRound.reasoning != "" || len(m.currentRound.toolCalls) > 0) {
 		allRounds = append(allRounds, *m.currentRound)
 	}
-	return formatAssistantMessage(allRounds, m.streamText, "")
+	return formatAssistantMessage(allRounds, m.displayedText, "")
 }
 
 // formatFinalMessage formats the final message with all rounds
@@ -433,6 +472,88 @@ func (m *interactiveModel) clearActiveState() {
 	m.rounds = nil
 	m.currentRound = nil
 	m.streamText = ""
+	m.displayedText = ""
+	m.typewriterQueue = nil
+}
+
+// renderLiveContent safely renders live streaming content.
+// It attempts markdown rendering but falls back to raw text if syntax is incomplete.
+func (m *interactiveModel) renderLiveContent(text string) string {
+	if text == "" {
+		return ""
+	}
+
+	// Check if we're in the middle of special syntax that shouldn't be rendered yet
+	if isIncompleteMarkdown(text) {
+		// Return raw text with basic styling
+		return text
+	}
+
+	// Try to render as markdown
+	processed := preprocessMath(text)
+	renderer := getMarkdownRenderer()
+	if renderer == nil {
+		return text
+	}
+
+	rendered, err := renderer.Render(processed)
+	if err != nil {
+		// Rendering failed, return raw text
+		return text
+	}
+
+	return strings.TrimSuffix(rendered, "\n")
+}
+
+// isIncompleteMarkdown checks if the text ends with incomplete markdown syntax
+func isIncompleteMarkdown(text string) bool {
+	// Check for unclosed fenced code blocks
+	if strings.Count(text, "```")%2 != 0 {
+		return true
+	}
+
+	// Check for unclosed block math ($$...$$)
+	// Remove matched pairs first, then see if an opener remains
+	temp := text
+	for {
+		idx := strings.Index(temp, "$$")
+		if idx < 0 {
+			break
+		}
+		end := strings.Index(temp[idx+2:], "$$")
+		if end < 0 {
+			// Unclosed $$
+			return true
+		}
+		temp = temp[:idx] + temp[idx+2+end+2:]
+	}
+
+	// Check for unclosed inline math ($...$)
+	// After removing $$, count remaining single $
+	count := 0
+	for i := 0; i < len(temp); i++ {
+		if temp[i] == '$' {
+			count++
+		}
+	}
+	if count%2 != 0 {
+		return true
+	}
+
+	// Check for unclosed inline code backtick at the very end
+	// (single backtick that hasn't been closed)
+	if idx := strings.LastIndex(text, "\n"); idx >= 0 {
+		lastLine := text[idx+1:]
+		if strings.Count(lastLine, "`")%2 != 0 {
+			return true
+		}
+	} else {
+		if strings.Count(text, "`")%2 != 0 {
+			return true
+		}
+	}
+
+	return false
 }
 
 // processAgentEvent handles a single agent event (called with lock held)
@@ -447,9 +568,13 @@ func (m *interactiveModel) processAgentEvent(ev bus.AgentEvent) {
 		}
 		m.currentRound = &thinkingRound{}
 		m.streamText = ""
+		m.displayedText = ""
+		m.typewriterQueue = nil
 	case bus.EventLLMResponding:
 		m.status = "responding"
 		m.streamText = ""
+		m.displayedText = ""
+		m.typewriterQueue = nil
 	case bus.EventLLMStreamChunk:
 		m.status = "streaming"
 		if data, ok := ev.StreamChunk(); ok {
@@ -458,7 +583,19 @@ func (m *interactiveModel) processAgentEvent(ev bus.AgentEvent) {
 					m.currentRound.reasoning = data.FullText
 				}
 			} else {
-				m.streamText = data.FullText
+				newText := data.FullText
+				switch {
+				case strings.HasPrefix(newText, m.streamText):
+					delta := newText[len(m.streamText):]
+					if delta != "" {
+						m.typewriterQueue = append(m.typewriterQueue, []rune(delta)...)
+					}
+				case newText != m.streamText:
+					// Fallback for non-append updates: resync displayed text and queue.
+					m.displayedText = newText
+					m.typewriterQueue = nil
+				}
+				m.streamText = newText
 			}
 		}
 	case bus.EventLLMFinal:
@@ -589,6 +726,17 @@ func (m *interactiveModel) View() string {
 				s.WriteString("\n")
 			}
 			s.WriteString(m.renderRound(*m.currentRound, true))
+		}
+
+		// Display live streaming text (typewriter effect)
+		if m.displayedText != "" {
+			// Try to render markdown safely; fall back to raw text if incomplete
+			renderedText := m.renderLiveContent(m.displayedText)
+			s.WriteString(renderedText)
+			if len(m.typewriterQueue) > 0 {
+				s.WriteString("▍") // Cursor indicator while typing
+			}
+			s.WriteString("\n")
 		}
 	}
 
