@@ -213,7 +213,7 @@ func runAgentSingle(ctx context.Context, agentLoop *agent.AgentLoop, sessionStor
 		fmt.Println(assistantLabelStyle.Render("nanobot:"))
 		fmt.Println()
 		if msg.Reasoning != "" {
-			fmt.Println(reasoningStyle.Render(msg.Reasoning))
+			fmt.Println(renderReasoningMarkdown(msg.Reasoning))
 		}
 		fmt.Print(renderMarkdown(msg.Content))
 	}

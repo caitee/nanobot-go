@@ -29,10 +29,16 @@ type interactiveModel struct {
 	program          *tea.Program // Reference to the program for printing
 
 	active          bool
-	toolCalls       []toolCallEntry
+	rounds          []thinkingRound // All completed rounds
+	currentRound    *thinkingRound  // Current round being built
 	streamText      string
-	streamReasoning string
 	status          string // Current agent status
+}
+
+// thinkingRound represents one round of thinking + tool calls
+type thinkingRound struct {
+	reasoning string
+	toolCalls []toolCallEntry
 }
 
 type toolCallEntry struct {
@@ -56,6 +62,10 @@ type responseMsg struct {
 
 type agentEventMsg struct {
 	ev bus.AgentEvent
+}
+
+type agentEventBatchMsg struct {
+	events []bus.AgentEvent
 }
 
 type pollTickMsg struct{}
@@ -87,22 +97,41 @@ func (m *interactiveModel) Init() tea.Cmd {
 
 func (m *interactiveModel) pollEvents() tea.Cmd {
 	return func() tea.Msg {
-		select {
-		case ev := <-m.agentEventCh:
-			return agentEventMsg{ev: ev}
-		case resp, ok := <-m.outboundCh:
-			if !ok {
+		// Try to consume multiple agent events in one go to avoid channel overflow
+		var events []bus.AgentEvent
+		for {
+			select {
+			case ev := <-m.agentEventCh:
+				events = append(events, ev)
+				// Keep draining if more events are available
+				if len(events) < 20 { // Limit batch size
+					continue
+				}
+				return agentEventBatchMsg{events: events}
+			case resp, ok := <-m.outboundCh:
+				if !ok {
+					return nil
+				}
+				// If we have pending events, return them first
+				if len(events) > 0 {
+					return agentEventBatchMsg{events: events}
+				}
+				return responseMsg{
+					content:         resp.Content,
+					reasoning:       resp.Reasoning,
+					agentEventFinal: outboundFromAgentEventFinal(resp),
+				}
+			case <-m.done:
 				return nil
+			default:
+				// No more events immediately available
+				if len(events) > 0 {
+					return agentEventBatchMsg{events: events}
+				}
+				// Wait a bit before polling again
+				time.Sleep(10 * time.Millisecond)
+				return pollTickMsg{}
 			}
-			return responseMsg{
-				content:         resp.Content,
-				reasoning:       resp.Reasoning,
-				agentEventFinal: outboundFromAgentEventFinal(resp),
-			}
-		case <-m.done:
-			return nil
-		case <-time.After(50 * time.Millisecond):
-			return pollTickMsg{}
 		}
 	}
 }
@@ -145,28 +174,40 @@ func (m *interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.mu.Unlock()
 		return m, cmd
 
+	case agentEventBatchMsg:
+		m.mu.Lock()
+		var finalCmd tea.Cmd
+		for _, ev := range msg.events {
+			if ev.SessionKey == m.sessionKey && m.active {
+				if ev.Type == bus.EventLLMFinal {
+					var content, reasoning string
+					if data, ok := ev.LLMFinal(); ok {
+						content = data.Content
+						reasoning = data.ReasoningContent
+						if data.Error != "" && content == "" {
+							content = "Error: " + data.Error
+						}
+					}
+					if m.currentRound != nil && (m.currentRound.reasoning != "" || len(m.currentRound.toolCalls) > 0) {
+						m.rounds = append(m.rounds, *m.currentRound)
+						m.currentRound = nil
+					}
+					finalCmd = m.finalizeAssistantMessage(content, reasoning)
+				} else {
+					m.processAgentEvent(ev)
+				}
+			}
+		}
+		m.mu.Unlock()
+		if finalCmd != nil {
+			return m, finalCmd
+		}
+		return m, m.pollEvents()
+
 	case agentEventMsg:
 		m.mu.Lock()
 		if msg.ev.SessionKey == m.sessionKey && m.active {
-			switch msg.ev.Type {
-			case bus.EventLLMThinking:
-				m.status = "thinking"
-				m.streamText = ""
-				m.streamReasoning = ""
-			case bus.EventLLMResponding:
-				m.status = "responding"
-				m.streamText = ""
-				m.streamReasoning = ""
-			case bus.EventLLMStreamChunk:
-				m.status = "streaming"
-				if data, ok := msg.ev.StreamChunk(); ok {
-					if data.IsReasoning {
-						m.streamReasoning = data.FullText
-					} else {
-						m.streamText = data.FullText
-					}
-				}
-			case bus.EventLLMFinal:
+			if msg.ev.Type == bus.EventLLMFinal {
 				var content, reasoning string
 				if data, ok := msg.ev.LLMFinal(); ok {
 					content = data.Content
@@ -175,54 +216,15 @@ func (m *interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						content = "Error: " + data.Error
 					}
 				}
+				if m.currentRound != nil && (m.currentRound.reasoning != "" || len(m.currentRound.toolCalls) > 0) {
+					m.rounds = append(m.rounds, *m.currentRound)
+					m.currentRound = nil
+				}
 				cmd := m.finalizeAssistantMessage(content, reasoning)
 				m.mu.Unlock()
 				return m, cmd
-			case bus.EventLLMToolCalls:
-				m.status = "using tools"
-				if toolCalls, ok := msg.ev.ToolCalls(); ok {
-					for _, tc := range toolCalls {
-						m.toolCalls = append(m.toolCalls, toolCallEntry{
-							id: tc.ID, name: tc.Name, args: formatArgs(tc.Args), status: "pending",
-						})
-					}
-				}
-			case bus.EventToolStart:
-				if data, ok := msg.ev.ToolCall(); ok {
-					if idx := m.findToolCall(data.ID, data.Name, "pending", ""); idx >= 0 {
-						m.toolCalls[idx].status = "running"
-						m.toolCalls[idx].args = formatArgs(data.Args)
-					} else {
-						m.toolCalls = append(m.toolCalls, toolCallEntry{
-							id: data.ID, name: data.Name, args: formatArgs(data.Args), status: "running",
-						})
-					}
-				}
-			case bus.EventToolEnd:
-				if data, ok := msg.ev.ToolResult(); ok {
-					if idx := m.findToolCall(data.ToolID, data.ToolName); idx >= 0 {
-						if data.Success {
-							m.toolCalls[idx].status = "done"
-							m.toolCalls[idx].result = data.Result
-						} else {
-							m.toolCalls[idx].status = "error"
-							m.toolCalls[idx].result = data.Error
-						}
-						m.toolCalls[idx].durationMs = data.DurationMs
-					}
-				}
-			case bus.EventToolError:
-				if data, ok := msg.ev.ToolResult(); ok {
-					if idx := m.findToolCall(data.ToolID, data.ToolName); idx >= 0 {
-						m.toolCalls[idx].status = "error"
-						m.toolCalls[idx].result = data.Error
-						m.toolCalls[idx].durationMs = data.DurationMs
-					}
-				}
-			case bus.EventSessionEnd:
-				m.waiting = false
-				m.active = false
 			}
+			m.processAgentEvent(msg.ev)
 		}
 		m.mu.Unlock()
 		return m, m.pollEvents()
@@ -230,8 +232,8 @@ func (m *interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.Type {
 		case tea.KeyCtrlC, tea.KeyCtrlD:
-			if m.active && (m.streamText != "" || m.streamReasoning != "" || len(m.toolCalls) > 0) {
-				output := formatAssistantMessage(append([]toolCallEntry(nil), m.toolCalls...), m.streamText, m.streamReasoning)
+			if m.active && (m.streamText != "" || (m.currentRound != nil && m.currentRound.reasoning != "") || len(m.rounds) > 0) {
+				output := m.formatCurrentState()
 				cmd := m.printAbove(output)
 				m.clearActiveState()
 				m.active = false
@@ -262,14 +264,15 @@ func (m *interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.waiting = true
 			m.responseReceived = false
 			m.spinnerIdx = 0
-			m.toolCalls = nil
+			m.rounds = nil
+			m.currentRound = nil
 			m.streamText = ""
-			m.streamReasoning = ""
 			m.status = ""
 			m.mu.Unlock()
 
-			// Print user message above the view
-			userMsg := userPromptStyle.Render("You:") + " " + userInput
+			// Print separator + user message above the view for clear distinction
+			sep := borderStyle.Render(strings.Repeat("─", getTerminalWidth()))
+			userMsg := sep + "\n" + userPromptStyle.Render("You:") + " " + userInput
 			cmd := m.printAbove(userMsg)
 
 			m.messageBus.PublishInbound(bus.InboundMessage{
@@ -294,10 +297,36 @@ func (m *interactiveModel) finalizeAssistantMessage(content, reasoning string) t
 	m.active = false
 	m.status = "done"
 
-	toolCalls := append([]toolCallEntry(nil), m.toolCalls...)
+	output := m.formatFinalMessage(content, reasoning)
 	m.clearActiveState()
-	output := formatAssistantMessage(toolCalls, content, reasoning)
 	return tea.Batch(m.printAbove(output), m.pollEvents())
+}
+
+// formatCurrentState formats the current state for display (used during Ctrl+C)
+func (m *interactiveModel) formatCurrentState() string {
+	var allRounds []thinkingRound
+	// Add completed rounds
+	allRounds = append(allRounds, m.rounds...)
+	// Add current round if it has content
+	if m.currentRound != nil && (m.currentRound.reasoning != "" || len(m.currentRound.toolCalls) > 0) {
+		allRounds = append(allRounds, *m.currentRound)
+	}
+	return formatAssistantMessage(allRounds, m.streamText, "")
+}
+
+// formatFinalMessage formats the final message with all rounds
+func (m *interactiveModel) formatFinalMessage(content, reasoning string) string {
+	var allRounds []thinkingRound
+	// Add completed rounds
+	allRounds = append(allRounds, m.rounds...)
+	// Add final reasoning if provided and not already in a round
+	if reasoning != "" {
+		// Check if we need to add it as a new round
+		if len(allRounds) == 0 || allRounds[len(allRounds)-1].reasoning != reasoning {
+			allRounds = append(allRounds, thinkingRound{reasoning: reasoning})
+		}
+	}
+	return formatAssistantMessage(allRounds, content, reasoning)
 }
 
 func (m *interactiveModel) printAbove(content string) tea.Cmd {
@@ -313,13 +342,165 @@ func (m *interactiveModel) printAbove(content string) tea.Cmd {
 	}
 }
 
+// renderRound renders a single thinking round (reasoning + tool calls)
+func (m *interactiveModel) renderRound(round thinkingRound, isLive bool) string {
+	var s strings.Builder
+
+	// Reasoning for this round
+	if round.reasoning != "" {
+		s.WriteString(renderReasoningMarkdown(round.reasoning))
+		s.WriteString("\n")
+	}
+
+	// Tool calls for this round
+	if len(round.toolCalls) > 0 {
+		for _, tc := range round.toolCalls {
+			var icon, statusText string
+			var iconStyle lipgloss.Style
+			switch tc.status {
+			case "done":
+				icon = "\u2713"
+				statusText = fmt.Sprintf(" \u2022 %s", formatDuration(tc.durationMs))
+				iconStyle = toolDoneStyle
+			case "error":
+				icon = "\u2717"
+				if tc.durationMs > 0 {
+					statusText = fmt.Sprintf(" \u2022 %s", formatDuration(tc.durationMs))
+				}
+				iconStyle = toolErrorStyle
+			case "running":
+				if isLive {
+					icon = spinnerFrames[m.spinnerIdx]
+				} else {
+					icon = "\u25cb"
+				}
+				statusText = " running..."
+				iconStyle = toolRunningStyle
+			default:
+				icon = "\u25cb"
+				statusText = " pending"
+				iconStyle = toolEntryStyle
+			}
+			s.WriteString("  ")
+			s.WriteString(iconStyle.Render(icon) + " ")
+			s.WriteString(toolEntryStyle.Render(tc.name))
+			s.WriteString(toolDurationStyle.Render(statusText))
+			s.WriteString("\n")
+			// Compact display for args and results
+			maxWidth := getTerminalWidth() - 12
+			if maxWidth < 40 {
+				maxWidth = 40
+			}
+			hasResult := (tc.status == "done" && tc.result != "") || (tc.status == "error" && tc.result != "")
+			if tc.args != "" {
+				prefix := "    \u250c "
+				if !hasResult {
+					prefix = "    \u2514 "
+				}
+				s.WriteString(toolArgsStyle.Render(prefix + "Args: " + truncateStr(tc.args, maxWidth)))
+				s.WriteString("\n")
+			}
+			if tc.status == "error" && tc.result != "" {
+				s.WriteString("    \u2514 " + toolErrorStyle.Render("Error: "+truncateStr(tc.result, maxWidth)))
+				s.WriteString("\n")
+			} else if tc.status == "done" && tc.result != "" {
+				s.WriteString(toolArgsStyle.Render("    \u2514 Result: " + truncateStr(tc.result, maxWidth)))
+				s.WriteString("\n")
+			}
+		}
+	}
+
+	return s.String()
+}
+
 func (m *interactiveModel) clearActiveState() {
-	m.toolCalls = nil
+	m.rounds = nil
+	m.currentRound = nil
 	m.streamText = ""
-	m.streamReasoning = ""
+}
+
+// processAgentEvent handles a single agent event (called with lock held)
+func (m *interactiveModel) processAgentEvent(ev bus.AgentEvent) {
+	switch ev.Type {
+	case bus.EventLLMThinking:
+		m.status = "thinking"
+		// Start a new round
+		if m.currentRound != nil && (m.currentRound.reasoning != "" || len(m.currentRound.toolCalls) > 0) {
+			// Save the previous round
+			m.rounds = append(m.rounds, *m.currentRound)
+		}
+		m.currentRound = &thinkingRound{}
+		m.streamText = ""
+	case bus.EventLLMResponding:
+		m.status = "responding"
+		m.streamText = ""
+	case bus.EventLLMStreamChunk:
+		m.status = "streaming"
+		if data, ok := ev.StreamChunk(); ok {
+			if data.IsReasoning {
+				if m.currentRound != nil {
+					m.currentRound.reasoning = data.FullText
+				}
+			} else {
+				m.streamText = data.FullText
+			}
+		}
+	case bus.EventLLMFinal:
+		// This is handled separately in Update() because it needs to return a Cmd
+	case bus.EventLLMToolCalls:
+		m.status = "using tools"
+		if toolCalls, ok := ev.ToolCalls(); ok {
+			if m.currentRound == nil {
+				m.currentRound = &thinkingRound{}
+			}
+			for _, tc := range toolCalls {
+				m.currentRound.toolCalls = append(m.currentRound.toolCalls, toolCallEntry{
+					id: tc.ID, name: tc.Name, args: formatArgs(tc.Args), status: "pending",
+				})
+			}
+		}
+	case bus.EventToolStart:
+		if data, ok := ev.ToolCall(); ok {
+			if idx := m.findToolCall(data.ID, data.Name, "pending", ""); idx >= 0 {
+				m.currentRound.toolCalls[idx].status = "running"
+				m.currentRound.toolCalls[idx].args = formatArgs(data.Args)
+			} else if m.currentRound != nil {
+				m.currentRound.toolCalls = append(m.currentRound.toolCalls, toolCallEntry{
+					id: data.ID, name: data.Name, args: formatArgs(data.Args), status: "running",
+				})
+			}
+		}
+	case bus.EventToolEnd:
+		if data, ok := ev.ToolResult(); ok {
+			if idx := m.findToolCall(data.ToolID, data.ToolName); idx >= 0 {
+				if data.Success {
+					m.currentRound.toolCalls[idx].status = "done"
+					m.currentRound.toolCalls[idx].result = data.Result
+				} else {
+					m.currentRound.toolCalls[idx].status = "error"
+					m.currentRound.toolCalls[idx].result = data.Error
+				}
+				m.currentRound.toolCalls[idx].durationMs = data.DurationMs
+			}
+		}
+	case bus.EventToolError:
+		if data, ok := ev.ToolResult(); ok {
+			if idx := m.findToolCall(data.ToolID, data.ToolName); idx >= 0 {
+				m.currentRound.toolCalls[idx].status = "error"
+				m.currentRound.toolCalls[idx].result = data.Error
+				m.currentRound.toolCalls[idx].durationMs = data.DurationMs
+			}
+		}
+	case bus.EventSessionEnd:
+		m.waiting = false
+		m.active = false
+	}
 }
 
 func (m *interactiveModel) findToolCall(id, name string, statuses ...string) int {
+	if m.currentRound == nil {
+		return -1
+	}
 	statusAllowed := func(status string) bool {
 		if len(statuses) == 0 {
 			return true
@@ -333,14 +514,14 @@ func (m *interactiveModel) findToolCall(id, name string, statuses ...string) int
 	}
 
 	if id != "" {
-		for i := range m.toolCalls {
-			if m.toolCalls[i].id == id && statusAllowed(m.toolCalls[i].status) {
+		for i := range m.currentRound.toolCalls {
+			if m.currentRound.toolCalls[i].id == id && statusAllowed(m.currentRound.toolCalls[i].status) {
 				return i
 			}
 		}
 	}
-	for i := range m.toolCalls {
-		if m.toolCalls[i].name == name && statusAllowed(m.toolCalls[i].status) {
+	for i := range m.currentRound.toolCalls {
+		if m.currentRound.toolCalls[i].name == name && statusAllowed(m.currentRound.toolCalls[i].status) {
 			return i
 		}
 	}
@@ -357,82 +538,36 @@ func outboundFromAgentEventFinal(msg bus.OutboundMessage) bool {
 }
 
 func (m *interactiveModel) View() string {
-	sep := borderStyle.Render(strings.Repeat("─", min(60, getTerminalWidth())))
+	sep := borderStyle.Render(strings.Repeat("─", getTerminalWidth()))
 	var s strings.Builder
 
 	if m.quitting {
+		s.WriteString(sep)
 		s.WriteString(lipgloss.NewStyle().
 			Foreground(lipgloss.Color("245")).
 			Render("Goodbye!\n"))
+		s.WriteString("\n")
 		return s.String()
 	}
 
 	if m.active {
-		s.WriteString(assistantLabelStyle.Render("nanobot"))
+		s.WriteString(assistantLabelStyle.Render("nanobot:"))
 		s.WriteString("\n")
 
-		// Tool calls with live status
-		if len(m.toolCalls) > 0 {
-			s.WriteString("\n")
-			for _, tc := range m.toolCalls {
-				var icon, statusText string
-				var iconStyle lipgloss.Style
-				switch tc.status {
-				case "done":
-					icon = "✓"
-					statusText = fmt.Sprintf(" • %s", formatDuration(tc.durationMs))
-					iconStyle = toolDoneStyle
-				case "error":
-					icon = "✗"
-					if tc.durationMs > 0 {
-						statusText = fmt.Sprintf(" • %s", formatDuration(tc.durationMs))
-					}
-					iconStyle = toolErrorStyle
-				case "running":
-					icon = spinnerFrames[m.spinnerIdx]
-					statusText = " running..."
-					iconStyle = toolRunningStyle
-				default:
-					icon = "○"
-					statusText = " pending"
-					iconStyle = toolEntryStyle
-				}
-				s.WriteString("  ")
-				s.WriteString(iconStyle.Render(icon) + " ")
-				s.WriteString(toolEntryStyle.Render(tc.name))
-				s.WriteString(toolDurationStyle.Render(statusText))
+		// Display completed rounds in order
+		for i, round := range m.rounds {
+			if i > 0 {
 				s.WriteString("\n")
-				// Use compact display for args and results
-				maxWidth := getTerminalWidth() - 12
-				if maxWidth < 40 {
-					maxWidth = 40
-				}
-				hasResult := (tc.status == "done" && tc.result != "") || (tc.status == "error" && tc.result != "")
-				if tc.args != "" {
-					prefix := "    ┌ "
-					if !hasResult {
-						prefix = "    └ "
-					}
-					s.WriteString(toolArgsStyle.Render(prefix + "Args: " + truncateStr(tc.args, maxWidth)))
-					s.WriteString("\n")
-				}
-				if tc.status == "error" && tc.result != "" {
-					s.WriteString("    └ " + toolErrorStyle.Render("Error: "+truncateStr(tc.result, maxWidth)))
-					s.WriteString("\n")
-				} else if tc.status == "done" && tc.result != "" {
-					s.WriteString(toolArgsStyle.Render("    └ Result: " + truncateStr(tc.result, maxWidth)))
-					s.WriteString("\n")
-				}
 			}
-			s.WriteString("\n")
+			s.WriteString(m.renderRound(round, false))
 		}
 
-		// Keep reasoning live, but defer assistant text until the final message.
-		// Rendering long streamed text in the normal terminal buffer leaves stale
-		// frames in scrollback, which looks like duplicated responses.
-		if m.streamReasoning != "" {
-			s.WriteString(reasoningStyle.Render(m.streamReasoning))
-			s.WriteString("\n")
+		// Display current round (in progress)
+		if m.currentRound != nil {
+			if len(m.rounds) > 0 {
+				s.WriteString("\n")
+			}
+			s.WriteString(m.renderRound(*m.currentRound, true))
 		}
 
 		// Status indicator during active streaming
@@ -441,17 +576,17 @@ func (m *interactiveModel) View() string {
 			s.WriteString(spinnerStyle.Render(spinnerFrames[m.spinnerIdx]))
 			s.WriteString(" ")
 			s.WriteString(toolRunningStyle.Render(m.status + "..."))
-			s.WriteString("\n")
 		}
 	}
 
 	// Footer
+	s.WriteString("\n")
 	s.WriteString(sep)
 	s.WriteString("\n")
 	// Only show waiting when waiting for a new turn, not during streaming
 	if m.waiting && !m.active {
 		s.WriteString(waitingStyle.Render("> waiting for response..."))
-		s.WriteString("\n\n")
+		s.WriteString("\n")
 	}
 	s.WriteString(m.textInput.View())
 	s.WriteString("\n")

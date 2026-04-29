@@ -75,14 +75,15 @@ func (b *messageBus) PublishAgentEvent(event AgentEvent) {
 	for _, ch := range b.agentSubs {
 		select {
 		case ch <- event:
-		default:
-			// Don't block if subscriber is slow
+		case <-time.After(100 * time.Millisecond):
+			// Log dropped event - this should not happen in normal operation
+			// If events are being dropped, the subscriber is too slow
 		}
 	}
 }
 
 func (b *messageBus) SubscribeAgentEvents() <-chan AgentEvent {
-	ch := make(chan AgentEvent, 100)
+	ch := make(chan AgentEvent, 500) // Increased buffer for high-frequency streaming events
 	b.subMu.Lock()
 	b.agentSubs = append(b.agentSubs, ch)
 	b.subMu.Unlock()

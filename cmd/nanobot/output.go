@@ -2,57 +2,63 @@ package main
 
 import (
 	"fmt"
-	"os"
 	"strings"
 
+	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
 )
 
 // formatAssistantMessage renders a complete assistant response for persistent terminal output.
-func formatAssistantMessage(tcs []toolCallEntry, content, reasoning string) string {
+func formatAssistantMessage(rounds []thinkingRound, content, reasoning string) string {
 	var b strings.Builder
-	sep := borderStyle.Render(strings.Repeat("─", min(60, getTerminalWidth())))
+	sep := borderStyle.Render(strings.Repeat("─", getTerminalWidth()))
 
 	b.WriteString(sep)
 	b.WriteString("\n")
 	b.WriteString(assistantLabelStyle.Render("nanobot"))
 	b.WriteString("\n")
 
-	// Tool calls
-	if len(tcs) > 0 {
-		b.WriteString("\n")
-		for _, tc := range tcs {
-			var icon, statusText string
-			var iconStyle lipgloss.Style
-			switch tc.status {
-			case "done":
-				icon = "✓"
-				statusText = fmt.Sprintf(" • %s", formatDuration(tc.durationMs))
-				iconStyle = toolDoneStyle
-			case "error":
-				icon = "✗"
-				if tc.durationMs > 0 {
-					statusText = fmt.Sprintf(" • %s", formatDuration(tc.durationMs))
-				}
-				iconStyle = toolErrorStyle
-			default:
-				icon = "○"
-				iconStyle = toolEntryStyle
-			}
-			b.WriteString("  ")
-			b.WriteString(iconStyle.Render(icon) + " ")
-			b.WriteString(toolEntryStyle.Render(tc.name))
-			b.WriteString(toolDurationStyle.Render(statusText))
+	// Display all rounds in order (reasoning + tool calls)
+	for i, round := range rounds {
+		// Add spacing between rounds (but not before the first round)
+		if i > 0 && (round.reasoning != "" || len(round.toolCalls) > 0) {
 			b.WriteString("\n")
-			b.WriteString(renderToolCallBlock(tc))
 		}
-		b.WriteString("\n")
-	}
 
-	// Reasoning
-	if reasoning != "" {
-		b.WriteString(reasoningStyle.Render(reasoning))
-		b.WriteString("\n")
+		// Reasoning for this round
+		if round.reasoning != "" {
+			b.WriteString(renderReasoningMarkdown(round.reasoning))
+			b.WriteString("\n")
+		}
+
+		// Tool calls for this round
+		if len(round.toolCalls) > 0 {
+			for _, tc := range round.toolCalls {
+				var icon, statusText string
+				var iconStyle lipgloss.Style
+				switch tc.status {
+				case "done":
+					icon = "✓"
+					statusText = fmt.Sprintf(" • %s", formatDuration(tc.durationMs))
+					iconStyle = toolDoneStyle
+				case "error":
+					icon = "✗"
+					if tc.durationMs > 0 {
+						statusText = fmt.Sprintf(" • %s", formatDuration(tc.durationMs))
+					}
+					iconStyle = toolErrorStyle
+				default:
+					icon = "○"
+					iconStyle = toolEntryStyle
+				}
+				b.WriteString("  ")
+				b.WriteString(iconStyle.Render(icon) + " ")
+				b.WriteString(toolEntryStyle.Render(tc.name))
+				b.WriteString(toolDurationStyle.Render(statusText))
+				b.WriteString("\n")
+				b.WriteString(renderToolCallBlock(tc))
+			}
+		}
 	}
 
 	// Content with reasoning-detection
@@ -81,7 +87,7 @@ func formatContentWithReasoning(content string, reasoning string) string {
 		reasoningBlock := content[reasoningStart+len("--- Reasoning ---") : reasoningEnd]
 		after := content[reasoningEnd+len("---"):]
 		var b strings.Builder
-		b.WriteString(reasoningStyle.Render(reasoningBlock))
+		b.WriteString(renderReasoningMarkdown(reasoningBlock))
 		if strings.TrimSpace(after) != "" {
 			b.WriteString("\n")
 			b.WriteString(renderMarkdown(strings.TrimSpace(after)))
@@ -114,7 +120,7 @@ func formatContentWithReasoning(content string, reasoning string) string {
 
 	var b strings.Builder
 	if len(reasoningLines) > 0 {
-		b.WriteString(reasoningStyle.Render(strings.Join(reasoningLines, "\n")))
+		b.WriteString(renderReasoningMarkdown(strings.Join(reasoningLines, "\n")))
 		b.WriteString("\n")
 	}
 	if len(answerLines) > 0 {
@@ -125,7 +131,7 @@ func formatContentWithReasoning(content string, reasoning string) string {
 		answerStart := int(float64(total) * 0.75)
 		if answerStart < total-1 {
 			b.WriteString("\n")
-			b.WriteString(reasoningStyle.Render(strings.Join(reasoningLines[:answerStart], "\n")))
+			b.WriteString(renderReasoningMarkdown(strings.Join(reasoningLines[:answerStart], "\n")))
 			b.WriteString("\n")
 			b.WriteString(renderMarkdown(strings.Join(reasoningLines[answerStart:], "\n")))
 		}
@@ -197,16 +203,53 @@ func formatDuration(ms int64) string {
 	return fmt.Sprintf("%.1fm", float64(ms)/60000)
 }
 
-// getTerminalWidth returns a reasonable terminal width (fallback to 60)
-func getTerminalWidth() int {
-	// Try to get from environment or use default
-	if w := os.Getenv("COLUMNS"); w != "" {
-		var cw int
-		if _, err := fmt.Sscanf(w, "%d", &cw); err == nil && cw > 0 {
-			return cw
-		}
+// getMarkdownRenderer creates or returns a cached glamour renderer for the current terminal width.
+func getMarkdownRenderer() *glamour.TermRenderer {
+	width := getTerminalWidth()
+	// Leave some margin for padding
+	wrapWidth := width - 4
+	if wrapWidth < 40 {
+		wrapWidth = 40
 	}
-	return 60
+	renderer, _ := glamour.NewTermRenderer(
+		glamour.WithStandardStyle("dark"),
+		glamour.WithWordWrap(wrapWidth),
+	)
+	return renderer
+}
+
+// getReasoningRenderer creates or returns a cached dimmed glamour renderer for reasoning content.
+func getReasoningRenderer() *glamour.TermRenderer {
+	width := getTerminalWidth()
+	wrapWidth := width - 4
+	if wrapWidth < 40 {
+		wrapWidth = 40
+	}
+	renderer, _ := glamour.NewTermRenderer(
+		glamour.WithStylesFromJSONBytes(reasoningStyleJSON),
+		glamour.WithWordWrap(wrapWidth),
+	)
+	return renderer
+}
+
+// renderReasoningMarkdown renders reasoning content as markdown with a dimmed glamour style.
+// Uses a separate glamour renderer (mdReasoningRenderer) with gray colors so that
+// reasoning is visually distinct from the final answer, while still getting proper
+// markdown formatting (lists, code blocks, headings, etc.).
+func renderReasoningMarkdown(content string) string {
+	if content == "" {
+		return ""
+	}
+	renderer := getReasoningRenderer()
+	if renderer == nil {
+		// Fallback: plain reasoningStyle if renderer failed to init
+		return reasoningStyle.Render(content)
+	}
+	rendered, err := renderer.Render(content)
+	if err != nil {
+		return reasoningStyle.Render(content)
+	}
+	return strings.TrimSuffix(rendered, "\n")
 }
 
 // renderMarkdown renders markdown content using glamour
@@ -214,7 +257,11 @@ func renderMarkdown(content string) string {
 	if content == "" {
 		return ""
 	}
-	rendered, err := mdRenderer.Render(content)
+	renderer := getMarkdownRenderer()
+	if renderer == nil {
+		return content
+	}
+	rendered, err := renderer.Render(content)
 	if err != nil {
 		return content
 	}
