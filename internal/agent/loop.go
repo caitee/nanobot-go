@@ -408,7 +408,7 @@ func (al *AgentLoop) processMessage(ctx context.Context, inbound bus.InboundMess
 					ToolName:   tc.Name,
 					ToolID:     tc.ID,
 					Success:    true,
-					Result:     "", // Don't expose result by default
+					Result:     fmt.Sprintf("%v", result),
 					DurationMs: duration.Milliseconds(),
 				})
 			}

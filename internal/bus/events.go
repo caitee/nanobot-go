@@ -137,7 +137,7 @@ type ToolResultEventData struct {
 	ToolName   string
 	ToolID     string
 	Success    bool
-	Result     string // Not displayed by default, only on demand
+	Result     string // Tool execution output
 	Error      string
 	DurationMs int64 // Execution duration in milliseconds
 }
