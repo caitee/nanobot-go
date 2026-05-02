@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"nanobot-go/internal/agent"
+	appcore "nanobot-go/internal/app"
 	"nanobot-go/internal/bus"
 	"nanobot-go/internal/config"
 	"nanobot-go/internal/providers"
@@ -61,126 +62,41 @@ func runAgent(cmd *cobra.Command, args []string) {
 		workspace = filepath.Join(homeDir, ".nanobot", "workspace")
 	}
 
-	// Create session store
-	sessionStore, err := session.NewFileSessionStore("sessions")
+	// Create app to initialize providers/tools via plugin system
+	appInstance, err := appcore.New(cfg)
 	if err != nil {
-		slog.Error("failed to create session store", "error", err)
+		slog.Error("failed to create app", "error", err)
+		os.Exit(1)
+	}
+	if err := appInstance.PluginRegistry.InitAll(ctx, appInstance); err != nil {
+		slog.Error("failed to initialize plugins", "error", err)
 		os.Exit(1)
 	}
 
-	// Create tool registry
-	toolRegistry := tools.NewRegistry()
-	toolRegistry.Register(tools.NewMessageTool())
-	toolRegistry.Register(tools.NewFilesystemTool(nil))
-	toolRegistry.Register(tools.NewShellTool(true, nil, nil))
-	toolRegistry.Register(tools.NewWebTool())
-	toolRegistry.Register(tools.NewCronTool(nil, nil))
-	toolRegistry.Register(tools.NewSpawnTool(nil))
+	sessionStore := appInstance.SessionStore
+	toolRegistry := appInstance.ToolRegistry
 
-	// Create provider based on config
-	provider := createProvider(cfg)
+	provider, err := appInstance.GetDefaultProvider()
+	if err != nil {
+		slog.Error("no provider available", "error", err)
+		os.Exit(1)
+	}
 
-	// Create agent loop
 	maxIterations := cfg.Agents.MaxToolIterations
 	if maxIterations <= 0 {
 		maxIterations = 40
 	}
-	agentLoop := agent.NewAgentLoop(nil, sessionStore, toolRegistry, provider, maxIterations, false)
 
 	if agentMessageFlag != "" {
-		// Single message mode
-		runAgentSingle(ctx, agentLoop, sessionStore, toolRegistry, provider, maxIterations)
+		runAgentSingle(ctx, sessionStore, toolRegistry, provider, maxIterations)
 	} else {
-		// Interactive mode
-		runAgentInteractive(ctx, agentLoop, sessionStore, toolRegistry, provider, maxIterations)
+		runAgentInteractive(ctx, sessionStore, toolRegistry, provider, maxIterations)
 	}
 }
 
-func createProvider(cfg *config.Config) providers.LLMProvider {
-	model := cfg.Agents.Model
-	providerName := cfg.Agents.Provider
-
-	// Try to get API key from providers config
-	var apiKey string
-	var apiBase string
-
-	switch providerName {
-	case "openai":
-		if cfg.Providers.OpenAI != nil {
-			if k, ok := cfg.Providers.OpenAI["api_key"].(string); ok {
-				apiKey = k
-			}
-			if b, ok := cfg.Providers.OpenAI["api_base"].(string); ok {
-				apiBase = b
-			}
-		}
-		if apiBase == "" {
-			apiBase = "https://api.openai.com/v1"
-		}
-		return providers.NewOpenAIProvider(apiBase, apiKey, model)
-
-	case "openrouter":
-		if cfg.Providers.OpenRouter != nil {
-			if k, ok := cfg.Providers.OpenRouter["api_key"].(string); ok {
-				apiKey = k
-			}
-		}
-		return providers.NewOpenRouterProvider(apiKey, model)
-
-	case "anthropic":
-		if cfg.Providers.Anthropic != nil {
-			if k, ok := cfg.Providers.Anthropic["api_key"].(string); ok {
-				apiKey = k
-			}
-		}
-		// Anthropic uses OpenAI-compatible API
-		if apiBase == "" {
-			apiBase = "https://api.anthropic.com/v1"
-		}
-		return providers.NewOpenAIProvider(apiBase, apiKey, model)
-
-	case "azure":
-		if cfg.Providers.Azure != nil {
-			if k, ok := cfg.Providers.Azure["api_key"].(string); ok {
-				apiKey = k
-			}
-			if b, ok := cfg.Providers.Azure["api_base"].(string); ok {
-				apiBase = b
-			}
-		}
-		return providers.NewOpenAIProvider(apiBase, apiKey, model)
-
-	case "minimax":
-		if cfg.Providers.Minimax != nil {
-			if k, ok := cfg.Providers.Minimax["api_key"].(string); ok {
-				apiKey = k
-			}
-			if b, ok := cfg.Providers.Minimax["api_base"].(string); ok {
-				apiBase = b
-			}
-		}
-		return providers.NewMinimaxProvider(apiKey, apiBase, model)
-
-	default:
-		// Default to OpenRouter for "auto" or unknown
-		if cfg.Providers.OpenRouter != nil {
-			if k, ok := cfg.Providers.OpenRouter["api_key"].(string); ok {
-				apiKey = k
-			}
-		}
-		if apiKey == "" {
-			apiKey = os.Getenv("OPENROUTER_API_KEY")
-		}
-		if apiKey == "" {
-			apiKey = os.Getenv("OPENAI_API_KEY")
-		}
-		return providers.NewOpenRouterProvider(apiKey, model)
-	}
-}
-
-func runAgentSingle(ctx context.Context, agentLoop *agent.AgentLoop, sessionStore session.SessionStore, toolRegistry tools.ToolRegistry, provider providers.LLMProvider, maxIterations int) {
+func runAgentSingle(ctx context.Context, sessionStore session.SessionStore, toolRegistry tools.ToolRegistry, provider providers.LLMProvider, maxIterations int) {
 	messageBus := bus.New(100)
-	agentLoop = agent.NewAgentLoop(messageBus, sessionStore, toolRegistry, provider, maxIterations, false)
+	agentLoop := agent.NewAgentLoop(messageBus, sessionStore, toolRegistry, provider, maxIterations, false)
 
 	// Parse session
 	sessionKey := agentSessionFlag
@@ -219,9 +135,9 @@ func runAgentSingle(ctx context.Context, agentLoop *agent.AgentLoop, sessionStor
 	}
 }
 
-func runAgentInteractive(ctx context.Context, agentLoop *agent.AgentLoop, sessionStore session.SessionStore, toolRegistry tools.ToolRegistry, provider providers.LLMProvider, maxIterations int) {
+func runAgentInteractive(ctx context.Context, sessionStore session.SessionStore, toolRegistry tools.ToolRegistry, provider providers.LLMProvider, maxIterations int) {
 	messageBus := bus.New(100)
-	agentLoop = agent.NewAgentLoop(messageBus, sessionStore, toolRegistry, provider, maxIterations, false)
+	agentLoop := agent.NewAgentLoop(messageBus, sessionStore, toolRegistry, provider, maxIterations, false)
 
 	// Parse session
 	sessionKey := agentSessionFlag

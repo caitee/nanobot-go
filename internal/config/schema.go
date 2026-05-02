@@ -7,6 +7,7 @@ type Config struct {
     Providers ProvidersConfig  `mapstructure:"providers"`
     Gateway   GatewayConfig   `mapstructure:"gateway"`
     Tools     ToolsConfig     `mapstructure:"tools"`
+    Plugins   PluginsConfig   `mapstructure:"plugins"`
 }
 
 // AgentDefaults defines default agent settings
@@ -68,4 +69,11 @@ type ExecConfig struct {
 // WorkspaceConfig defines workspace restrictions
 type WorkspaceConfig struct {
     AllowedDirs []string `mapstructure:"allowed_dirs"`
+}
+
+// PluginsConfig controls plugin loading.
+type PluginsConfig struct {
+    Providers []string `mapstructure:"providers"`
+    Channels  []string `mapstructure:"channels"`
+    Tools     []string `mapstructure:"tools"`
 }
