@@ -10,6 +10,7 @@ import (
 	"nanobot-go/internal/app"
 	"nanobot-go/internal/bus"
 	"nanobot-go/internal/llm"
+	"nanobot-go/internal/runtime"
 	"nanobot-go/internal/session"
 	"nanobot-go/internal/tool"
 )
@@ -90,7 +91,15 @@ func TestDispatcherInboundCommandBypassesAgent(t *testing.T) {
 func TestDispatcherRunProcessesInboundAndEmitsEvents(t *testing.T) {
 	d, b, _ := newTestDispatcher(t, "hello back")
 
-	sub := b.SubscribeAgentEvents()
+	events := make(chan runtime.Event, 64)
+	unsub := d.SubscribeRuntimeEvents(func(e runtime.Event) {
+		select {
+		case events <- e:
+		default:
+		}
+	})
+	defer unsub()
+
 	outbound := b.ConsumeOutbound()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -117,25 +126,26 @@ func TestDispatcherRunProcessesInboundAndEmitsEvents(t *testing.T) {
 		t.Fatalf("timeout waiting for outbound message")
 	}
 
-	// We should have seen at least session_start, llm_stream_chunk, llm_final.
+	// We should have seen at least agent_start, message_update (text delta),
+	// and agent_end on the runtime event stream.
 	deadline := time.After(500 * time.Millisecond)
-	var seenStart, seenChunk, seenFinal bool
+	var seenStart, seenUpdate, seenEnd bool
 	for {
 		select {
-		case ev := <-sub:
-			switch ev.Type {
-			case bus.EventSessionStart:
+		case ev := <-events:
+			switch ev.Kind {
+			case runtime.EventAgentStart:
 				seenStart = true
-			case bus.EventLLMStreamChunk:
-				seenChunk = true
-			case bus.EventLLMFinal:
-				seenFinal = true
+			case runtime.EventMessageUpdate:
+				seenUpdate = true
+			case runtime.EventAgentEnd:
+				seenEnd = true
 			}
-			if seenStart && seenChunk && seenFinal {
+			if seenStart && seenUpdate && seenEnd {
 				return
 			}
 		case <-deadline:
-			t.Fatalf("events missing: start=%v chunk=%v final=%v", seenStart, seenChunk, seenFinal)
+			t.Fatalf("events missing: start=%v update=%v end=%v", seenStart, seenUpdate, seenEnd)
 		}
 	}
 }

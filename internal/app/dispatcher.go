@@ -8,8 +8,8 @@
 //   - route "/command" inputs to the command handler
 //   - otherwise submit the message to the runtime.Agent, cancelling or
 //     steering any in-flight run for the same session as appropriate
-//   - subscribe to runtime.Event, translate to the legacy bus.AgentEvent
-//     format so the existing TUI keeps working without changes
+//   - fan runtime.Event out to subscribers (the CLI TUI subscribes directly;
+//     channels consume the OutboundMessage published after agent_end)
 //   - after agent_end, publish an OutboundMessage with the final assistant
 //     text + reasoning for channels to consume
 package app
@@ -49,6 +49,12 @@ type Dispatcher struct {
 	// running tracks the active agent per session so we can abort/steer.
 	mu      sync.Mutex
 	running map[string]*activeRun
+
+	// runtime event fan-out: every listener sees every Agent's events,
+	// filtered by SessionID on the subscriber side.
+	rtMu             sync.RWMutex
+	runtimeListeners map[int]func(runtime.Event)
+	nextRTID         int
 
 	// startTime is set by Run; exposed through Status.
 	startTime time.Time
@@ -109,6 +115,7 @@ func NewDispatcher(opts DispatcherOptions) *Dispatcher {
 		subagents:        opts.Subagents,
 		commands:         map[string]CommandHandler{},
 		running:          map[string]*activeRun{},
+		runtimeListeners: map[int]func(runtime.Event){},
 	}
 	RegisterDefaultCommands(d)
 	return d
@@ -141,8 +148,43 @@ func (d *Dispatcher) SetReasoning(sessionKey string, v bool) {
 // Subagents returns the spawner (possibly nil) attached to this dispatcher.
 func (d *Dispatcher) Subagents() SubagentSpawner { return d.subagents }
 
+// SubscribeRuntimeEvents registers a listener for every runtime.Event emitted
+// by any Agent the Dispatcher spawns. The returned function unsubscribes.
+// Listeners are invoked synchronously during event emission, so they must not
+// block for long periods — typical consumers forward the event into their own
+// channel / bubbletea program and return.
+func (d *Dispatcher) SubscribeRuntimeEvents(fn func(runtime.Event)) func() {
+	d.rtMu.Lock()
+	id := d.nextRTID
+	d.nextRTID++
+	d.runtimeListeners[id] = fn
+	d.rtMu.Unlock()
+
+	return func() {
+		d.rtMu.Lock()
+		delete(d.runtimeListeners, id)
+		d.rtMu.Unlock()
+	}
+}
+
+func (d *Dispatcher) fanoutRuntimeEvent(e runtime.Event) {
+	d.rtMu.RLock()
+	fns := make([]func(runtime.Event), 0, len(d.runtimeListeners))
+	for _, fn := range d.runtimeListeners {
+		fns = append(fns, fn)
+	}
+	d.rtMu.RUnlock()
+	for _, fn := range fns {
+		fn(e)
+	}
+}
+
 // Model returns the default model the dispatcher will use.
 func (d *Dispatcher) Model() llm.Model { return d.model }
+
+// Bus returns the dispatcher's message bus. Used by CLI / channels that need
+// to publish inbound or consume outbound without holding the whole App.
+func (d *Dispatcher) Bus() bus.MessageBus { return d.bus }
 
 // StartTime reports when Run was first invoked.
 func (d *Dispatcher) StartTime() time.Time {
@@ -316,32 +358,25 @@ func (d *Dispatcher) runTurn(parent context.Context, inbound bus.InboundMessage)
 		cancel()
 	}()
 
-	// Wire event translation: every runtime.Event becomes one or more
-	// legacy bus.AgentEvent entries, and agent_end captures the final msg.
+	// Subscribe to runtime events: a final collector grabs the assistant's
+	// final text/reasoning at agent_end so we can publish one OutboundMessage
+	// for channels, and a fan-out lets modern subscribers (the TUI) observe
+	// the raw stream.
 	final := newFinalCollector()
-	translator := newEventTranslator(d.bus, inbound.SessionKey, final)
-	unsub := a.Subscribe(translator.handle)
-	defer unsub()
+	unsubFinal := a.Subscribe(final.handle)
+	defer unsubFinal()
 
-	// Emit legacy session_start first so the TUI shows the "thinking" state
-	// immediately; session_end is emitted by the translator at agent_end.
-	d.bus.PublishAgentEvent(bus.AgentEvent{
-		SessionKey: inbound.SessionKey,
-		Type:       bus.EventSessionStart,
-		Timestamp:  time.Now(),
+	unsubFanout := a.Subscribe(func(e runtime.Event) {
+		if e.SessionID == "" {
+			e.SessionID = inbound.SessionKey
+		}
+		d.fanoutRuntimeEvent(e)
 	})
+	defer unsubFanout()
 
 	// The prompt is just the user message we already appended.
 	promptMsg := history[len(history)-1]
 	if err := a.Prompt(ctx, promptMsg); err != nil {
-		// Prompt surfaces runtime/context errors; stream errors already
-		// arrived as legacy events. Publish a session_end and return.
-		d.bus.PublishAgentEvent(bus.AgentEvent{
-			SessionKey: inbound.SessionKey,
-			Type:       bus.EventSessionEnd,
-			Timestamp:  time.Now(),
-			Data:       bus.SessionEndData{Cancelled: ctx.Err() != nil},
-		})
 		return nil, err
 	}
 

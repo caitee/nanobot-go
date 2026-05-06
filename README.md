@@ -13,21 +13,29 @@ A lightweight personal AI assistant framework rewritten in Go, inspired by the o
 
 ## Architecture
 
+Nanobot-go follows a four-layer agent design inspired by [pi-mono](https://github.com/OpenPipe/pi-mono): a pure-function `runtime` loop, a streaming `llm` provider abstraction, a `tool` registry with hook points, and an `app` container that wires everything to channels, cron, sessions, and subagents. See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full design.
+
 ```
 nanobot-go/
 ├── cmd/
-│   ├── nanobot/         # CLI entry point
-│   └── gateway/         # Gateway server
+│   ├── nanobot/         # CLI entry (TUI + single-shot + onboard)
+│   └── gateway/         # Gateway server (channels + health)
 ├── internal/
-│   ├── agent/           # Core agent loop
-│   ├── bus/             # Message bus (pub/sub)
-│   ├── channels/        # Channel implementations
-│   ├── providers/       # LLM providers
-│   ├── tools/           # Tool system
-│   ├── session/         # Session management
-│   ├── cron/            # Cron scheduling
-│   └── config/          # Configuration
-└── Makefile             # Build automation
+│   ├── runtime/         # Agent + loop + events + hooks (pi-mono core)
+│   ├── llm/             # Streaming provider abstraction + registry
+│   ├── tool/            # AgentTool interface + schema + registry + legacy adapter
+│   ├── memory/          # MEMORY.md / HISTORY.md two-layer store
+│   ├── app/             # Dispatcher, subagents, event translation
+│   ├── bus/             # Inbound/outbound message bus + legacy AgentEvent
+│   ├── channels/        # Telegram/Discord/Slack/... adapters
+│   ├── providers/       # Legacy provider impls (bridged into internal/llm)
+│   ├── tools/           # Legacy tool impls (adapted into internal/tool)
+│   ├── session/         # JSONL session store
+│   ├── cron/            # Cron service (injects via Dispatcher)
+│   ├── plugin/          # Plugin registration
+│   ├── skills/          # Always-on skill prompts
+│   └── config/          # Configuration loading
+└── Makefile             # build / test / lint
 ```
 
 ## Getting Started
@@ -114,8 +122,11 @@ After building with `make build`, the `nanobot` binary will be created in the cu
 # Build
 make build
 
-# Test
+# Test (with race detector)
 make test
+
+# Lint (go vet)
+make lint
 
 # Clean
 make clean

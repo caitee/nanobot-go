@@ -117,7 +117,7 @@ func runAgentSingle(ctx context.Context, app *appcore.App, sessionKey, chatID st
 func runAgentInteractive(ctx context.Context, app *appcore.App, sessionKey, chatID string) {
 	fmt.Printf("%s Interactive mode (type 'exit' or Ctrl+C to quit)\n\n", logo)
 
-	model := newInteractiveModel(app.Bus, sessionKey, chatID)
+	model := newInteractiveModel(app.Dispatcher, app.Bus, sessionKey, chatID)
 	p := tea.NewProgram(model, tea.WithoutSignals())
 	model.SetProgram(p)
 	if _, err := p.Run(); err != nil {
