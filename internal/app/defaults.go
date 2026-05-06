@@ -8,6 +8,7 @@ import (
 	"nanobot-go/internal/channels"
 	"nanobot-go/internal/config"
 	"nanobot-go/internal/cron"
+	"nanobot-go/internal/llm"
 	"nanobot-go/internal/plugin"
 	"nanobot-go/internal/providers"
 	"nanobot-go/internal/tool"
@@ -143,8 +144,7 @@ func (p *toolPlugin) Init(ctx context.Context, appCtx plugin.AppContext) error {
 // --- Provider plugins ---
 //
 // Each plugin reads its config slot + env var, constructs the legacy provider,
-// and registers it in the LegacyProviderRegistry. App.Start then bridges
-// every legacy provider into the new llm.Registry via llm.FromLegacy.
+// wraps it with llm.FromLegacy, and registers it directly in llm.Registry.
 
 type openaiProviderPlugin struct{}
 
@@ -153,7 +153,7 @@ func (p *openaiProviderPlugin) Type() plugin.Type { return plugin.TypeProvider }
 func (p *openaiProviderPlugin) Close() error      { return nil }
 func (p *openaiProviderPlugin) Init(_ context.Context, appCtx plugin.AppContext) error {
 	cfg := appCtx.GetConfig().(*config.Config)
-	reg := appCtx.GetProviderRegistry().(*providers.Registry)
+	llmReg := appCtx.GetLLMRegistry().(*llm.Registry)
 
 	var apiKey, apiBase string
 	if cfg.Providers.OpenAI != nil {
@@ -174,7 +174,8 @@ func (p *openaiProviderPlugin) Init(_ context.Context, appCtx plugin.AppContext)
 	if model == "" {
 		model = "gpt-4"
 	}
-	reg.Register("openai", providers.NewOpenAIProvider(apiBase, apiKey, model))
+	legacy := providers.NewOpenAIProvider(apiBase, apiKey, model)
+	llmReg.Register("openai", llm.FromLegacy(legacy), "plugin:openai")
 	return nil
 }
 
@@ -185,7 +186,7 @@ func (p *anthropicProviderPlugin) Type() plugin.Type { return plugin.TypeProvide
 func (p *anthropicProviderPlugin) Close() error      { return nil }
 func (p *anthropicProviderPlugin) Init(_ context.Context, appCtx plugin.AppContext) error {
 	cfg := appCtx.GetConfig().(*config.Config)
-	reg := appCtx.GetProviderRegistry().(*providers.Registry)
+	llmReg := appCtx.GetLLMRegistry().(*llm.Registry)
 
 	var apiKey, apiBase string
 	if cfg.Providers.Anthropic != nil {
@@ -206,7 +207,8 @@ func (p *anthropicProviderPlugin) Init(_ context.Context, appCtx plugin.AppConte
 	if model == "" {
 		model = "claude-opus-4-5"
 	}
-	reg.Register("anthropic", providers.NewAnthropicProvider(apiKey, apiBase, model))
+	legacy := providers.NewAnthropicProvider(apiKey, apiBase, model)
+	llmReg.Register("anthropic", llm.FromLegacy(legacy), "plugin:anthropic")
 	return nil
 }
 
@@ -217,7 +219,7 @@ func (p *azureProviderPlugin) Type() plugin.Type { return plugin.TypeProvider }
 func (p *azureProviderPlugin) Close() error      { return nil }
 func (p *azureProviderPlugin) Init(_ context.Context, appCtx plugin.AppContext) error {
 	cfg := appCtx.GetConfig().(*config.Config)
-	reg := appCtx.GetProviderRegistry().(*providers.Registry)
+	llmReg := appCtx.GetLLMRegistry().(*llm.Registry)
 
 	var apiKey, apiBase string
 	if cfg.Providers.Azure != nil {
@@ -236,7 +238,8 @@ func (p *azureProviderPlugin) Init(_ context.Context, appCtx plugin.AppContext) 
 	if cfg.Providers.Azure != nil {
 		apiVersion, _ = cfg.Providers.Azure["api_version"].(string)
 	}
-	reg.Register("azure", providers.NewAzureProvider(apiBase, apiKey, apiVersion, model))
+	legacy := providers.NewAzureProvider(apiBase, apiKey, apiVersion, model)
+	llmReg.Register("azure", llm.FromLegacy(legacy), "plugin:azure")
 	return nil
 }
 
@@ -247,7 +250,7 @@ func (p *minimaxProviderPlugin) Type() plugin.Type { return plugin.TypeProvider 
 func (p *minimaxProviderPlugin) Close() error      { return nil }
 func (p *minimaxProviderPlugin) Init(_ context.Context, appCtx plugin.AppContext) error {
 	cfg := appCtx.GetConfig().(*config.Config)
-	reg := appCtx.GetProviderRegistry().(*providers.Registry)
+	llmReg := appCtx.GetLLMRegistry().(*llm.Registry)
 
 	var apiKey, apiBase string
 	if cfg.Providers.Minimax != nil {
@@ -262,7 +265,8 @@ func (p *minimaxProviderPlugin) Init(_ context.Context, appCtx plugin.AppContext
 	if model == "" {
 		model = "MiniMax-M2.5"
 	}
-	reg.Register("minimax", providers.NewMinimaxProvider(apiKey, apiBase, model))
+	legacy := providers.NewMinimaxProvider(apiKey, apiBase, model)
+	llmReg.Register("minimax", llm.FromLegacy(legacy), "plugin:minimax")
 	return nil
 }
 
@@ -273,7 +277,7 @@ func (p *openrouterProviderPlugin) Type() plugin.Type { return plugin.TypeProvid
 func (p *openrouterProviderPlugin) Close() error      { return nil }
 func (p *openrouterProviderPlugin) Init(_ context.Context, appCtx plugin.AppContext) error {
 	cfg := appCtx.GetConfig().(*config.Config)
-	reg := appCtx.GetProviderRegistry().(*providers.Registry)
+	llmReg := appCtx.GetLLMRegistry().(*llm.Registry)
 
 	var apiKey string
 	if cfg.Providers.OpenRouter != nil {
@@ -290,6 +294,7 @@ func (p *openrouterProviderPlugin) Init(_ context.Context, appCtx plugin.AppCont
 	if model == "" {
 		model = "anthropic/claude-opus-4-5"
 	}
-	reg.Register("openrouter", providers.NewOpenRouterProvider(apiKey, model))
+	legacy := providers.NewOpenRouterProvider(apiKey, model)
+	llmReg.Register("openrouter", llm.FromLegacy(legacy), "plugin:openrouter")
 	return nil
 }

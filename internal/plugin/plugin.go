@@ -24,6 +24,7 @@ type AppContext interface {
 	GetSessionStore() any
 	GetToolRegistry() any
 	GetProviderRegistry() any
+	GetLLMRegistry() any
 	GetChannelManager() any
 	GetCronService() any
 }

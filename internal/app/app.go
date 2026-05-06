@@ -106,6 +106,8 @@ func (a *App) Start(ctx context.Context) error {
 	}
 
 	// Bridge every legacy provider into the new llm.Registry.
+	// This is kept as a short-term transition path for any providers that
+	// still register via LegacyProviderRegistry.
 	for _, name := range a.LegacyProviderRegistry.List() {
 		p, err := a.LegacyProviderRegistry.Get(name)
 		if err != nil {
@@ -118,14 +120,15 @@ func (a *App) Start(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	legacy, err := a.LegacyProviderRegistry.Get(providerName)
+	_, err = a.LLMRegistry.Get(providerName)
 	if err != nil {
 		return fmt.Errorf("provider not found: %s", providerName)
 	}
 
 	modelName := a.Config.Agents.Model
 	if modelName == "" {
-		modelName = legacy.GetDefaultModel()
+		// Use a sensible default when no model is configured
+		modelName = "gpt-4"
 	}
 	model := llm.Model{
 		ID:        modelName,
@@ -208,7 +211,7 @@ func (a *App) defaultProviderName() (string, error) {
 	if name != "" && name != "auto" {
 		return name, nil
 	}
-	names := a.LegacyProviderRegistry.List()
+	names := a.LLMRegistry.List()
 	if len(names) == 0 {
 		return "", fmt.Errorf("no providers registered")
 	}
@@ -233,6 +236,7 @@ func (a *App) GetBus() any              { return a.Bus }
 func (a *App) GetSessionStore() any     { return a.SessionStore }
 func (a *App) GetToolRegistry() any     { return a.ToolRegistry }
 func (a *App) GetProviderRegistry() any { return a.LegacyProviderRegistry }
+func (a *App) GetLLMRegistry() any      { return a.LLMRegistry }
 func (a *App) GetChannelManager() any   { return a.ChannelManager }
 func (a *App) GetCronService() any      { return a.CronService }
 
