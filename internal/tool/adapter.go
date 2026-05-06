@@ -32,10 +32,24 @@ func FromLegacy(t Legacy, label string) AgentTool {
 	return &legacyAdapter{legacy: t, label: label}
 }
 
+// UnwrapLegacy returns the underlying Legacy implementation if the given
+// AgentTool is a FromLegacy wrapper. Returns nil, false otherwise.
+func UnwrapLegacy(t AgentTool) (Legacy, bool) {
+	if a, ok := t.(*legacyAdapter); ok {
+		return a.legacy, true
+	}
+	return nil, false
+}
+
 type legacyAdapter struct {
 	legacy Legacy
 	label  string
 }
+
+// Unwrap returns the underlying Legacy implementation. Callers use this to
+// reach methods that aren't part of the AgentTool surface (for example, to
+// re-wire a spawner after registry construction).
+func (a *legacyAdapter) Unwrap() Legacy { return a.legacy }
 
 func (a *legacyAdapter) Name() string                      { return a.legacy.Name() }
 func (a *legacyAdapter) Label() string                     { return a.label }

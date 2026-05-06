@@ -10,9 +10,13 @@ import (
 	"nanobot-go/internal/cron"
 	"nanobot-go/internal/plugin"
 	"nanobot-go/internal/providers"
-	"nanobot-go/internal/tools"
+	"nanobot-go/internal/tool"
+	legacytools "nanobot-go/internal/tools"
 )
 
+// RegisterDefaults installs the stock set of providers, channels, and tools
+// on the given plugin registry. Each plugin's Init decides whether to
+// actually register itself (based on env / config) when the App starts.
 func RegisterDefaults(reg *plugin.Registry) {
 	reg.Register(&openaiProviderPlugin{})
 	reg.Register(&anthropicProviderPlugin{})
@@ -54,31 +58,34 @@ func RegisterDefaults(reg *plugin.Registry) {
 		return channels.NewMochatChannel(channels.MochatConfig{APIURL: val}, b)
 	}))
 
-	reg.Register(newToolPlugin("message", func(_ context.Context, _ plugin.AppContext) (tools.Tool, error) {
-		return tools.NewMessageTool(), nil
+	reg.Register(newToolPlugin("message", "Send Message", func(_ context.Context, _ plugin.AppContext) (legacytools.Tool, error) {
+		return legacytools.NewMessageTool(), nil
 	}))
-	reg.Register(newToolPlugin("filesystem", func(_ context.Context, appCtx plugin.AppContext) (tools.Tool, error) {
+	reg.Register(newToolPlugin("filesystem", "Filesystem", func(_ context.Context, appCtx plugin.AppContext) (legacytools.Tool, error) {
 		cfg := appCtx.GetConfig().(*config.Config)
-		return tools.NewFilesystemTool(cfg.Tools.Workspace.AllowedDirs), nil
+		return legacytools.NewFilesystemTool(cfg.Tools.Workspace.AllowedDirs), nil
 	}))
-	reg.Register(newToolPlugin("shell", func(_ context.Context, appCtx plugin.AppContext) (tools.Tool, error) {
+	reg.Register(newToolPlugin("shell", "Shell", func(_ context.Context, appCtx plugin.AppContext) (legacytools.Tool, error) {
 		cfg := appCtx.GetConfig().(*config.Config)
-		return tools.NewShellTool(cfg.Tools.Exec.Enabled, cfg.Tools.Exec.Allow, cfg.Tools.Exec.Deny), nil
+		return legacytools.NewShellTool(cfg.Tools.Exec.Enabled, cfg.Tools.Exec.Allow, cfg.Tools.Exec.Deny), nil
 	}))
-	reg.Register(newToolPlugin("web", func(_ context.Context, _ plugin.AppContext) (tools.Tool, error) {
-		return tools.NewWebTool(), nil
+	reg.Register(newToolPlugin("web", "Web", func(_ context.Context, _ plugin.AppContext) (legacytools.Tool, error) {
+		return legacytools.NewWebTool(), nil
 	}))
-	reg.Register(newToolPlugin("cron", func(_ context.Context, appCtx plugin.AppContext) (tools.Tool, error) {
+	reg.Register(newToolPlugin("cron", "Cron", func(_ context.Context, appCtx plugin.AppContext) (legacytools.Tool, error) {
 		msgBus := appCtx.GetBus().(bus.MessageBus)
 		cronSvc := appCtx.GetCronService().(*cron.CronService)
-		return tools.NewCronTool(cronSvc, msgBus), nil
+		return legacytools.NewCronTool(cronSvc, msgBus), nil
 	}))
-	// Spawn tool gets nil manager; App.Start() wires up the subagent manager later.
-	reg.Register(newToolPlugin("spawn", func(_ context.Context, _ plugin.AppContext) (tools.Tool, error) {
-		return tools.NewSpawnTool(nil), nil
+	// Spawn tool: the legacy implementation expects a SubagentSpawner at
+	// construction time. We pass nil and App.Start later swaps it via the
+	// spawnAdapter below. Keeping the tool inside the registry is still
+	// valuable because the model sees its schema immediately.
+	reg.Register(newToolPlugin("spawn", "Spawn", func(_ context.Context, _ plugin.AppContext) (legacytools.Tool, error) {
+		return legacytools.NewSpawnTool(nil), nil
 	}))
-	reg.Register(newToolPlugin("mcp", func(_ context.Context, _ plugin.AppContext) (tools.Tool, error) {
-		return tools.NewMCPTool(), nil
+	reg.Register(newToolPlugin("mcp", "MCP", func(_ context.Context, _ plugin.AppContext) (legacytools.Tool, error) {
+		return legacytools.NewMCPTool(), nil
 	}))
 }
 
@@ -93,9 +100,9 @@ func newChannelPlugin(name, envVar string, factory func(string, bus.MessageBus) 
 	return &channelPlugin{name: name, envVar: envVar, factory: factory}
 }
 
-func (p *channelPlugin) Name() string      { return "channel." + p.name }
-func (p *channelPlugin) Type() plugin.Type  { return plugin.TypeChannel }
-func (p *channelPlugin) Close() error       { return nil }
+func (p *channelPlugin) Name() string     { return "channel." + p.name }
+func (p *channelPlugin) Type() plugin.Type { return plugin.TypeChannel }
+func (p *channelPlugin) Close() error      { return nil }
 func (p *channelPlugin) Init(_ context.Context, appCtx plugin.AppContext) error {
 	val := os.Getenv(p.envVar)
 	if val == "" {
@@ -107,36 +114,43 @@ func (p *channelPlugin) Init(_ context.Context, appCtx plugin.AppContext) error 
 	return nil
 }
 
-// toolPlugin is a generic plugin for tools.
+// toolPlugin wraps a legacy tool factory and registers the produced tool as
+// an AgentTool via tool.FromLegacy. The legacy tool's runtime behavior is
+// preserved unchanged; only the interface shape is adapted.
 type toolPlugin struct {
 	name    string
-	factory func(context.Context, plugin.AppContext) (tools.Tool, error)
+	label   string
+	factory func(context.Context, plugin.AppContext) (legacytools.Tool, error)
 }
 
-func newToolPlugin(name string, factory func(context.Context, plugin.AppContext) (tools.Tool, error)) *toolPlugin {
-	return &toolPlugin{name: name, factory: factory}
+func newToolPlugin(name, label string, factory func(context.Context, plugin.AppContext) (legacytools.Tool, error)) *toolPlugin {
+	return &toolPlugin{name: name, label: label, factory: factory}
 }
 
-func (p *toolPlugin) Name() string      { return "tool." + p.name }
-func (p *toolPlugin) Type() plugin.Type  { return plugin.TypeTool }
-func (p *toolPlugin) Close() error       { return nil }
+func (p *toolPlugin) Name() string     { return "tool." + p.name }
+func (p *toolPlugin) Type() plugin.Type { return plugin.TypeTool }
+func (p *toolPlugin) Close() error      { return nil }
 func (p *toolPlugin) Init(ctx context.Context, appCtx plugin.AppContext) error {
-	tool, err := p.factory(ctx, appCtx)
+	legacy, err := p.factory(ctx, appCtx)
 	if err != nil {
 		return err
 	}
-	reg := appCtx.GetToolRegistry().(tools.ToolRegistry)
-	reg.Register(tool)
+	reg := appCtx.GetToolRegistry().(tool.Registry)
+	reg.Register(tool.FromLegacy(legacy, p.label))
 	return nil
 }
 
-// --- Provider Plugins ---
+// --- Provider plugins ---
+//
+// Each plugin reads its config slot + env var, constructs the legacy provider,
+// and registers it in the LegacyProviderRegistry. App.Start then bridges
+// every legacy provider into the new llm.Registry via llm.FromLegacy.
 
 type openaiProviderPlugin struct{}
 
 func (p *openaiProviderPlugin) Name() string      { return "provider.openai" }
-func (p *openaiProviderPlugin) Type() plugin.Type  { return plugin.TypeProvider }
-func (p *openaiProviderPlugin) Close() error       { return nil }
+func (p *openaiProviderPlugin) Type() plugin.Type { return plugin.TypeProvider }
+func (p *openaiProviderPlugin) Close() error      { return nil }
 func (p *openaiProviderPlugin) Init(_ context.Context, appCtx plugin.AppContext) error {
 	cfg := appCtx.GetConfig().(*config.Config)
 	reg := appCtx.GetProviderRegistry().(*providers.Registry)
@@ -167,8 +181,8 @@ func (p *openaiProviderPlugin) Init(_ context.Context, appCtx plugin.AppContext)
 type anthropicProviderPlugin struct{}
 
 func (p *anthropicProviderPlugin) Name() string      { return "provider.anthropic" }
-func (p *anthropicProviderPlugin) Type() plugin.Type  { return plugin.TypeProvider }
-func (p *anthropicProviderPlugin) Close() error       { return nil }
+func (p *anthropicProviderPlugin) Type() plugin.Type { return plugin.TypeProvider }
+func (p *anthropicProviderPlugin) Close() error      { return nil }
 func (p *anthropicProviderPlugin) Init(_ context.Context, appCtx plugin.AppContext) error {
 	cfg := appCtx.GetConfig().(*config.Config)
 	reg := appCtx.GetProviderRegistry().(*providers.Registry)
@@ -199,8 +213,8 @@ func (p *anthropicProviderPlugin) Init(_ context.Context, appCtx plugin.AppConte
 type azureProviderPlugin struct{}
 
 func (p *azureProviderPlugin) Name() string      { return "provider.azure" }
-func (p *azureProviderPlugin) Type() plugin.Type  { return plugin.TypeProvider }
-func (p *azureProviderPlugin) Close() error       { return nil }
+func (p *azureProviderPlugin) Type() plugin.Type { return plugin.TypeProvider }
+func (p *azureProviderPlugin) Close() error      { return nil }
 func (p *azureProviderPlugin) Init(_ context.Context, appCtx plugin.AppContext) error {
 	cfg := appCtx.GetConfig().(*config.Config)
 	reg := appCtx.GetProviderRegistry().(*providers.Registry)
@@ -229,8 +243,8 @@ func (p *azureProviderPlugin) Init(_ context.Context, appCtx plugin.AppContext) 
 type minimaxProviderPlugin struct{}
 
 func (p *minimaxProviderPlugin) Name() string      { return "provider.minimax" }
-func (p *minimaxProviderPlugin) Type() plugin.Type  { return plugin.TypeProvider }
-func (p *minimaxProviderPlugin) Close() error       { return nil }
+func (p *minimaxProviderPlugin) Type() plugin.Type { return plugin.TypeProvider }
+func (p *minimaxProviderPlugin) Close() error      { return nil }
 func (p *minimaxProviderPlugin) Init(_ context.Context, appCtx plugin.AppContext) error {
 	cfg := appCtx.GetConfig().(*config.Config)
 	reg := appCtx.GetProviderRegistry().(*providers.Registry)
@@ -255,8 +269,8 @@ func (p *minimaxProviderPlugin) Init(_ context.Context, appCtx plugin.AppContext
 type openrouterProviderPlugin struct{}
 
 func (p *openrouterProviderPlugin) Name() string      { return "provider.openrouter" }
-func (p *openrouterProviderPlugin) Type() plugin.Type  { return plugin.TypeProvider }
-func (p *openrouterProviderPlugin) Close() error       { return nil }
+func (p *openrouterProviderPlugin) Type() plugin.Type { return plugin.TypeProvider }
+func (p *openrouterProviderPlugin) Close() error      { return nil }
 func (p *openrouterProviderPlugin) Init(_ context.Context, appCtx plugin.AppContext) error {
 	cfg := appCtx.GetConfig().(*config.Config)
 	reg := appCtx.GetProviderRegistry().(*providers.Registry)

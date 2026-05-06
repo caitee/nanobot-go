@@ -6,34 +6,47 @@ import (
 	"log/slog"
 	"path/filepath"
 
-	"nanobot-go/internal/agent"
 	"nanobot-go/internal/bus"
 	"nanobot-go/internal/channels"
 	"nanobot-go/internal/config"
 	"nanobot-go/internal/cron"
+	"nanobot-go/internal/llm"
 	"nanobot-go/internal/plugin"
 	"nanobot-go/internal/providers"
+	"nanobot-go/internal/runtime"
 	"nanobot-go/internal/session"
-	"nanobot-go/internal/tools"
+	"nanobot-go/internal/tool"
+	legacytools "nanobot-go/internal/tools"
 )
 
-// App holds all application components and implements plugin.AppContext.
+// App is the top-level container. It owns shared infrastructure
+// (bus / session / registries / channels / cron) and the Dispatcher that
+// wraps the new runtime.Agent.
 type App struct {
-	Config          *config.Config
-	Bus             bus.MessageBus
+	Config *config.Config
+	Bus    bus.MessageBus
+
 	SessionStore    session.SessionStore
-	ToolRegistry    tools.ToolRegistry
-	ProviderRegistry *providers.Registry
-	ChannelManager  *channels.Manager
-	CronService     *cron.CronService
-	PluginRegistry  *plugin.Registry
-	AgentLoop       *agent.AgentLoop
-	SubagentManager *agent.SubagentManager
+	ToolRegistry    tool.Registry
+	LLMRegistry     *llm.Registry
+
+	// LegacyProviderRegistry is kept through M5 so plugin code registered
+	// under the old API can still add providers; the bridge adapts them
+	// into the new Registry on App.Start.
+	LegacyProviderRegistry *providers.Registry
+
+	ChannelManager *channels.Manager
+	CronService    *cron.CronService
+	PluginRegistry *plugin.Registry
+
+	Dispatcher *Dispatcher
+	Subagents  *SubagentManager
 
 	ctx    context.Context
 	cancel context.CancelFunc
 }
 
+// New constructs a fresh App with all registries empty.
 func New(cfg *config.Config) (*App, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -48,10 +61,6 @@ func New(cfg *config.Config) (*App, error) {
 		cancel()
 		return nil, fmt.Errorf("failed to create session store: %w", err)
 	}
-
-	toolRegistry := tools.NewRegistry()
-	providerRegistry := providers.NewRegistry()
-	channelManager := channels.NewManager(messageBus)
 
 	cronDataDir := "data/cron"
 	if cfg.Agents.Workspace != "" {
@@ -69,26 +78,26 @@ func New(cfg *config.Config) (*App, error) {
 		messageBus.PublishInbound(msg)
 	})
 
-	pluginRegistry := plugin.NewRegistry()
-
-	app := &App{
-		Config:           cfg,
-		Bus:              messageBus,
-		SessionStore:     sessionStore,
-		ToolRegistry:     toolRegistry,
-		ProviderRegistry: providerRegistry,
-		ChannelManager:   channelManager,
-		CronService:      cronService,
-		PluginRegistry:   pluginRegistry,
-		ctx:              ctx,
-		cancel:           cancel,
+	a := &App{
+		Config:                 cfg,
+		Bus:                    messageBus,
+		SessionStore:           sessionStore,
+		ToolRegistry:           tool.NewRegistry(),
+		LLMRegistry:            llm.NewRegistry(),
+		LegacyProviderRegistry: providers.NewRegistry(),
+		ChannelManager:         channels.NewManager(messageBus),
+		CronService:            cronService,
+		PluginRegistry:         plugin.NewRegistry(),
+		ctx:                    ctx,
+		cancel:                 cancel,
 	}
 
-	RegisterDefaults(app.PluginRegistry)
-
-	return app, nil
+	RegisterDefaults(a.PluginRegistry)
+	return a, nil
 }
 
+// Start initializes plugins, builds the dispatcher, wires the subagent
+// manager, starts channels / cron, and begins consuming inbound messages.
 func (a *App) Start(ctx context.Context) error {
 	slog.Info("starting nanobot application")
 
@@ -96,121 +105,149 @@ func (a *App) Start(ctx context.Context) error {
 		return fmt.Errorf("failed to initialize plugins: %w", err)
 	}
 
-	defaultProvider, err := a.GetDefaultProvider()
+	// Bridge every legacy provider into the new llm.Registry.
+	for _, name := range a.LegacyProviderRegistry.List() {
+		p, err := a.LegacyProviderRegistry.Get(name)
+		if err != nil {
+			continue
+		}
+		a.LLMRegistry.Register(name, llm.FromLegacy(p), "legacy:"+name)
+	}
+
+	providerName, err := a.defaultProviderName()
 	if err != nil {
-		return fmt.Errorf("failed to get default provider: %w", err)
+		return err
+	}
+	legacy, err := a.LegacyProviderRegistry.Get(providerName)
+	if err != nil {
+		return fmt.Errorf("provider not found: %s", providerName)
+	}
+
+	modelName := a.Config.Agents.Model
+	if modelName == "" {
+		modelName = legacy.GetDefaultModel()
+	}
+	model := llm.Model{
+		ID:        modelName,
+		Name:      modelName,
+		Provider:  providerName,
+		Reasoning: a.Config.Agents.EnableReasoning,
 	}
 
 	workspace := a.Config.Agents.Workspace
 	if workspace == "" {
 		workspace = "."
 	}
-	maxIterations := a.Config.Agents.MaxToolIterations
-	if maxIterations <= 0 {
-		maxIterations = 40
-	}
-	a.SubagentManager = agent.NewSubagentManager(
-		defaultProvider,
-		workspace,
-		a.Bus,
-		a.Config.Agents.Model,
-		maxIterations,
-	)
 
-	a.AgentLoop = agent.NewAgentLoop(
-		a.Bus,
-		a.SessionStore,
-		a.ToolRegistry,
-		defaultProvider,
-		maxIterations,
-		a.Config.Agents.EnableReasoning,
-	)
+	// Subagents share the same tool registry minus "spawn" to avoid
+	// recursive spawning, and run against the same llm.StreamFn.
+	streamFn := a.LLMRegistry.StreamFnFor(providerName)
+	subTools := filterTools(a.ToolRegistry.All(), func(t tool.AgentTool) bool {
+		return t.Name() != "spawn"
+	})
+	a.Subagents = NewSubagentManager(streamFn, model, subTools, workspace, a.Bus)
+
+	// Wire the spawn tool now that the manager exists.
+	if spawnTool, ok := a.ToolRegistry.Get("spawn"); ok {
+		if legacy, ok := tool.UnwrapLegacy(spawnTool); ok {
+			if st, ok := legacy.(*legacytools.SpawnTool); ok {
+				st.SetSpawner(a.Subagents)
+			}
+		}
+	}
+
+	// Build the dispatcher last so the subagent spawner is ready.
+	systemPrompt := runtime.NewSystemPromptBuilder(workspace).Build()
+	a.Dispatcher = NewDispatcher(DispatcherOptions{
+		Bus:              a.Bus,
+		SessionStore:     a.SessionStore,
+		ToolRegistry:     a.ToolRegistry,
+		StreamFn:         streamFn,
+		Model:            model,
+		EnableReasoning:  a.Config.Agents.EnableReasoning,
+		SystemPrompt:     systemPrompt,
+		TransformContext: runtime.RuntimeContextTransform(runtime.RuntimeContext{}),
+		Subagents:        a.Subagents,
+	})
 
 	if err := a.CronService.Start(ctx); err != nil {
 		slog.Error("failed to start cron service", "error", err)
 	}
-
 	if err := a.ChannelManager.StartAll(ctx); err != nil {
 		slog.Error("failed to start channels", "error", err)
 	}
 
 	go func() {
-		if err := a.AgentLoop.Start(ctx); err != nil && err != context.Canceled {
-			slog.Error("agent loop error", "error", err)
+		if err := a.Dispatcher.Run(ctx); err != nil && err != context.Canceled {
+			slog.Error("dispatcher error", "error", err)
 		}
 	}()
 
-	slog.Info("nanobot application started")
+	slog.Info("nanobot application started", "provider", providerName, "model", modelName)
 	return nil
 }
 
+// Stop performs graceful shutdown.
 func (a *App) Stop() error {
 	slog.Info("stopping nanobot application")
-
 	a.cancel()
 	a.ChannelManager.StopAll()
 	a.CronService.Stop()
 	a.Bus.Close()
-
 	if err := a.PluginRegistry.CloseAll(); err != nil {
 		slog.Error("error closing plugins", "error", err)
 	}
-
 	slog.Info("nanobot application stopped")
 	return nil
 }
 
+// defaultProviderName resolves the configured provider, falling back to the
+// first registered provider when set to "auto" or empty.
+func (a *App) defaultProviderName() (string, error) {
+	name := a.Config.Agents.Provider
+	if name != "" && name != "auto" {
+		return name, nil
+	}
+	names := a.LegacyProviderRegistry.List()
+	if len(names) == 0 {
+		return "", fmt.Errorf("no providers registered")
+	}
+	return names[0], nil
+}
+
+// GetDefaultProvider returns the legacy LLMProvider for the default
+// provider name. Kept for compatibility with callers that still need the
+// legacy interface (heartbeat adapter, memory consolidator).
 func (a *App) GetDefaultProvider() (providers.LLMProvider, error) {
-	providerName := a.Config.Agents.Provider
-	if providerName == "" || providerName == "auto" {
-		// Try to find any registered provider
-		names := a.ProviderRegistry.List()
-		if len(names) == 0 {
-			return nil, fmt.Errorf("no providers registered")
-		}
-		providerName = names[0]
-	}
-
-	provider, err := a.ProviderRegistry.Get(providerName)
+	name, err := a.defaultProviderName()
 	if err != nil {
-		return nil, fmt.Errorf("provider not found: %s", providerName)
+		return nil, err
 	}
-
-	return provider, nil
+	return a.LegacyProviderRegistry.Get(name)
 }
 
-func (a *App) GetConfig() any {
-	return a.Config
-}
+// plugin.AppContext glue -------------------------------------------------
 
-func (a *App) GetBus() any {
-	return a.Bus
-}
+func (a *App) GetConfig() any           { return a.Config }
+func (a *App) GetBus() any              { return a.Bus }
+func (a *App) GetSessionStore() any     { return a.SessionStore }
+func (a *App) GetToolRegistry() any     { return a.ToolRegistry }
+func (a *App) GetProviderRegistry() any { return a.LegacyProviderRegistry }
+func (a *App) GetChannelManager() any   { return a.ChannelManager }
+func (a *App) GetCronService() any      { return a.CronService }
 
-func (a *App) GetSessionStore() any {
-	return a.SessionStore
-}
+// Context returns the App-level cancellable context.
+func (a *App) Context() context.Context { return a.ctx }
 
-func (a *App) GetToolRegistry() any {
-	return a.ToolRegistry
-}
+// Done is the App-level shutdown signal.
+func (a *App) Done() <-chan struct{} { return a.ctx.Done() }
 
-func (a *App) GetProviderRegistry() any {
-	return a.ProviderRegistry
-}
-
-func (a *App) GetChannelManager() any {
-	return a.ChannelManager
-}
-
-func (a *App) GetCronService() any {
-	return a.CronService
-}
-
-func (a *App) Context() context.Context {
-	return a.ctx
-}
-
-func (a *App) Done() <-chan struct{} {
-	return a.ctx.Done()
+func filterTools(in []tool.AgentTool, keep func(tool.AgentTool) bool) []tool.AgentTool {
+	out := make([]tool.AgentTool, 0, len(in))
+	for _, t := range in {
+		if keep(t) {
+			out = append(out, t)
+		}
+	}
+	return out
 }
