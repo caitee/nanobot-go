@@ -14,31 +14,6 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// pollEvents pulls from the runtime event subscription and the outbound
-// channel. One tea.Msg is returned per poll pass; the tea loop schedules us
-// again via the returned Cmd chain.
-func (m *interactiveModel) pollEvents() tea.Cmd {
-	return func() tea.Msg {
-		select {
-		case ev := <-m.runtimeEvents:
-			return runtimeEventMsg{ev: ev}
-		case resp, ok := <-m.outboundCh:
-			if !ok {
-				return nil
-			}
-			return responseMsg{
-				content:         resp.Content,
-				reasoning:       resp.Reasoning,
-				agentEventFinal: outboundFromAgentEventFinal(resp),
-			}
-		case <-m.done:
-			return nil
-		case <-time.After(10 * time.Millisecond):
-			return pollTickMsg{}
-		}
-	}
-}
-
 func (m *interactiveModel) tickSpinner() tea.Cmd {
 	return func() tea.Msg {
 		time.Sleep(time.Second / 10)
@@ -62,12 +37,12 @@ func (m *interactiveModel) deferResponse(msg responseMsg) tea.Cmd {
 }
 
 // Update is the tea.Model entry point. It handles tickers, runtime events,
-// final outbound messages, and keyboard input.
+// final outbound messages, and keyboard input. Runtime events and outbound
+// messages are delivered by the pump goroutine (see tui_model.go) rather than
+// polled from Update, so each branch only needs to return the cmd it truly
+// needs — never the "keep polling" plumbing.
 func (m *interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
-	case pollTickMsg:
-		return m, m.pollEvents()
-
 	case spinnerTickMsg:
 		m.mu.Lock()
 		waiting := m.waiting
@@ -110,7 +85,7 @@ func (m *interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// the richer agent_end path.
 		if msg.agentEventFinal && !msg.fallback && m.active && !m.responseReceived {
 			m.mu.Unlock()
-			return m, tea.Batch(m.pollEvents(), m.deferResponse(msg))
+			return m, m.deferResponse(msg)
 		}
 		cmd := m.finalizeAssistantMessage(msg.content, msg.reasoning)
 		m.mu.Unlock()
@@ -120,10 +95,7 @@ func (m *interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.mu.Lock()
 		cmd := m.handleRuntimeEvent(msg.ev)
 		m.mu.Unlock()
-		if cmd != nil {
-			return m, cmd
-		}
-		return m, m.pollEvents()
+		return m, cmd
 
 	case tea.KeyMsg:
 		switch msg.Type {
@@ -189,7 +161,7 @@ func (m *interactiveModel) handleEnter() (tea.Model, tea.Cmd) {
 		Content: userInput, SessionKey: m.sessionKey,
 	})
 
-	return m, tea.Batch(cmd, m.pollEvents(), m.tickSpinner())
+	return m, tea.Batch(cmd, m.tickSpinner())
 }
 
 // handleRuntimeEvent processes a single runtime.Event. Called with m.mu held.
@@ -305,7 +277,7 @@ func (m *interactiveModel) findToolCall(id, name string) int {
 // the active scratch area. Callers must hold m.mu.
 func (m *interactiveModel) finalizeAssistantMessage(content, reasoning string) tea.Cmd {
 	if m.responseReceived {
-		return m.pollEvents()
+		return nil
 	}
 	m.responseReceived = true
 	m.waiting = false
@@ -319,7 +291,7 @@ func (m *interactiveModel) finalizeAssistantMessage(content, reasoning string) t
 
 	output := m.formatFinalMessage(content, reasoning)
 	m.clearActiveState()
-	return tea.Batch(m.printAbove(output), m.pollEvents())
+	return m.printAbove(output)
 }
 
 func (m *interactiveModel) formatCurrentState() string {

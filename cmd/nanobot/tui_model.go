@@ -59,12 +59,11 @@ type toolCallEntry struct {
 	expanded   bool
 }
 
-// Messages flowing through tea.Update. One notification arrives per runtime
-// event or outbound message; the typewriter and spinner tickers fire on
-// their own cadence.
+// Messages flowing through tea.Update. Runtime events and outbound messages
+// are pushed by a background pump goroutine via program.Send; the typewriter
+// and spinner tickers fire on their own cadence as pure tea.Cmd chains.
 type spinnerTickMsg struct{}
 type typewriterTickMsg struct{}
-type pollTickMsg struct{}
 
 type runtimeEventMsg struct {
 	ev runtime.Event
@@ -111,12 +110,43 @@ func newInteractiveModel(dispatcher *appcore.Dispatcher, messageBus bus.MessageB
 	return m
 }
 
-// SetProgram installs the bubbletea program reference used for printAbove.
-func (m *interactiveModel) SetProgram(p *tea.Program) { m.program = p }
+// SetProgram installs the bubbletea program reference and starts the pump
+// goroutine that forwards runtime events and outbound messages into the tea
+// loop via program.Send.
+func (m *interactiveModel) SetProgram(p *tea.Program) {
+	m.program = p
+	go m.pump()
+}
+
+// pump is the single consumer of runtimeEvents / outboundCh. It forwards each
+// value to the tea program so Update can remain a pure state transition.
+func (m *interactiveModel) pump() {
+	for {
+		select {
+		case ev := <-m.runtimeEvents:
+			if m.program != nil {
+				m.program.Send(runtimeEventMsg{ev: ev})
+			}
+		case resp, ok := <-m.outboundCh:
+			if !ok {
+				return
+			}
+			if m.program != nil {
+				m.program.Send(responseMsg{
+					content:         resp.Content,
+					reasoning:       resp.Reasoning,
+					agentEventFinal: outboundFromAgentEventFinal(resp),
+				})
+			}
+		case <-m.done:
+			return
+		}
+	}
+}
 
 // Init starts all background tickers.
 func (m *interactiveModel) Init() tea.Cmd {
-	return tea.Batch(textinput.Blink, m.tickSpinner(), m.pollEvents(), m.tickTypewriter())
+	return tea.Batch(textinput.Blink, m.tickSpinner(), m.tickTypewriter())
 }
 
 // shutdown releases the runtime subscription. Called on quit.
