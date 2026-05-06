@@ -9,14 +9,16 @@ import (
 
 // Registry manages plugin registration and lifecycle.
 type Registry struct {
-	plugins map[string]Plugin
-	order   []string
-	mu      sync.RWMutex
+	plugins  map[string]Plugin
+	metadata map[string]Metadata
+	order    []string
+	mu       sync.RWMutex
 }
 
 func NewRegistry() *Registry {
 	return &Registry{
-		plugins: make(map[string]Plugin),
+		plugins:  make(map[string]Plugin),
+		metadata: make(map[string]Metadata),
 	}
 }
 
@@ -30,6 +32,17 @@ func (r *Registry) Register(p Plugin) error {
 
 	r.plugins[p.Name()] = p
 	r.order = append(r.order, p.Name())
+
+	// 尝试获取 plugin 的元数据
+	meta := Metadata{
+		Name: p.Name(),
+		Type: p.Type(),
+	}
+	if mp, ok := p.(MetadataProvider); ok {
+		meta = mp.GetMetadata()
+	}
+	r.metadata[p.Name()] = meta
+
 	slog.Debug("plugin registered", "name", p.Name(), "type", p.Type())
 	return nil
 }
@@ -105,4 +118,113 @@ func (r *Registry) CloseAll() error {
 		}
 	}
 	return firstErr
+}
+
+// GetMetadata 获取指定 plugin 的元数据
+func (r *Registry) GetMetadata(name string) (Metadata, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	meta, ok := r.metadata[name]
+	return meta, ok
+}
+
+// ListMetadata 列出所有 plugin 的元数据
+func (r *Registry) ListMetadata() []Metadata {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	result := make([]Metadata, 0, len(r.order))
+	for _, name := range r.order {
+		if meta, ok := r.metadata[name]; ok {
+			result = append(result, meta)
+		}
+	}
+	return result
+}
+
+// GetDependencies 获取指定 plugin 的依赖列表
+func (r *Registry) GetDependencies(name string) []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	if meta, ok := r.metadata[name]; ok {
+		deps := make([]string, len(meta.Dependencies))
+		copy(deps, meta.Dependencies)
+		return deps
+	}
+	return nil
+}
+
+// Start 启动指定的 plugin（如果它实现了 Lifecycle 接口）
+func (r *Registry) Start(ctx context.Context, name string) error {
+	r.mu.RLock()
+	p, ok := r.plugins[name]
+	r.mu.RUnlock()
+
+	if !ok {
+		return fmt.Errorf("plugin not found: %s", name)
+	}
+
+	if lc, ok := p.(Lifecycle); ok {
+		slog.Info("starting plugin", "name", name)
+		return lc.Start(ctx)
+	}
+
+	return nil
+}
+
+// Stop 停止指定的 plugin（如果它实现了 Lifecycle 接口）
+func (r *Registry) Stop(ctx context.Context, name string) error {
+	r.mu.RLock()
+	p, ok := r.plugins[name]
+	r.mu.RUnlock()
+
+	if !ok {
+		return fmt.Errorf("plugin not found: %s", name)
+	}
+
+	if lc, ok := p.(Lifecycle); ok {
+		slog.Info("stopping plugin", "name", name)
+		return lc.Stop(ctx)
+	}
+
+	return nil
+}
+
+// Unload 卸载指定的 plugin
+func (r *Registry) Unload(name string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	p, ok := r.plugins[name]
+	if !ok {
+		return fmt.Errorf("plugin not found: %s", name)
+	}
+
+	// 检查 plugin 是否可以被卸载
+	if meta, ok := r.metadata[name]; ok {
+		if !meta.Removable {
+			return fmt.Errorf("plugin %s is not removable", name)
+		}
+	}
+
+	// 先关闭 plugin
+	if err := p.Close(); err != nil {
+		return fmt.Errorf("failed to close plugin %s: %w", name, err)
+	}
+
+	// 从 registry 中移除
+	delete(r.plugins, name)
+	delete(r.metadata, name)
+
+	// 从 order 中移除
+	for i, n := range r.order {
+		if n == name {
+			r.order = append(r.order[:i], r.order[i+1:]...)
+			break
+		}
+	}
+
+	slog.Info("plugin unloaded", "name", name)
+	return nil
 }
