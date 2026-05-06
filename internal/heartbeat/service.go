@@ -42,16 +42,16 @@ type OnNotifyFunc func(ctx context.Context, response string) error
 
 // Service handles periodic heartbeat checks for agent tasks
 type Service struct {
-	workspace    string
-	interval     time.Duration
-	enabled      bool
-	running      bool
-	stopCh       chan struct{}
-	doneCh       chan struct{}
-	onExecute    OnExecuteFunc
-	onNotify     OnNotifyFunc
-	mu           sync.RWMutex
-	ticker       *time.Ticker
+	workspace string
+	interval  time.Duration
+	enabled   bool
+	running   bool
+	stopCh    chan struct{}
+	doneCh    chan struct{}
+	onExecute OnExecuteFunc
+	onNotify  OnNotifyFunc
+	mu        sync.RWMutex
+	ticker    *time.Ticker
 }
 
 // Config holds heartbeat service configuration
@@ -74,11 +74,11 @@ func NewService(workspace string, intervalSeconds int, enabled bool) *Service {
 		intervalSeconds = 30 * 60
 	}
 	return &Service{
-		workspace:    workspace,
-		interval:     time.Duration(intervalSeconds) * time.Second,
-		enabled:      enabled,
-		stopCh:       make(chan struct{}),
-		doneCh:       make(chan struct{}),
+		workspace: workspace,
+		interval:  time.Duration(intervalSeconds) * time.Second,
+		enabled:   enabled,
+		stopCh:    make(chan struct{}),
+		doneCh:    make(chan struct{}),
 	}
 }
 

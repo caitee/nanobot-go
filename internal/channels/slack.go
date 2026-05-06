@@ -20,9 +20,9 @@ func NewSlackChannel(config SlackConfig, bus bus.MessageBus) *SlackChannel {
 	return &SlackChannel{config: config, bus: bus}
 }
 
-func (c *SlackChannel) Name() string       { return "slack" }
+func (c *SlackChannel) Name() string        { return "slack" }
 func (c *SlackChannel) DisplayName() string { return "Slack" }
-func (c *SlackChannel) IsRunning() bool   { return false }
+func (c *SlackChannel) IsRunning() bool     { return false }
 func (c *SlackChannel) Start(ctx context.Context) error {
 	return nil // Not implemented
 }

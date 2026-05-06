@@ -20,9 +20,9 @@ func NewWeComChannel(config WeComConfig, bus bus.MessageBus) *WeComChannel {
 	return &WeComChannel{config: config, bus: bus}
 }
 
-func (c *WeComChannel) Name() string       { return "wecom" }
+func (c *WeComChannel) Name() string        { return "wecom" }
 func (c *WeComChannel) DisplayName() string { return "WeCom" }
-func (c *WeComChannel) IsRunning() bool    { return false }
+func (c *WeComChannel) IsRunning() bool     { return false }
 func (c *WeComChannel) Start(ctx context.Context) error {
 	return nil // Not implemented
 }

@@ -42,9 +42,9 @@ func NewDiscordChannel(config DiscordConfig, bus bus.MessageBus) *DiscordChannel
 	}
 }
 
-func (c *DiscordChannel) Name() string       { return "discord" }
+func (c *DiscordChannel) Name() string        { return "discord" }
 func (c *DiscordChannel) DisplayName() string { return "Discord" }
-func (c *DiscordChannel) IsRunning() bool  { return c.running }
+func (c *DiscordChannel) IsRunning() bool     { return c.running }
 
 func (c *DiscordChannel) Start(ctx context.Context) error {
 	if c.config.Token == "" {

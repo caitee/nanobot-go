@@ -64,9 +64,9 @@ type Options struct {
 type QueueMode string
 
 const (
-	QueueAll          QueueMode = "all"
-	QueueOneAtAtTime  QueueMode = "one-at-a-time"
-	QueueDefaultMode            = QueueOneAtAtTime
+	QueueAll         QueueMode = "all"
+	QueueOneAtAtTime QueueMode = "one-at-a-time"
+	QueueDefaultMode           = QueueOneAtAtTime
 )
 
 // ConvertToLLM converts AgentMessage[] to llm.Message[] before a provider call.

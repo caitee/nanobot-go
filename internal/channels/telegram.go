@@ -37,7 +37,7 @@ func NewTelegramChannel(config TelegramConfig, bus bus.MessageBus) *TelegramChan
 	}
 }
 
-func (c *TelegramChannel) Name() string       { return "telegram" }
+func (c *TelegramChannel) Name() string        { return "telegram" }
 func (c *TelegramChannel) DisplayName() string { return "Telegram" }
 func (c *TelegramChannel) IsRunning() bool     { return c.running }
 
@@ -98,7 +98,7 @@ func (c *TelegramChannel) pollUpdates(ctx context.Context) {
 }
 
 type telegramUpdate struct {
-	ID int `json:"update_id"`
+	ID      int `json:"update_id"`
 	Message struct {
 		ID   int `json:"message_id"`
 		From struct {

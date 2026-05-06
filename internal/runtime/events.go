@@ -26,10 +26,10 @@ const (
 // according to Kind; use the typed accessors (.TurnEnd(), .ToolEnd(), ...) or
 // switch on Data's concrete type.
 type Event struct {
-	Kind       EventKind
-	SessionID  string
-	Timestamp  time.Time
-	Data       any
+	Kind      EventKind
+	SessionID string
+	Timestamp time.Time
+	Data      any
 }
 
 // Typed payloads ---------------------------------------------------------

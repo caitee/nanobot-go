@@ -8,8 +8,8 @@ import (
 // SearchResult represents a search result with relevance score.
 type SearchResult struct {
 	MessageIndex int
-	Score       float64
-	Message     Message
+	Score        float64
+	Message      Message
 }
 
 // VectorStore defines the interface for semantic vector storage.
@@ -35,9 +35,9 @@ type InMemoryVectorStore struct {
 }
 
 type messageEmbedding struct {
-	index    int
-	hash     uint64
-	content  string
+	index   int
+	hash    uint64
+	content string
 }
 
 // NewInMemoryVectorStore creates a simple in-memory vector store.

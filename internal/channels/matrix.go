@@ -7,9 +7,9 @@ import (
 )
 
 type MatrixConfig struct {
-	Homeserver   string
-	UserID       string
-	AccessToken  string
+	Homeserver  string
+	UserID      string
+	AccessToken string
 }
 
 type MatrixChannel struct {
@@ -21,9 +21,9 @@ func NewMatrixChannel(config MatrixConfig, bus bus.MessageBus) *MatrixChannel {
 	return &MatrixChannel{config: config, bus: bus}
 }
 
-func (c *MatrixChannel) Name() string       { return "matrix" }
+func (c *MatrixChannel) Name() string        { return "matrix" }
 func (c *MatrixChannel) DisplayName() string { return "Matrix" }
-func (c *MatrixChannel) IsRunning() bool    { return false }
+func (c *MatrixChannel) IsRunning() bool     { return false }
 func (c *MatrixChannel) Start(ctx context.Context) error {
 	return nil // Not implemented
 }

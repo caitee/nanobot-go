@@ -129,10 +129,10 @@ type stubTool struct {
 	fn   func(map[string]any) (*tool.Result, error)
 }
 
-func (s *stubTool) Name() string                 { return s.name }
-func (s *stubTool) Label() string                { return s.name }
-func (s *stubTool) Description() string          { return s.name }
-func (s *stubTool) Parameters() map[string]any   { return map[string]any{"type": "object"} }
+func (s *stubTool) Name() string               { return s.name }
+func (s *stubTool) Label() string              { return s.name }
+func (s *stubTool) Description() string        { return s.name }
+func (s *stubTool) Parameters() map[string]any { return map[string]any{"type": "object"} }
 func (s *stubTool) ExecutionMode() tool.ExecutionMode {
 	return tool.ExecutionDefault
 }

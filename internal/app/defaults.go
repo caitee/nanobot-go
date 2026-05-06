@@ -100,7 +100,7 @@ func newChannelPlugin(name, envVar string, factory func(string, bus.MessageBus) 
 	return &channelPlugin{name: name, envVar: envVar, factory: factory}
 }
 
-func (p *channelPlugin) Name() string     { return "channel." + p.name }
+func (p *channelPlugin) Name() string      { return "channel." + p.name }
 func (p *channelPlugin) Type() plugin.Type { return plugin.TypeChannel }
 func (p *channelPlugin) Close() error      { return nil }
 func (p *channelPlugin) Init(_ context.Context, appCtx plugin.AppContext) error {
@@ -127,7 +127,7 @@ func newToolPlugin(name, label string, factory func(context.Context, plugin.AppC
 	return &toolPlugin{name: name, label: label, factory: factory}
 }
 
-func (p *toolPlugin) Name() string     { return "tool." + p.name }
+func (p *toolPlugin) Name() string      { return "tool." + p.name }
 func (p *toolPlugin) Type() plugin.Type { return plugin.TypeTool }
 func (p *toolPlugin) Close() error      { return nil }
 func (p *toolPlugin) Init(ctx context.Context, appCtx plugin.AppContext) error {

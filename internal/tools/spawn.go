@@ -26,8 +26,10 @@ func (t *SpawnTool) SetSpawner(manager SubagentSpawner) {
 	t.manager = manager
 }
 
-func (t *SpawnTool) Name() string   { return "spawn" }
-func (t *SpawnTool) Description() string { return "Spawn a background subagent to execute a complex or long-running task. Use when a task is independent, time-consuming, or can run in parallel. The subagent works autonomously and notifies when done. For quick tasks or tightly-coupled work, prefer direct execution." }
+func (t *SpawnTool) Name() string { return "spawn" }
+func (t *SpawnTool) Description() string {
+	return "Spawn a background subagent to execute a complex or long-running task. Use when a task is independent, time-consuming, or can run in parallel. The subagent works autonomously and notifies when done. For quick tasks or tightly-coupled work, prefer direct execution."
+}
 func (t *SpawnTool) Parameters() map[string]any {
 	return map[string]any{
 		"type": "object",

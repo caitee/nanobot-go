@@ -3,12 +3,12 @@
 // The runtime is split into three layers:
 //
 //   - Agent (agent.go)      — stateful wrapper: owns transcript, emits events,
-//                              manages steering/follow-up queues, exposes
-//                              Prompt / Continue / Steer / FollowUp / Abort.
+//     manages steering/follow-up queues, exposes
+//     Prompt / Continue / Steer / FollowUp / Abort.
 //   - Loop  (loop.go)       — pure functions runAgentLoop / runAgentLoopContinue
-//                              that drive turns, tool batches, and hook callouts.
+//     that drive turns, tool batches, and hook callouts.
 //   - Types (types.go)      — AgentMessage / AgentEvent / Hooks / Options and
-//                              supporting payloads shared across layers.
+//     supporting payloads shared across layers.
 //
 // Supporting files:
 //

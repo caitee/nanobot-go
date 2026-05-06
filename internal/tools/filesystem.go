@@ -96,7 +96,7 @@ func NewReadFileTool(workspace, allowedDir string) *ReadFileTool {
 	return &ReadFileTool{fsTool: newFsTool(workspace, allowedDir)}
 }
 
-func (t *ReadFileTool) Name() string    { return "read_file" }
+func (t *ReadFileTool) Name() string { return "read_file" }
 func (t *ReadFileTool) Description() string {
 	return "Read the contents of a text or image file. Returns numbered lines with pagination support. Supports UTF-8 text and common image formats. Use offset and limit for large files."
 }
@@ -105,9 +105,9 @@ func (t *ReadFileTool) Parameters() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"path":    map[string]any{"type": "string", "description": "The file path to read"},
-			"offset":  map[string]any{"type": "integer", "description": "Line number to start reading from (1-indexed, default 1)", "minimum": 1},
-			"limit":   map[string]any{"type": "integer", "description": "Maximum number of lines to read (default 2000)", "minimum": 1},
+			"path":   map[string]any{"type": "string", "description": "The file path to read"},
+			"offset": map[string]any{"type": "integer", "description": "Line number to start reading from (1-indexed, default 1)", "minimum": 1},
+			"limit":  map[string]any{"type": "integer", "description": "Maximum number of lines to read (default 2000)", "minimum": 1},
 		},
 		"required": []any{"path"},
 		"examples": []any{
@@ -244,7 +244,7 @@ func NewWriteFileTool(workspace, allowedDir string) *WriteFileTool {
 	return &WriteFileTool{fsTool: newFsTool(workspace, allowedDir)}
 }
 
-func (t *WriteFileTool) Name() string    { return "write_file" }
+func (t *WriteFileTool) Name() string { return "write_file" }
 func (t *WriteFileTool) Description() string {
 	return "Create or overwrite a file with the given content. Automatically creates parent directories if they don't exist. Use this to create new files or update existing ones."
 }
@@ -305,7 +305,7 @@ func NewEditFileTool(workspace, allowedDir string) *EditFileTool {
 	return &EditFileTool{fsTool: newFsTool(workspace, allowedDir)}
 }
 
-func (t *EditFileTool) Name() string    { return "edit_file" }
+func (t *EditFileTool) Name() string { return "edit_file" }
 func (t *EditFileTool) Description() string {
 	return "Precisely edit a file by replacing a specific section (old_text) with new content. Handles whitespace differences. Use replace_all=true to replace every occurrence. Always use exact text from the file - include surrounding context to make the match unique."
 }
@@ -314,9 +314,9 @@ func (t *EditFileTool) Parameters() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"path":       map[string]any{"type": "string", "description": "The file path to edit"},
-			"old_text":   map[string]any{"type": "string", "description": "Exact text to find (must match file content)"},
-			"new_text":   map[string]any{"type": "string", "description": "Replacement text"},
+			"path":        map[string]any{"type": "string", "description": "The file path to edit"},
+			"old_text":    map[string]any{"type": "string", "description": "Exact text to find (must match file content)"},
+			"new_text":    map[string]any{"type": "string", "description": "Replacement text"},
 			"replace_all": map[string]any{"type": "boolean", "description": "Replace all occurrences (default false)"},
 		},
 		"required": []any{"path", "old_text", "new_text"},
@@ -526,7 +526,7 @@ func NewListDirTool(workspace, allowedDir string) *ListDirTool {
 	return &ListDirTool{fsTool: newFsTool(workspace, allowedDir)}
 }
 
-func (t *ListDirTool) Name() string    { return "list_dir" }
+func (t *ListDirTool) Name() string { return "list_dir" }
 func (t *ListDirTool) Description() string {
 	return "List files and subdirectories in a folder. Use recursive=true to see the full tree. Ignores common noise directories (.git, node_modules, __pycache__, etc.)."
 }
@@ -535,8 +535,8 @@ func (t *ListDirTool) Parameters() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"path":       map[string]any{"type": "string", "description": "The directory path to list"},
-			"recursive":  map[string]any{"type": "boolean", "description": "Recursively list all files (default false)"},
+			"path":        map[string]any{"type": "string", "description": "The directory path to list"},
+			"recursive":   map[string]any{"type": "boolean", "description": "Recursively list all files (default false)"},
 			"max_entries": map[string]any{"type": "integer", "description": "Maximum entries to return (default 200)", "minimum": 1},
 		},
 		"required": []any{"path"},
@@ -655,7 +655,7 @@ func NewGlobTool(workspace, allowedDir string) *GlobTool {
 	return &GlobTool{fsTool: newFsTool(workspace, allowedDir)}
 }
 
-func (t *GlobTool) Name() string    { return "glob" }
+func (t *GlobTool) Name() string { return "glob" }
 func (t *GlobTool) Description() string {
 	return "Find files by glob pattern. ** matches any path, * matches within a directory component, ? matches a single character. Example: **/*.go finds all Go files recursively."
 }
@@ -664,8 +664,8 @@ func (t *GlobTool) Parameters() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"path":    map[string]any{"type": "string", "description": "The directory path to search from"},
-			"pattern": map[string]any{"type": "string", "description": "Glob pattern (e.g., **/*.go, **/*.py, src/**/*.ts)"},
+			"path":        map[string]any{"type": "string", "description": "The directory path to search from"},
+			"pattern":     map[string]any{"type": "string", "description": "Glob pattern (e.g., **/*.go, **/*.py, src/**/*.ts)"},
 			"max_results": map[string]any{"type": "integer", "description": "Maximum results to return (default 100)", "minimum": 1},
 		},
 		"required": []any{"path", "pattern"},
@@ -766,7 +766,7 @@ func NewFindTool(workspace, allowedDir string) *FindTool {
 	return &FindTool{fsTool: newFsTool(workspace, allowedDir)}
 }
 
-func (t *FindTool) Name() string    { return "find" }
+func (t *FindTool) Name() string { return "find" }
 func (t *FindTool) Description() string {
 	return "Grep-style text search across files. Returns file paths and line numbers where the pattern matches. Supports regex. Use file_glob to limit to specific file types."
 }
@@ -775,9 +775,9 @@ func (t *FindTool) Parameters() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"path":     map[string]any{"type": "string", "description": "The directory path to search from"},
-			"pattern":  map[string]any{"type": "string", "description": "Text or regex pattern to search for"},
-			"file_glob": map[string]any{"type": "string", "description": "Limit to files matching glob (e.g., *.go, *.py)"},
+			"path":        map[string]any{"type": "string", "description": "The directory path to search from"},
+			"pattern":     map[string]any{"type": "string", "description": "Text or regex pattern to search for"},
+			"file_glob":   map[string]any{"type": "string", "description": "Limit to files matching glob (e.g., *.go, *.py)"},
 			"max_results": map[string]any{"type": "integer", "description": "Maximum results to return (default 50)", "minimum": 1},
 		},
 		"required": []any{"path", "pattern"},
@@ -890,7 +890,7 @@ func (t *FindTool) Execute(ctx context.Context, params map[string]any) (any, err
 // ============================================================================
 
 type FilesystemTool struct {
-	workspace  string
+	workspace   string
 	allowedDirs []string
 }
 
@@ -900,12 +900,12 @@ func NewFilesystemTool(allowedDirs []string) *FilesystemTool {
 		workspace = allowedDirs[0]
 	}
 	return &FilesystemTool{
-		workspace:  workspace,
+		workspace:   workspace,
 		allowedDirs: allowedDirs,
 	}
 }
 
-func (t *FilesystemTool) Name() string    { return "filesystem" }
+func (t *FilesystemTool) Name() string        { return "filesystem" }
 func (t *FilesystemTool) Description() string { return "Read and write files" }
 
 func (t *FilesystemTool) Parameters() map[string]any {

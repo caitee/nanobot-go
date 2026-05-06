@@ -42,7 +42,7 @@ nanobot-go/
 
 ### Prerequisites
 
-- Go 1.25+
+- Go 1.24.2+
 
 ### Installation
 
@@ -118,9 +118,17 @@ After building with `make build`, the `nanobot` binary will be created in the cu
 
 ## Development
 
+See [`AGENTS.md`](AGENTS.md) for repository rules and migration boundaries.
+
 ```bash
 # Build
 make build
+
+# Format Go files
+make fmt
+
+# Run repository checks
+make check
 
 # Test (with race detector)
 make test

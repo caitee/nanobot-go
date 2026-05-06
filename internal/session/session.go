@@ -21,12 +21,12 @@ type Message struct {
 
 // Session represents a conversation session
 type Session struct {
-	Key              string    `json:"key"`
-	Messages         []Message `json:"messages"`
-	CreatedAt        time.Time `json:"created_at"`
-	UpdatedAt        time.Time `json:"updated_at"`
+	Key              string         `json:"key"`
+	Messages         []Message      `json:"messages"`
+	CreatedAt        time.Time      `json:"created_at"`
+	UpdatedAt        time.Time      `json:"updated_at"`
 	Metadata         map[string]any `json:"metadata"`
-	LastConsolidated int       `json:"last_consolidated"`
+	LastConsolidated int            `json:"last_consolidated"`
 }
 
 // SessionInfo represents session metadata for listing

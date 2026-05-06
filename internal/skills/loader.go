@@ -12,17 +12,17 @@ var builtinFS embed.FS
 
 // SkillLoader loads skills from directories and provides skill access
 type SkillLoader struct {
-	workspaceDir    string
+	workspaceDir     string
 	builtinSkillsDir string
-	loadedSkills    map[string]*Skill
+	loadedSkills     map[string]*Skill
 }
 
 // NewSkillLoader creates a new skill loader
 func NewSkillLoader(workspaceDir string, builtinSkillsDir string) *SkillLoader {
 	return &SkillLoader{
-		workspaceDir:    workspaceDir,
+		workspaceDir:     workspaceDir,
 		builtinSkillsDir: builtinSkillsDir,
-		loadedSkills:    make(map[string]*Skill),
+		loadedSkills:     make(map[string]*Skill),
 	}
 }
 

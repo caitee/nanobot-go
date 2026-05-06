@@ -228,11 +228,17 @@ func (a *Agent) run(
 	a.state.setStreaming(true)
 	a.state.setError("")
 
+	tools := a.state.Tools()
+	toolIndex := make(map[string]tool.AgentTool, len(tools))
+	for _, t := range tools {
+		toolIndex[t.Name()] = t
+	}
 	cfg := loopConfig{
 		model:            a.state.Model(),
 		thinkingLevel:    a.state.ThinkingLevel(),
 		sessionID:        a.sessionID,
-		tools:            a.state.Tools(),
+		tools:            tools,
+		toolIndex:        toolIndex,
 		toolExecution:    a.toolExecution,
 		streamFn:         a.streamFn,
 		convertToLLM:     a.convertToLLM,

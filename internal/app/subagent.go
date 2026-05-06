@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"strings"
 	"sync"
 	"time"
 
@@ -185,24 +184,18 @@ func (sm *SubagentManager) cleanup(taskID, sessionKey string) {
 // the number of cancellations performed.
 func (sm *SubagentManager) CancelBySession(sessionKey string) int {
 	sm.mu.Lock()
-	tasks := sm.sessionTasks[sessionKey]
-	ids := make([]string, 0, len(tasks))
-	for id := range tasks {
-		ids = append(ids, id)
+	var cancels []context.CancelFunc
+	for id := range sm.sessionTasks[sessionKey] {
+		if cancel, ok := sm.running[id]; ok && cancel != nil {
+			cancels = append(cancels, cancel)
+		}
 	}
 	sm.mu.Unlock()
 
-	n := 0
-	for _, id := range ids {
-		sm.mu.Lock()
-		cancel, ok := sm.running[id]
-		sm.mu.Unlock()
-		if ok && cancel != nil {
-			cancel()
-			n++
-		}
+	for _, cancel := range cancels {
+		cancel()
 	}
-	return n
+	return len(cancels)
 }
 
 // GetRunningCount reports the number of in-flight subagents.
@@ -216,29 +209,6 @@ func (sm *SubagentManager) GetRunningCount() int {
 // transcript. Subagents are one-shot so "last assistant" is always the
 // answer we want.
 func finalTextFromAgent(a *runtime.Agent) string {
-	msgs := a.State().Messages()
-	for i := len(msgs) - 1; i >= 0; i-- {
-		m, ok := runtime.Unwrap(msgs[i])
-		if !ok {
-			continue
-		}
-		am, ok := m.(llm.AssistantMessage)
-		if !ok {
-			continue
-		}
-		if am.StopReason == llm.StopReasonToolUse {
-			continue
-		}
-		var b strings.Builder
-		for _, block := range am.Content {
-			if t, ok := block.(llm.TextContent); ok {
-				b.WriteString(t.Text)
-			}
-		}
-		if b.Len() == 0 && am.ErrorMessage != "" {
-			return "Error: " + am.ErrorMessage
-		}
-		return b.String()
-	}
-	return ""
+	text, _ := ExtractFinalAssistant(a.State().Messages())
+	return text
 }

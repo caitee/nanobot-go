@@ -9,9 +9,9 @@ import (
 
 // FallbackProvider wraps a provider and falls back to alternative models on error.
 type FallbackProvider struct {
-	primary     LLMProvider
-	fallbacks   []LLMProvider
-	maxRetries  int
+	primary    LLMProvider
+	fallbacks  []LLMProvider
+	maxRetries int
 }
 
 // NewFallbackProvider creates a new FallbackProvider.

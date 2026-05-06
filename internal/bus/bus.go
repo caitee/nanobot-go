@@ -56,7 +56,7 @@ func (b *messageBus) PublishOutbound(msg OutboundMessage) {
 	}
 }
 
-func (b *messageBus) ConsumeInbound() <-chan InboundMessage  { return b.inbound }
+func (b *messageBus) ConsumeInbound() <-chan InboundMessage   { return b.inbound }
 func (b *messageBus) ConsumeOutbound() <-chan OutboundMessage { return b.outbound }
 
 func (b *messageBus) Close() {

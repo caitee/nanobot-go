@@ -20,9 +20,9 @@ func NewFeishuChannel(config FeishuConfig, bus bus.MessageBus) *FeishuChannel {
 	return &FeishuChannel{config: config, bus: bus}
 }
 
-func (c *FeishuChannel) Name() string       { return "feishu" }
+func (c *FeishuChannel) Name() string        { return "feishu" }
 func (c *FeishuChannel) DisplayName() string { return "Feishu" }
-func (c *FeishuChannel) IsRunning() bool  { return false }
+func (c *FeishuChannel) IsRunning() bool     { return false }
 func (c *FeishuChannel) Start(ctx context.Context) error {
 	return nil // Not implemented
 }

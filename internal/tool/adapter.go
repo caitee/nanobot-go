@@ -51,11 +51,11 @@ type legacyAdapter struct {
 // re-wire a spawner after registry construction).
 func (a *legacyAdapter) Unwrap() Legacy { return a.legacy }
 
-func (a *legacyAdapter) Name() string                      { return a.legacy.Name() }
-func (a *legacyAdapter) Label() string                     { return a.label }
-func (a *legacyAdapter) Description() string               { return a.legacy.Description() }
-func (a *legacyAdapter) Parameters() map[string]any        { return a.legacy.Parameters() }
-func (a *legacyAdapter) ExecutionMode() ExecutionMode      { return ExecutionDefault }
+func (a *legacyAdapter) Name() string                 { return a.legacy.Name() }
+func (a *legacyAdapter) Label() string                { return a.label }
+func (a *legacyAdapter) Description() string          { return a.legacy.Description() }
+func (a *legacyAdapter) Parameters() map[string]any   { return a.legacy.Parameters() }
+func (a *legacyAdapter) ExecutionMode() ExecutionMode { return ExecutionDefault }
 func (a *legacyAdapter) PrepareArguments(raw map[string]any) (map[string]any, error) {
 	return raw, nil
 }

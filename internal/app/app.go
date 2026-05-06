@@ -26,9 +26,9 @@ type App struct {
 	Config *config.Config
 	Bus    bus.MessageBus
 
-	SessionStore    session.SessionStore
-	ToolRegistry    tool.Registry
-	LLMRegistry     *llm.Registry
+	SessionStore session.SessionStore
+	ToolRegistry tool.Registry
+	LLMRegistry  *llm.Registry
 
 	// LegacyProviderRegistry is kept through M5 so plugin code registered
 	// under the old API can still add providers; the bridge adapts them

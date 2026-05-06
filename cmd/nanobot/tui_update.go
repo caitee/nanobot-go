@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	appcore "nanobot-go/internal/app"
 	"nanobot-go/internal/bus"
 	"nanobot-go/internal/llm"
 	"nanobot-go/internal/runtime"
@@ -69,11 +70,15 @@ func (m *interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case spinnerTickMsg:
 		m.mu.Lock()
-		if m.waiting {
+		waiting := m.waiting
+		if waiting {
 			m.spinnerIdx = (m.spinnerIdx + 1) % len(spinnerFrames)
 		}
 		m.mu.Unlock()
-		return m, m.tickSpinner()
+		if waiting {
+			return m, m.tickSpinner()
+		}
+		return m, nil
 
 	case typewriterTickMsg:
 		m.mu.Lock()
@@ -93,7 +98,10 @@ func (m *interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.typewriterQueue = m.typewriterQueue[n:]
 		}
 		m.mu.Unlock()
-		return m, m.tickTypewriter()
+		if len(m.typewriterQueue) > 0 {
+			return m, m.tickTypewriter()
+		}
+		return m, nil
 
 	case responseMsg:
 		m.mu.Lock()
@@ -181,7 +189,7 @@ func (m *interactiveModel) handleEnter() (tea.Model, tea.Cmd) {
 		Content: userInput, SessionKey: m.sessionKey,
 	})
 
-	return m, tea.Batch(cmd, m.pollEvents())
+	return m, tea.Batch(cmd, m.pollEvents(), m.tickSpinner())
 }
 
 // handleRuntimeEvent processes a single runtime.Event. Called with m.mu held.
@@ -221,7 +229,11 @@ func (m *interactiveModel) handleRuntimeEvent(ev runtime.Event) tea.Cmd {
 			m.status = "responding"
 			m.streamText += data.StreamEvent.Delta
 			if data.StreamEvent.Delta != "" {
+				wasEmpty := len(m.typewriterQueue) == 0
 				m.typewriterQueue = append(m.typewriterQueue, []rune(data.StreamEvent.Delta)...)
+				if wasEmpty {
+					return m.tickTypewriter()
+				}
 			}
 		}
 
@@ -260,7 +272,7 @@ func (m *interactiveModel) handleRuntimeEvent(ev runtime.Event) tea.Cmd {
 		// with the same content (published by the dispatcher), but we use
 		// the agent_end payload directly — it's the authoritative record.
 		data, _ := ev.AgentEnd()
-		text, reasoning := finalFromRuntimeMessages(data.Messages)
+		text, reasoning := appcore.ExtractFinalAssistant(data.Messages)
 		if m.currentRound != nil && (m.currentRound.reasoning != "" || len(m.currentRound.toolCalls) > 0) {
 			m.rounds = append(m.rounds, *m.currentRound)
 			m.currentRound = nil
@@ -360,38 +372,6 @@ func outboundFromAgentEventFinal(msg bus.OutboundMessage) bool {
 	}
 	fromEvent, ok := v.(bool)
 	return ok && fromEvent
-}
-
-// finalFromRuntimeMessages scans the run's newly appended messages backwards
-// for the final assistant answer and returns its text + reasoning.
-func finalFromRuntimeMessages(msgs []runtime.AgentMessage) (text, reasoning string) {
-	for i := len(msgs) - 1; i >= 0; i-- {
-		underlying, ok := runtime.Unwrap(msgs[i])
-		if !ok {
-			continue
-		}
-		am, ok := underlying.(llm.AssistantMessage)
-		if !ok {
-			continue
-		}
-		if am.StopReason == llm.StopReasonToolUse && i < len(msgs)-1 {
-			continue
-		}
-		var tb, rb strings.Builder
-		for _, block := range am.Content {
-			switch b := block.(type) {
-			case llm.TextContent:
-				tb.WriteString(b.Text)
-			case llm.ThinkingContent:
-				rb.WriteString(b.Thinking)
-			}
-		}
-		if tb.Len() == 0 && am.ErrorMessage != "" {
-			return "Error: " + am.ErrorMessage, rb.String()
-		}
-		return tb.String(), rb.String()
-	}
-	return "", ""
 }
 
 // contentsToString renders a tool_result payload (typically []llm.Content) into

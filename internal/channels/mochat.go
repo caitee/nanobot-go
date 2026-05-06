@@ -20,7 +20,7 @@ func NewMochatChannel(config MochatConfig, bus bus.MessageBus) *MochatChannel {
 	return &MochatChannel{config: config, bus: bus}
 }
 
-func (c *MochatChannel) Name() string       { return "mochat" }
+func (c *MochatChannel) Name() string        { return "mochat" }
 func (c *MochatChannel) DisplayName() string { return "MoChat" }
 func (c *MochatChannel) IsRunning() bool     { return false }
 func (c *MochatChannel) Start(ctx context.Context) error {

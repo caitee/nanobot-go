@@ -22,9 +22,9 @@ func NewEmailChannel(config EmailConfig, bus bus.MessageBus) *EmailChannel {
 	return &EmailChannel{config: config, bus: bus}
 }
 
-func (c *EmailChannel) Name() string       { return "email" }
+func (c *EmailChannel) Name() string        { return "email" }
 func (c *EmailChannel) DisplayName() string { return "Email" }
-func (c *EmailChannel) IsRunning() bool    { return false }
+func (c *EmailChannel) IsRunning() bool     { return false }
 func (c *EmailChannel) Start(ctx context.Context) error {
 	return nil // Not implemented
 }

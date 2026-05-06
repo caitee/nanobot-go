@@ -12,25 +12,25 @@ import (
 
 // Skill represents an agent skill with instructions and metadata
 type Skill struct {
-	Name            string            `json:"name"`
-	Description     string            `json:"description"`
-	Homepage        string            `json:"homepage,omitempty"`
-	Always          bool              `json:"always,omitempty"`
-	Metadata        SkillMetadata     `json:"metadata,omitempty"`
-	Content         string            `json:"content,omitempty"`
-	Path            string            `json:"path,omitempty"`
-	Source          string            `json:"source,omitempty"` // "workspace" or "builtin"
-	Available       bool              `json:"available,omitempty"`
-	MissingDeps     []string          `json:"missing_deps,omitempty"`
+	Name        string        `json:"name"`
+	Description string        `json:"description"`
+	Homepage    string        `json:"homepage,omitempty"`
+	Always      bool          `json:"always,omitempty"`
+	Metadata    SkillMetadata `json:"metadata,omitempty"`
+	Content     string        `json:"content,omitempty"`
+	Path        string        `json:"path,omitempty"`
+	Source      string        `json:"source,omitempty"` // "workspace" or "builtin"
+	Available   bool          `json:"available,omitempty"`
+	MissingDeps []string      `json:"missing_deps,omitempty"`
 }
 
 // SkillMetadata contains nanobot-specific metadata
 type SkillMetadata struct {
-	Emoji     string            `json:"emoji,omitempty"`
-	Requires  SkillRequirements `json:"requires,omitempty"`
-	Install   []SkillInstall    `json:"install,omitempty"`
-	Always    bool              `json:"always,omitempty"`
-	OS        []string           `json:"os,omitempty"`
+	Emoji    string            `json:"emoji,omitempty"`
+	Requires SkillRequirements `json:"requires,omitempty"`
+	Install  []SkillInstall    `json:"install,omitempty"`
+	Always   bool              `json:"always,omitempty"`
+	OS       []string          `json:"os,omitempty"`
 }
 
 // SkillRequirements specifies binary and environment dependencies
@@ -41,12 +41,12 @@ type SkillRequirements struct {
 
 // SkillInstall provides installation instructions for dependencies
 type SkillInstall struct {
-	ID       string `json:"id,omitempty"`
-	Kind     string `json:"kind,omitempty"`
-	Formula  string `json:"formula,omitempty"`
-	Package  string `json:"package,omitempty"`
-	Bins     []string `json:"bins,omitempty"`
-	Label    string `json:"label,omitempty"`
+	ID      string   `json:"id,omitempty"`
+	Kind    string   `json:"kind,omitempty"`
+	Formula string   `json:"formula,omitempty"`
+	Package string   `json:"package,omitempty"`
+	Bins    []string `json:"bins,omitempty"`
+	Label   string   `json:"label,omitempty"`
 }
 
 // skillFrontmatter represents the YAML frontmatter of a SKILL.md file
@@ -313,9 +313,9 @@ func (s *Skill) GetInstallInstructions() string {
 
 // skillFileInfo holds skill directory info for listing
 type skillFileInfo struct {
-	Name    string
-	Path    string
-	Source  string
+	Name   string
+	Path   string
+	Source string
 }
 
 // ListSkillDirs returns skill directories in a base path

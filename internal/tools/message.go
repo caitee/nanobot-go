@@ -9,8 +9,10 @@ type MessageTool struct{}
 
 func NewMessageTool() *MessageTool { return &MessageTool{} }
 
-func (t *MessageTool) Name() string   { return "message" }
-func (t *MessageTool) Description() string { return "Send a message to a chat channel. Use this when the user asks to send a message to someone or somewhere." }
+func (t *MessageTool) Name() string { return "message" }
+func (t *MessageTool) Description() string {
+	return "Send a message to a chat channel. Use this when the user asks to send a message to someone or somewhere."
+}
 func (t *MessageTool) Parameters() map[string]any {
 	return map[string]any{
 		"type": "object",

@@ -18,6 +18,7 @@ type loopConfig struct {
 	thinkingLevel    string
 	sessionID        string
 	tools            []tool.AgentTool
+	toolIndex        map[string]tool.AgentTool
 	toolExecution    tool.ExecutionMode
 	streamFn         llm.StreamFn
 	convertToLLM     ConvertToLLM
@@ -118,12 +119,12 @@ func runTurnLoop(
 				stop, err := cfg.shouldStopAfter(ctx, ShouldStopContext{
 					Assistant:   assistant,
 					ToolResults: toolResults,
-					Transcript:  cloneMessages(transcript),
-					NewMessages: cloneMessages(newMessages),
+					Transcript:  transcript,
+					NewMessages: newMessages,
 				})
 				if err != nil {
 					cfg.emitAgentEnd(newMessages)
-					return newMessages, fmt.Errorf("shouldStopAfter: %w", err)
+					return newMessages, mapRuntimeError(err, "shouldStopAfter")
 				}
 				if stop {
 					goto afterInner
@@ -183,14 +184,14 @@ func runSingleTurn(
 	if cfg.transformContext != nil {
 		out, err := cfg.transformContext(ctx, cloneMessages(prepared))
 		if err != nil {
-			return llm.AssistantMessage{}, nil, nil, fmt.Errorf("transformContext: %w", err)
+			return llm.AssistantMessage{}, nil, nil, mapRuntimeError(err, "transformContext")
 		}
 		prepared = out
 	}
 
 	llmMessages, err := cfg.convertToLLM(prepared)
 	if err != nil {
-		return llm.AssistantMessage{}, nil, nil, fmt.Errorf("convertToLLM: %w", err)
+		return llm.AssistantMessage{}, nil, nil, mapRuntimeError(err, "convertToLLM")
 	}
 
 	// 2. Resolve API key if needed.
@@ -198,7 +199,7 @@ func runSingleTurn(
 	if cfg.getAPIKey != nil {
 		apiKey, err = cfg.getAPIKey(ctx, cfg.model.Provider)
 		if err != nil {
-			return llm.AssistantMessage{}, nil, nil, fmt.Errorf("getAPIKey: %w", err)
+			return llm.AssistantMessage{}, nil, nil, mapGetAPIKeyError(err, cfg.model.Provider)
 		}
 	}
 
@@ -301,7 +302,8 @@ func consumeStream(
 				}
 				partial.StopReason = llm.StopReasonError
 				partial.ErrorMessage = ev.ErrorMessage
-				return partial, nil
+				// Map provider errors to structured errors
+				return partial, mapProviderError(nil, ev.ErrorMessage)
 			}
 		}
 	}
@@ -331,7 +333,7 @@ func executeToolBatch(
 	preps := make([]prep, len(calls))
 
 	for i, c := range calls {
-		tl := lookupTool(cfg.tools, c.Name)
+		tl := lookupTool(cfg, c.Name)
 		if tl == nil {
 			preps[i] = prep{
 				call:    c,
@@ -526,11 +528,9 @@ func collectToolCalls(m llm.AssistantMessage) []llm.ToolCallContent {
 	return out
 }
 
-func lookupTool(tools []tool.AgentTool, name string) tool.AgentTool {
-	for _, t := range tools {
-		if t.Name() == name {
-			return t
-		}
+func lookupTool(cfg loopConfig, name string) tool.AgentTool {
+	if t, ok := cfg.toolIndex[name]; ok {
+		return t
 	}
 	return nil
 }
@@ -576,6 +576,6 @@ func (cfg loopConfig) emitAgentEnd(newMessages []AgentMessage) {
 	cfg.emit(Event{
 		Kind:      EventAgentEnd,
 		Timestamp: time.Now(),
-		Data:      AgentEndData{Messages: cloneMessages(newMessages)},
+		Data:      AgentEndData{Messages: newMessages},
 	})
 }

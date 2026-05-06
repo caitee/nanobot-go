@@ -139,10 +139,10 @@ func (a *legacyProviderAdapter) Stream(ctx context.Context, model Model, c Conte
 				stop := mapFinishReason(chunk.FinishReason, len(chunk.ToolCalls) > 0)
 
 				final := AssistantMessage{
-					Content:   finalContent,
-					API:       model.API,
-					Provider:  model.Provider,
-					Model:     model.ID,
+					Content:  finalContent,
+					API:      model.API,
+					Provider: model.Provider,
+					Model:    model.ID,
 					Usage: Usage{
 						Input:  chunk.Usage.PromptTokens,
 						Output: chunk.Usage.CompletionTokens,

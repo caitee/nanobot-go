@@ -10,17 +10,17 @@ import (
 
 // RequestStats tracks request statistics.
 type RequestStats struct {
-	Count       uint64
-	Successes  uint64
-	Errors      uint64
+	Count          uint64
+	Successes      uint64
+	Errors         uint64
 	TotalLatencyMs int64 // accumulated latency in ms
-	mu          sync.Mutex
+	mu             sync.Mutex
 }
 
 // Metrics holds global metrics for the agent.
 type Metrics struct {
-	requests   RequestStats
-	startTime  time.Time
+	requests  RequestStats
+	startTime time.Time
 }
 
 // Global metrics instance

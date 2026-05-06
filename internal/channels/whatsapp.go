@@ -19,9 +19,9 @@ func NewWhatsAppChannel(config WhatsAppConfig, bus bus.MessageBus) *WhatsAppChan
 	return &WhatsAppChannel{config: config, bus: bus}
 }
 
-func (c *WhatsAppChannel) Name() string       { return "whatsapp" }
+func (c *WhatsAppChannel) Name() string        { return "whatsapp" }
 func (c *WhatsAppChannel) DisplayName() string { return "WhatsApp" }
-func (c *WhatsAppChannel) IsRunning() bool   { return false }
+func (c *WhatsAppChannel) IsRunning() bool     { return false }
 func (c *WhatsAppChannel) Start(ctx context.Context) error {
 	return nil // Not implemented
 }

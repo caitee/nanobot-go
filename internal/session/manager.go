@@ -21,10 +21,10 @@ type SessionStore interface {
 
 // fileSessionStore implements SessionStore with JSONL persistence
 type fileSessionStore struct {
-	sessionsDir      string
+	sessionsDir       string
 	legacySessionsDir string
-	sessions         map[string]*Session
-	mu               sync.RWMutex
+	sessions          map[string]*Session
+	mu                sync.RWMutex
 }
 
 // NewFileSessionStore creates a new file-based session store
@@ -38,9 +38,9 @@ func NewFileSessionStoreWithLegacy(sessionsDir, legacySessionsDir string) (Sessi
 		return nil, fmt.Errorf("failed to create sessions dir: %w", err)
 	}
 	return &fileSessionStore{
-		sessionsDir:      sessionsDir,
+		sessionsDir:       sessionsDir,
 		legacySessionsDir: legacySessionsDir,
-		sessions:         make(map[string]*Session),
+		sessions:          make(map[string]*Session),
 	}, nil
 }
 
@@ -208,7 +208,7 @@ func (s *fileSessionStore) Save(session *Session) error {
 		"key":               session.Key,
 		"created_at":        session.CreatedAt.Format(time.RFC3339),
 		"updated_at":        session.UpdatedAt.Format(time.RFC3339),
-		"last_consolidated":  session.LastConsolidated,
+		"last_consolidated": session.LastConsolidated,
 		"metadata":          session.Metadata,
 	}
 	metaBytes, err := json.Marshal(meta)

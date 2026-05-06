@@ -17,8 +17,10 @@ func NewShellTool(enabled bool, allow, deny []string) *ShellTool {
 	return &ShellTool{enabled: enabled, allow: allow, deny: deny}
 }
 
-func (t *ShellTool) Name() string   { return "shell" }
-func (t *ShellTool) Description() string { return "Execute shell commands on the local system. Use for running scripts, system commands, or git operations. Returns stdout and stderr output." }
+func (t *ShellTool) Name() string { return "shell" }
+func (t *ShellTool) Description() string {
+	return "Execute shell commands on the local system. Use for running scripts, system commands, or git operations. Returns stdout and stderr output."
+}
 func (t *ShellTool) Parameters() map[string]any {
 	return map[string]any{
 		"type": "object",

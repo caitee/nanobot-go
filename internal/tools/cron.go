@@ -25,7 +25,7 @@ func NewCronTool(cronService *cron.CronService, messageBus bus.MessageBus) *Cron
 	}
 }
 
-func (t *CronTool) Name() string    { return "cron" }
+func (t *CronTool) Name() string { return "cron" }
 func (t *CronTool) Description() string {
 	return "Schedule reminders, one-time alerts, or recurring tasks. Use when user wants to be reminded of something, set a timer, or automate periodic messages. Actions: add (schedule), list (show all), remove (cancel)."
 }
@@ -123,8 +123,8 @@ func (t *CronTool) addJob(params map[string]any) (any, error) {
 			return fmt.Sprintf("Error: invalid ISO datetime format '%s'. Expected format: YYYY-MM-DDTHH:MM:SS", at), nil
 		}
 		schedule = cron.CronSchedule{
-			Kind:  "at",
-			AtMs:  dt.UnixMilli(),
+			Kind: "at",
+			AtMs: dt.UnixMilli(),
 		}
 		deleteAfterRun = true
 	} else {
@@ -140,7 +140,7 @@ func (t *CronTool) addJob(params map[string]any) (any, error) {
 		name,
 		schedule,
 		message,
-		true,  // deliver
+		true, // deliver
 		t.channel,
 		t.chatID,
 		deleteAfterRun,

@@ -171,6 +171,13 @@ This is a plain Go implementation of pi-mono's "transform context before LLM cal
 - **Add a hook**: write a `runtime.BeforeToolCall` / `AfterToolCall` / `TransformContext` / `ShouldStopAfter` function, pass it via `runtime.Options`. Chain multiple with `hooks.ChainBefore` / `hooks.ChainAfter`.
 - **Add a channel**: implement `channels.Channel`, register in `channels.Manager`. It will receive outbound messages and can publish inbound ones via `bus.PublishInbound`.
 
+## Migration boundaries
+
+- New provider work should land in `internal/llm` first. `internal/providers` remains a compatibility layer for implementations that have not yet been rewritten to `llm.StreamFn`.
+- New tool work should land in `internal/tool` first. `internal/tools` should only grow when wrapping or adapting an existing legacy tool.
+- `internal/runtime` should not absorb provider-specific or tool-specific branching. Express those differences through stream adapters, tool adapters, and hooks.
+- When migrating legacy code, remove bridge-only logic once the native `internal/llm` or `internal/tool` implementation reaches parity instead of keeping both paths indefinitely.
+
 ## Why this structure
 
 - **Testability**: `runAgentLoop` is a pure function — tests construct an `EventSink`, a fake `StreamFn`, fake tools, and assert on the event stream. No process state, no I/O.

@@ -19,10 +19,10 @@ import (
 // MCPTool provides access to MCP servers and their tools
 type MCPTool struct {
 	BaseTool
-	servers     map[string]*MCPServerConfig
-	tools       map[string]*MCPToolDef
-	mu          sync.RWMutex
-	httpClient  *http.Client
+	servers    map[string]*MCPServerConfig
+	tools      map[string]*MCPToolDef
+	mu         sync.RWMutex
+	httpClient *http.Client
 }
 
 // MCPServerConfig holds MCP server configuration
@@ -66,8 +66,10 @@ func (t *MCPTool) ConfigureServer(name string, config *MCPServerConfig) {
 }
 
 // Name and Description for the composite MCP tool
-func (t *MCPTool) Name() string    { return "mcp" }
-func (t *MCPTool) Description() string { return "Call tools, list resources, and use prompt templates from MCP (Model Context Protocol) servers. Actions: tools (call a tool), resources (list/read resources), prompts (list/get prompt templates)." }
+func (t *MCPTool) Name() string { return "mcp" }
+func (t *MCPTool) Description() string {
+	return "Call tools, list resources, and use prompt templates from MCP (Model Context Protocol) servers. Actions: tools (call a tool), resources (list/read resources), prompts (list/get prompt templates)."
+}
 
 // Parameters returns the schema for calling MCP tools, resources, or prompts
 func (t *MCPTool) Parameters() map[string]any {
@@ -129,9 +131,9 @@ func (t *MCPTool) Parameters() map[string]any {
 	}
 
 	return map[string]any{
-		"type": "object",
+		"type":       "object",
 		"properties": props,
-		"required": []any{"action", "server"},
+		"required":   []any{"action", "server"},
 	}
 }
 
@@ -443,10 +445,10 @@ type MCPJSONRPCRequest struct {
 
 // MCPResponse represents a JSON-RPC response
 type MCPResponse struct {
-	JSONRPC string         `json:"jsonrpc"`
-	ID     int            `json:"id"`
-	Result *MCPResult     `json:"result,omitempty"`
-	Error  *MCPErrorDetail `json:"error,omitempty"`
+	JSONRPC string          `json:"jsonrpc"`
+	ID      int             `json:"id"`
+	Result  *MCPResult      `json:"result,omitempty"`
+	Error   *MCPErrorDetail `json:"error,omitempty"`
 }
 
 // MCPResult represents a successful result

@@ -31,7 +31,7 @@ func (f *finalCollector) handle(e runtime.Event) {
 	if !ok {
 		return
 	}
-	text, reasoning := extractFinalAssistant(data.Messages)
+	text, reasoning := ExtractFinalAssistant(data.Messages)
 	f.mu.Lock()
 	f.text = text
 	f.reasoning = reasoning
@@ -45,9 +45,9 @@ func (f *finalCollector) Result() (string, string) {
 	return f.text, f.reasoning
 }
 
-// extractFinalAssistant scans the run's new messages backwards for the last
+// ExtractFinalAssistant scans the run's new messages backwards for the last
 // assistant answer and returns its concatenated text + thinking content.
-func extractFinalAssistant(msgs []runtime.AgentMessage) (text, reasoning string) {
+func ExtractFinalAssistant(msgs []runtime.AgentMessage) (text, reasoning string) {
 	for i := len(msgs) - 1; i >= 0; i-- {
 		underlying, ok := runtime.Unwrap(msgs[i])
 		if !ok {

@@ -113,9 +113,9 @@ type fakeLegacy struct {
 	fn   func(ctx context.Context, p map[string]any) (any, error)
 }
 
-func (f *fakeLegacy) Name() string                 { return f.name }
-func (f *fakeLegacy) Description() string          { return "fake " + f.name }
-func (f *fakeLegacy) Parameters() map[string]any   { return map[string]any{"type": "object"} }
+func (f *fakeLegacy) Name() string               { return f.name }
+func (f *fakeLegacy) Description() string        { return "fake " + f.name }
+func (f *fakeLegacy) Parameters() map[string]any { return map[string]any{"type": "object"} }
 func (f *fakeLegacy) Execute(ctx context.Context, p map[string]any) (any, error) {
 	return f.fn(ctx, p)
 }

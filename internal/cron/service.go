@@ -357,10 +357,10 @@ func (s *CronService) AddJob(
 	now := nowMs()
 
 	job := &CronJob{
-		ID:             fmt.Sprintf("%d", now),
-		Name:           name,
-		Enabled:        true,
-		Schedule:       schedule,
+		ID:       fmt.Sprintf("%d", now),
+		Name:     name,
+		Enabled:  true,
+		Schedule: schedule,
 		Payload: CronPayload{
 			Kind:    "agent_turn",
 			Message: message,
@@ -485,8 +485,8 @@ func (s *CronService) Status() map[string]any {
 		jobs = len(store.Jobs)
 	}
 	return map[string]any{
-		"enabled":        s.running,
-		"jobs":           jobs,
+		"enabled":         s.running,
+		"jobs":            jobs,
 		"next_wake_at_ms": s.getNextWakeMs(),
 	}
 }
