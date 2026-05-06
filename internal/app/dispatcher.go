@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"nanobot-go/internal/bus"
+	"nanobot-go/internal/errors"
 	"nanobot-go/internal/llm"
 	"nanobot-go/internal/runtime"
 	"nanobot-go/internal/session"
@@ -281,6 +282,14 @@ func (d *Dispatcher) handleInbound(ctx context.Context, inbound bus.InboundMessa
 		out, err := d.runTurn(ctx, inbound)
 		if err != nil {
 			slog.Error("dispatcher: runTurn failed", "error", err, "session", inbound.SessionKey)
+			// Format error for user and publish as outbound message
+			userMsg := errors.FormatUserMessage(err)
+			d.bus.PublishOutbound(bus.OutboundMessage{
+				Channel: inbound.Channel,
+				ChatID:  inbound.ChatID,
+				Content: userMsg,
+				ReplyTo: inbound.SenderID,
+			})
 			return
 		}
 		if out != nil {
@@ -303,7 +312,14 @@ func (d *Dispatcher) tryCommand(ctx context.Context, inbound bus.InboundMessage)
 	resp, err := handler(ctx, d, args, inbound)
 	if err != nil {
 		slog.Error("dispatcher: command error", "cmd", cmd, "error", err)
-		return nil, true
+		// Format error for user
+		userMsg := errors.FormatUserMessage(err)
+		return &bus.OutboundMessage{
+			Channel: inbound.Channel,
+			ChatID:  inbound.ChatID,
+			Content: userMsg,
+			ReplyTo: inbound.SenderID,
+		}, true
 	}
 	if resp == "" {
 		return nil, true

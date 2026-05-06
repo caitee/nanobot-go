@@ -4,11 +4,13 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"nanobot-go/internal/app"
 	"nanobot-go/internal/bus"
+	"nanobot-go/internal/errors"
 	"nanobot-go/internal/llm"
 	"nanobot-go/internal/runtime"
 	"nanobot-go/internal/session"
@@ -192,4 +194,110 @@ func TestDispatcherStopCommandAbortsRun(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatalf("active run did not terminate after /stop")
+}
+
+func TestDispatcherFormatsErrorsForUser(t *testing.T) {
+	// Stream function that returns a structured error
+	errorStream := func(ctx context.Context, model llm.Model, c llm.Context, opts llm.StreamOptions) llm.EventStream {
+		out := make(chan llm.StreamEvent, 2)
+		go func() {
+			defer close(out)
+			// Simulate an API key missing error
+			structuredErr := errors.Wrap(
+				nil,
+				errors.CategoryProvider,
+				errors.SeverityError,
+				errors.CodeProviderAPIKeyMissing,
+				"Provider API key is missing",
+				map[string]any{"provider": "anthropic"},
+				false,
+			)
+			out <- llm.StreamEvent{
+				Kind:         llm.StreamEventError,
+				StopReason:   llm.StopReasonError,
+				ErrorMessage: structuredErr.Error(),
+			}
+		}()
+		return out
+	}
+
+	dir, _ := os.MkdirTemp("", "nanobot-error-*")
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	store, _ := session.NewFileSessionStore(filepath.Join(dir, "sessions"))
+	b := bus.New(10)
+	d := app.NewDispatcher(app.DispatcherOptions{
+		Bus:          b,
+		SessionStore: store,
+		ToolRegistry: tool.NewRegistry(),
+		StreamFn:     errorStream,
+		Model:        llm.Model{ID: "m"},
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = d.Run(ctx) }()
+
+	outbound := b.ConsumeOutbound()
+
+	b.PublishInbound(bus.InboundMessage{
+		Channel:    "cli",
+		SenderID:   "user",
+		ChatID:     "test",
+		Content:    "hello",
+		SessionKey: "test-session",
+	})
+
+	select {
+	case msg, ok := <-outbound:
+		if !ok {
+			t.Fatalf("outbound channel closed")
+		}
+		// Should contain formatted error message, not raw error
+		if !strings.Contains(msg.Content, "API key") {
+			t.Errorf("expected formatted error message, got: %q", msg.Content)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timeout waiting for error message")
+	}
+}
+
+func TestDispatcherFormatsCommandErrors(t *testing.T) {
+	d, b, _ := newTestDispatcher(t, "hello")
+
+	// Register a command that returns a structured error
+	d.RegisterCommand("fail", func(ctx context.Context, d *app.Dispatcher, args string, inbound bus.InboundMessage) (string, error) {
+		return "", errors.New(
+			errors.CategoryConfig,
+			errors.SeverityError,
+			errors.CodeConfigInvalid,
+			"Invalid configuration provided",
+		)
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = d.Run(ctx) }()
+
+	outbound := b.ConsumeOutbound()
+
+	b.PublishInbound(bus.InboundMessage{
+		Channel:    "cli",
+		SenderID:   "user",
+		ChatID:     "test",
+		Content:    "/fail",
+		SessionKey: "test-session",
+	})
+
+	select {
+	case msg, ok := <-outbound:
+		if !ok {
+			t.Fatalf("outbound channel closed")
+		}
+		// Should contain formatted error message
+		if msg.Content != "Invalid configuration provided" {
+			t.Errorf("expected formatted error message, got: %q", msg.Content)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timeout waiting for error message")
+	}
 }
