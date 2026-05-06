@@ -114,9 +114,11 @@ func validateScheduleForAdd(schedule *CronSchedule) error {
 func (s *CronService) Start(ctx context.Context) error {
 	s.mu.Lock()
 	s.running = true
-	s.loadStore()
+	s.store = s.loadStoreInternal()
 	s.recomputeNextRuns()
-	s.saveStore()
+	if s.store != nil {
+		s.saveStoreInternal(s.store)
+	}
 	s.armTimer()
 	s.mu.Unlock()
 
