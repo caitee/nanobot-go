@@ -83,10 +83,15 @@ func (m *interactiveModel) renderRound(round thinkingRound, isLive bool) string 
 		renderedReasoning := renderReasoningMarkdown(round.reasoning)
 		const maxReasoningLines = 5
 		lines := strings.Split(renderedReasoning, "\n")
-		for len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) == "" {
-			lines = lines[:len(lines)-1]
-		}
+		// Keep trailing empty lines to maintain spacing with tool calls
 		if len(lines) > maxReasoningLines {
+			// Count non-empty lines from the end
+			nonEmptyCount := 0
+			for i := len(lines) - 1; i >= 0 && nonEmptyCount < maxReasoningLines; i-- {
+				if strings.TrimSpace(lines[i]) != "" {
+					nonEmptyCount++
+				}
+			}
 			hidden := len(lines) - maxReasoningLines
 			s.WriteString(reasoningStyle.Render(fmt.Sprintf("  ⋮ (%d more lines)", hidden)))
 			s.WriteString("\n")

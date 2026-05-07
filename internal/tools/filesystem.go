@@ -655,7 +655,7 @@ func NewGlobTool(workspace, allowedDir string) *GlobTool {
 	return &GlobTool{fsTool: newFsTool(workspace, allowedDir)}
 }
 
-func (t *GlobTool) Name() string { return "glob" }
+func (t *GlobTool) Name() string { return "find" }
 func (t *GlobTool) Description() string {
 	return "Find files by glob pattern. ** matches any path, * matches within a directory component, ? matches a single character. Example: **/*.go finds all Go files recursively."
 }
@@ -766,7 +766,7 @@ func NewFindTool(workspace, allowedDir string) *FindTool {
 	return &FindTool{fsTool: newFsTool(workspace, allowedDir)}
 }
 
-func (t *FindTool) Name() string { return "find" }
+func (t *FindTool) Name() string { return "grep" }
 func (t *FindTool) Description() string {
 	return "Grep-style text search across files. Returns file paths and line numbers where the pattern matches. Supports regex. Use file_glob to limit to specific file types."
 }
@@ -883,67 +883,4 @@ func (t *FindTool) Execute(ctx context.Context, params map[string]any) (any, err
 		result += fmt.Sprintf("\n\n(truncated, showing first %d of %d matches)", maxResults, matchCount)
 	}
 	return result, nil
-}
-
-// ============================================================================
-// Backwards compatibility: FilesystemTool (original single tool with actions)
-// ============================================================================
-
-type FilesystemTool struct {
-	workspace   string
-	allowedDirs []string
-}
-
-func NewFilesystemTool(allowedDirs []string) *FilesystemTool {
-	var workspace string
-	if len(allowedDirs) > 0 {
-		workspace = allowedDirs[0]
-	}
-	return &FilesystemTool{
-		workspace:   workspace,
-		allowedDirs: allowedDirs,
-	}
-}
-
-func (t *FilesystemTool) Name() string        { return "filesystem" }
-func (t *FilesystemTool) Description() string { return "Read and write files" }
-
-func (t *FilesystemTool) Parameters() map[string]any {
-	return map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"action":  map[string]any{"type": "string", "enum": []any{"read", "write", "list"}},
-			"path":    map[string]any{"type": "string"},
-			"content": map[string]any{"type": "string"},
-		},
-		"required": []any{"action", "path"},
-	}
-}
-
-func (t *FilesystemTool) Execute(ctx context.Context, params map[string]any) (any, error) {
-	action, _ := params["action"].(string)
-	path, _ := params["path"].(string)
-
-	// Delegate to individual tools
-	allowedDir := ""
-	if len(t.allowedDirs) > 0 {
-		allowedDir = t.allowedDirs[0]
-	}
-	switch action {
-	case "read":
-		tool := NewReadFileTool(t.workspace, allowedDir)
-		params2 := map[string]any{"path": path}
-		return tool.Execute(ctx, params2)
-	case "write":
-		content, _ := params["content"].(string)
-		params2 := map[string]any{"path": path, "content": content}
-		tool := NewWriteFileTool(t.workspace, allowedDir)
-		return tool.Execute(ctx, params2)
-	case "list":
-		params2 := map[string]any{"path": path}
-		tool := NewListDirTool(t.workspace, allowedDir)
-		return tool.Execute(ctx, params2)
-	default:
-		return nil, fmt.Errorf("unknown action: %s", action)
-	}
 }

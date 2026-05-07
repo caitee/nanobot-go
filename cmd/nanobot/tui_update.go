@@ -219,10 +219,11 @@ func (m *interactiveModel) handleRuntimeEvent(ev runtime.Event) tea.Cmd {
 			m.currentRound = &thinkingRound{}
 		}
 		m.currentRound.toolCalls = append(m.currentRound.toolCalls, toolCallEntry{
-			id:     data.ToolCallID,
-			name:   data.ToolName,
-			args:   formatArgs(data.Args),
-			status: "running",
+			id:        data.ToolCallID,
+			name:      data.ToolName,
+			args:      formatArgs(data.Args),
+			status:    "running",
+			startTime: ev.Timestamp,
 		})
 
 	case runtime.EventToolExecutionEnd:
@@ -237,6 +238,9 @@ func (m *interactiveModel) handleRuntimeEvent(ev runtime.Event) tea.Cmd {
 				m.currentRound.toolCalls[idx].status = "done"
 			}
 			m.currentRound.toolCalls[idx].result = contentsToString(data.Result)
+			if !m.currentRound.toolCalls[idx].startTime.IsZero() {
+				m.currentRound.toolCalls[idx].durationMs = ev.Timestamp.Sub(m.currentRound.toolCalls[idx].startTime).Milliseconds()
+			}
 		}
 
 	case runtime.EventAgentEnd:
@@ -328,6 +332,10 @@ func (m *interactiveModel) printAbove(content string) tea.Cmd {
 		return nil
 	}
 	return func() tea.Msg {
+		if m.printAboveFn != nil {
+			m.printAboveFn(content)
+			return nil
+		}
 		if m.program != nil {
 			m.program.Println(content)
 		}

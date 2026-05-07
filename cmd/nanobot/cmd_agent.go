@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	appcore "nanobot-go/internal/app"
 	"nanobot-go/internal/bus"
@@ -33,11 +34,25 @@ var (
 
 func init() {
 	agentCmd.Flags().StringVarP(&agentMessageFlag, "message", "m", "", "Message to send to the agent")
-	agentCmd.Flags().StringVarP(&agentSessionFlag, "session", "s", "cli:direct", "Session ID")
+	agentCmd.Flags().StringVarP(&agentSessionFlag, "session", "s", "", "Session ID (default: generate unique session per run)")
 	agentCmd.Flags().StringVarP(&agentWorkspaceFlag, "workspace", "w", "", "Workspace directory")
 	agentCmd.Flags().StringVarP(&agentConfigFlag, "config", "c", "", "Config file path")
 	agentCmd.Flags().BoolVarP(&agentMarkdownFlag, "markdown", "", true, "Render assistant output as Markdown")
 	agentCmd.Flags().BoolVarP(&agentLogsFlag, "logs", "", false, "Show nanobot runtime logs during chat")
+}
+
+// generateSessionKey creates a unique session key for this invocation.
+func generateSessionKey() string {
+	return fmt.Sprintf("cli:session-%d", time.Now().UnixNano())
+}
+
+// resolveSessionKey returns the session key to use: if the user provided
+// an explicit -s value, use it; otherwise generate a fresh session.
+func resolveSessionKey(flagValue string) string {
+	if flagValue != "" {
+		return flagValue
+	}
+	return generateSessionKey()
 }
 
 func runAgent(cmd *cobra.Command, args []string) {
@@ -72,7 +87,7 @@ func runAgent(cmd *cobra.Command, args []string) {
 	}
 	defer app.Stop()
 
-	sessionKey := agentSessionFlag
+	sessionKey := resolveSessionKey(agentSessionFlag)
 	chatID := sessionKey
 	if idx := strings.Index(sessionKey, ":"); idx != -1 {
 		chatID = sessionKey[idx+1:]

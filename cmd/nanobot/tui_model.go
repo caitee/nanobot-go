@@ -2,6 +2,7 @@ package main
 
 import (
 	"sync"
+	"time"
 
 	appcore "nanobot-go/internal/app"
 	"nanobot-go/internal/bus"
@@ -29,6 +30,7 @@ type interactiveModel struct {
 	spinnerIdx       int
 	responseReceived bool
 	program          *tea.Program
+	printAboveFn     func(string)
 
 	runtimeEvents chan runtime.Event
 	outboundCh    <-chan bus.OutboundMessage
@@ -56,6 +58,7 @@ type toolCallEntry struct {
 	status     string // "pending" | "running" | "done" | "error"
 	result     string
 	durationMs int64
+	startTime  time.Time
 	expanded   bool
 }
 

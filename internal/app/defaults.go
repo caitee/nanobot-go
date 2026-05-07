@@ -62,13 +62,42 @@ func RegisterDefaults(reg *plugin.Registry) {
 	reg.Register(newToolPlugin("message", "Send Message", func(_ context.Context, _ plugin.AppContext) (legacytools.Tool, error) {
 		return legacytools.NewMessageTool(), nil
 	}))
-	reg.Register(newToolPlugin("filesystem", "Filesystem", func(_ context.Context, appCtx plugin.AppContext) (legacytools.Tool, error) {
-		cfg := appCtx.GetConfig().(*config.Config)
-		return legacytools.NewFilesystemTool(cfg.Tools.Workspace.AllowedDirs), nil
+	reg.Register(newToolPlugin("read_file", "Read File", func(_ context.Context, appCtx plugin.AppContext) (legacytools.Tool, error) {
+		ws, allowed := filesystemDirs(appCtx)
+		return legacytools.NewReadFileTool(ws, allowed), nil
 	}))
-	reg.Register(newToolPlugin("shell", "Shell", func(_ context.Context, appCtx plugin.AppContext) (legacytools.Tool, error) {
+	reg.Register(newToolPlugin("write_file", "Write File", func(_ context.Context, appCtx plugin.AppContext) (legacytools.Tool, error) {
+		ws, allowed := filesystemDirs(appCtx)
+		return legacytools.NewWriteFileTool(ws, allowed), nil
+	}))
+	reg.Register(newToolPlugin("edit_file", "Edit File", func(_ context.Context, appCtx plugin.AppContext) (legacytools.Tool, error) {
+		ws, allowed := filesystemDirs(appCtx)
+		return legacytools.NewEditFileTool(ws, allowed), nil
+	}))
+	reg.Register(newToolPlugin("list_dir", "List Directory", func(_ context.Context, appCtx plugin.AppContext) (legacytools.Tool, error) {
+		ws, allowed := filesystemDirs(appCtx)
+		return legacytools.NewListDirTool(ws, allowed), nil
+	}))
+	reg.Register(newToolPlugin("find", "Find", func(_ context.Context, appCtx plugin.AppContext) (legacytools.Tool, error) {
+		ws, allowed := filesystemDirs(appCtx)
+		return legacytools.NewGlobTool(ws, allowed), nil
+	}))
+	reg.Register(newToolPlugin("grep", "Grep", func(_ context.Context, appCtx plugin.AppContext) (legacytools.Tool, error) {
+		ws, allowed := filesystemDirs(appCtx)
+		return legacytools.NewFindTool(ws, allowed), nil
+	}))
+	reg.Register(newAgentToolPlugin("shell", func(_ context.Context, appCtx plugin.AppContext) (tool.AgentTool, error) {
 		cfg := appCtx.GetConfig().(*config.Config)
-		return legacytools.NewShellTool(cfg.Tools.Exec.Enabled, cfg.Tools.Exec.Allow, cfg.Tools.Exec.Deny), nil
+		if !cfg.Tools.Exec.Enabled {
+			return nil, nil
+		}
+		var hook legacytools.ShellSpawnHook
+		if len(cfg.Tools.Exec.Allow) > 0 || len(cfg.Tools.Exec.Deny) > 0 {
+			hook = legacytools.AllowDenyHook(cfg.Tools.Exec.Allow, cfg.Tools.Exec.Deny)
+		}
+		return legacytools.NewShellTool(legacytools.ShellToolOptions{
+			SpawnHook: hook,
+		}), nil
 	}))
 	reg.Register(newToolPlugin("web", "Web", func(_ context.Context, _ plugin.AppContext) (legacytools.Tool, error) {
 		return legacytools.NewWebTool(), nil
@@ -136,8 +165,51 @@ func (p *toolPlugin) Init(ctx context.Context, appCtx plugin.AppContext) error {
 	if err != nil {
 		return err
 	}
+	if legacy == nil {
+		return nil
+	}
 	reg := appCtx.GetToolRegistry().(tool.Registry)
 	reg.Register(tool.FromLegacy(legacy, p.label))
+	return nil
+}
+
+// filesystemDirs resolves (workspace, allowedDir) from config for file tools.
+// Falls back to empty strings when no allowed dirs are configured.
+func filesystemDirs(appCtx plugin.AppContext) (workspace, allowedDir string) {
+	cfg := appCtx.GetConfig().(*config.Config)
+	dirs := cfg.Tools.Workspace.AllowedDirs
+	if len(dirs) == 0 {
+		return "", ""
+	}
+	return dirs[0], dirs[0]
+}
+
+// agentToolPlugin registers a tool that already implements tool.AgentTool
+// directly, bypassing the legacy adapter. Use this for tools that need
+// streaming output, Result terminate hints, or other features the legacy
+// interface cannot express.
+type agentToolPlugin struct {
+	name    string
+	factory func(context.Context, plugin.AppContext) (tool.AgentTool, error)
+}
+
+func newAgentToolPlugin(name string, factory func(context.Context, plugin.AppContext) (tool.AgentTool, error)) *agentToolPlugin {
+	return &agentToolPlugin{name: name, factory: factory}
+}
+
+func (p *agentToolPlugin) Name() string      { return "tool." + p.name }
+func (p *agentToolPlugin) Type() plugin.Type { return plugin.TypeTool }
+func (p *agentToolPlugin) Close() error      { return nil }
+func (p *agentToolPlugin) Init(ctx context.Context, appCtx plugin.AppContext) error {
+	t, err := p.factory(ctx, appCtx)
+	if err != nil {
+		return err
+	}
+	if t == nil {
+		return nil
+	}
+	reg := appCtx.GetToolRegistry().(tool.Registry)
+	reg.Register(t)
 	return nil
 }
 
