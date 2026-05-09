@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"nanobot-go/internal/errors"
+	"ori/internal/errors"
 )
 
 // mapProviderError maps provider-related errors to structured errors.

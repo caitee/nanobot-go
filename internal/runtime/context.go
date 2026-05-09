@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"nanobot-go/internal/llm"
+	"ori/internal/llm"
 )
 
 // SystemPromptBuilder composes the system prompt that the Agent will use. It
@@ -93,9 +93,9 @@ func (b *SystemPromptBuilder) identity() string {
 			"- Use file tools when they are simpler or more reliable than shell commands.\n"
 	}
 
-	return fmt.Sprintf(`# nanobot
+	return fmt.Sprintf(`# ori
 
-You are nanobot, a helpful AI assistant.
+You are ori, a helpful AI assistant.
 
 ## Runtime
 %s
@@ -108,7 +108,7 @@ Your workspace is at: %s
 
 %s
 
-## nanobot Guidelines
+## ori Guidelines
 - State intent before tool calls, but NEVER predict or claim results before receiving them.
 - Before modifying a file, read it first. Do not assume files or directories exist.
 - After writing or editing a file, re-read it if accuracy matters.

@@ -27,26 +27,26 @@ npx --yes clawhub@latest search "web scraping" --limit 5
 ## Install
 
 ```bash
-npx --yes clawhub@latest install <slug> --workdir ~/.nanobot/workspace
+npx --yes clawhub@latest install <slug> --workdir ~/.ori/workspace
 ```
 
-Replace `<slug>` with the skill name from search results. This places the skill into `~/.nanobot/workspace/skills/`, where nanobot loads workspace skills from. Always include `--workdir`.
+Replace `<slug>` with the skill name from search results. This places the skill into `~/.ori/workspace/skills/`, where ori loads workspace skills from. Always include `--workdir`.
 
 ## Update
 
 ```bash
-npx --yes clawhub@latest update --all --workdir ~/.nanobot/workspace
+npx --yes clawhub@latest update --all --workdir ~/.ori/workspace
 ```
 
 ## List installed
 
 ```bash
-npx --yes clawhub@latest list --workdir ~/.nanobot/workspace
+npx --yes clawhub@latest list --workdir ~/.ori/workspace
 ```
 
 ## Notes
 
 - Requires Node.js (`npx` comes with it).
 - No API key needed for search and install.
-- `--workdir ~/.nanobot/workspace` is critical — without it, skills install to the current directory instead of the nanobot workspace.
+- `--workdir ~/.ori/workspace` is critical — without it, skills install to the current directory instead of the ori workspace.
 - After install, remind the user to start a new session to load the skill.

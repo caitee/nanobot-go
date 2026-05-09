@@ -5,7 +5,7 @@ import (
 	"log/slog"
 	"sync"
 
-	"nanobot-go/internal/bus"
+	"ori/internal/bus"
 )
 
 type Manager struct {

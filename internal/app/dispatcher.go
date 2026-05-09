@@ -1,4 +1,4 @@
-// Package app wires the new runtime.Agent to nanobot's existing surfaces:
+// Package app wires the new runtime.Agent to ori's existing surfaces:
 // channels, TUI, cron, heartbeat, subagents. The dispatcher in this file is
 // the one object every legacy integration talks to.
 //
@@ -22,12 +22,12 @@ import (
 	"sync"
 	"time"
 
-	"nanobot-go/internal/bus"
-	"nanobot-go/internal/errors"
-	"nanobot-go/internal/llm"
-	"nanobot-go/internal/runtime"
-	"nanobot-go/internal/session"
-	"nanobot-go/internal/tool"
+	"ori/internal/bus"
+	"ori/internal/errors"
+	"ori/internal/llm"
+	"ori/internal/runtime"
+	"ori/internal/session"
+	"ori/internal/tool"
 )
 
 // Dispatcher is the glue between bus-driven inputs and a runtime.Agent.

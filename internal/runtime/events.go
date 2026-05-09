@@ -3,7 +3,7 @@ package runtime
 import (
 	"time"
 
-	"nanobot-go/internal/llm"
+	"ori/internal/llm"
 )
 
 // EventKind enumerates every event an Agent emits during a run.

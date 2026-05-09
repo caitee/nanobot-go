@@ -1,4 +1,4 @@
-# Nanobot Go
+# Ori Go
 
 A lightweight personal AI assistant framework rewritten in Go, inspired by the original [Python nanobot](https://github.com/HKUDS/nanobot).
 
@@ -13,12 +13,12 @@ A lightweight personal AI assistant framework rewritten in Go, inspired by the o
 
 ## Architecture
 
-Nanobot-go follows a four-layer agent design inspired by [pi-mono](https://github.com/OpenPipe/pi-mono): a pure-function `runtime` loop, a streaming `llm` provider abstraction, a `tool` registry with hook points, and an `app` container that wires everything to channels, cron, sessions, and subagents. See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full design.
+Ori-go follows a four-layer agent design inspired by [pi-mono](https://github.com/OpenPipe/pi-mono): a pure-function `runtime` loop, a streaming `llm` provider abstraction, a `tool` registry with hook points, and an `app` container that wires everything to channels, cron, sessions, and subagents. See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full design.
 
 ```
-nanobot-go/
+ori-go/
 ├── cmd/
-│   ├── nanobot/         # CLI entry (TUI + single-shot + onboard)
+│   ├── ori/         # CLI entry (TUI + single-shot + onboard)
 │   └── gateway/         # Gateway server (channels + health)
 ├── internal/
 │   ├── runtime/         # Agent + loop + events + hooks (pi-mono core)
@@ -47,8 +47,8 @@ nanobot-go/
 ### Installation
 
 ```bash
-git clone https://github.com/your-repo/nanobot-go.git
-cd nanobot-go
+git clone https://github.com/your-repo/ori-go.git
+cd ori-go
 make build
 ```
 
@@ -57,10 +57,10 @@ make build
 Run onboard to create the default config:
 
 ```bash
-./nanobot onboard
+./ori onboard
 ```
 
-Or manually create `~/.nanobot/config.json`:
+Or manually create `~/.ori/config.json`:
 
 ```json
 {
@@ -86,35 +86,35 @@ Or manually create `~/.nanobot/config.json`:
 
 ### Usage
 
-After building with `make build`, the `nanobot` binary will be created in the current directory:
+After building with `make build`, the `ori` binary will be created in the current directory:
 
 ```bash
 # Show status
-./nanobot status
+./ori status
 
 # Interactive chat
-./nanobot agent
+./ori agent
 
 # Single message
-./nanobot agent -m "Hello!"
+./ori agent -m "Hello!"
 
 # Start gateway
-./nanobot gateway
+./ori gateway
 
 # Initialize config
-./nanobot onboard
+./ori onboard
 ```
 
 ## CLI Commands
 
 | Command | Description |
 |---------|-------------|
-| `nanobot onboard` | Initialize configuration (creates default config) |
-| `nanobot onboard --wizard` | Interactive configuration wizard |
-| `nanobot agent` | Run the agent |
-| `nanobot gateway` | Start gateway server |
-| `nanobot channels` | Manage channels |
-| `nanobot status` | Show status |
+| `ori onboard` | Initialize configuration (creates default config) |
+| `ori onboard --wizard` | Interactive configuration wizard |
+| `ori agent` | Run the agent |
+| `ori gateway` | Start gateway server |
+| `ori channels` | Manage channels |
+| `ori status` | Show status |
 
 ## Development
 

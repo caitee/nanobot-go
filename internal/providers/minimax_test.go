@@ -8,7 +8,7 @@ func TestFinalizeMinimaxStreamToolCallsPrefersStreamedInputJSON(t *testing.T) {
 			ID:        "toolu_123",
 			Name:      "search",
 			Arguments: map[string]any{},
-			InputJSON: `{"query":"nanobot","limit":3}`,
+			InputJSON: `{"query":"ori","limit":3}`,
 		},
 	}, []int{1})
 
@@ -17,7 +17,7 @@ func TestFinalizeMinimaxStreamToolCallsPrefersStreamedInputJSON(t *testing.T) {
 	}
 
 	args := toolCalls[0].Arguments
-	if got := args["query"]; got != "nanobot" {
+	if got := args["query"]; got != "ori" {
 		t.Fatalf("expected query argument from streamed JSON, got %#v", got)
 	}
 	if got := args["limit"]; got != float64(3) {

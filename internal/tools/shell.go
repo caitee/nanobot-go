@@ -9,8 +9,8 @@ import (
 	"sync"
 	"time"
 
-	"nanobot-go/internal/llm"
-	"nanobot-go/internal/tool"
+	"ori/internal/llm"
+	"ori/internal/tool"
 )
 
 // ShellOperations abstracts how commands are executed. Replace the default
@@ -270,7 +270,7 @@ func (t *shellTool) Execute(
 		timeout = time.Duration(v) * time.Second
 	}
 
-	accum := NewOutputAccumulator("nanobot-shell")
+	accum := NewOutputAccumulator("ori-shell")
 	defer accum.Close()
 
 	lastEmit := time.Now()

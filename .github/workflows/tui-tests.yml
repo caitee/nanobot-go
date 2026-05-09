@@ -20,4 +20,4 @@ jobs:
         run: make check
 
       - name: Run TUI-specific tests
-        run: go test ./cmd/nanobot/... -v -run "Wizard|Interactive"
+        run: go test ./cmd/ori/... -v -run "Wizard|Interactive"

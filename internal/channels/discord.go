@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"nanobot-go/internal/bus"
+	"ori/internal/bus"
 
 	"github.com/gorilla/websocket"
 )

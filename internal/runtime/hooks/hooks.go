@@ -9,8 +9,8 @@ import (
 	"log/slog"
 	"strings"
 
-	"nanobot-go/internal/llm"
-	"nanobot-go/internal/runtime"
+	"ori/internal/llm"
+	"ori/internal/runtime"
 )
 
 // ChainBefore composes multiple BeforeToolCall hooks. Hooks run in order;

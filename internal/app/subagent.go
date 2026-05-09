@@ -7,11 +7,11 @@ import (
 	"sync"
 	"time"
 
-	"nanobot-go/internal/bus"
-	"nanobot-go/internal/llm"
-	"nanobot-go/internal/runtime"
-	"nanobot-go/internal/runtime/hooks"
-	"nanobot-go/internal/tool"
+	"ori/internal/bus"
+	"ori/internal/llm"
+	"ori/internal/runtime"
+	"ori/internal/runtime/hooks"
+	"ori/internal/tool"
 )
 
 // SubagentManager spawns background runtime.Agent instances to handle a

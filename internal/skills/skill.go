@@ -24,7 +24,7 @@ type Skill struct {
 	MissingDeps []string      `json:"missing_deps,omitempty"`
 }
 
-// SkillMetadata contains nanobot-specific metadata
+// SkillMetadata contains ori-specific metadata
 type SkillMetadata struct {
 	Emoji    string            `json:"emoji,omitempty"`
 	Requires SkillRequirements `json:"requires,omitempty"`
@@ -87,7 +87,7 @@ func ParseSkillContent(content string, path string) (*Skill, error) {
 
 	// Parse metadata JSON
 	if frontmatter.Metadata != "" {
-		meta, err := parseNanobotMetadata(frontmatter.Metadata)
+		meta, err := parseOriMetadata(frontmatter.Metadata)
 		if err == nil {
 			skill.Metadata = meta
 		}
@@ -146,15 +146,15 @@ func parseFrontmatter(content string) (*skillFrontmatter, string, error) {
 	return frontmatter, body, nil
 }
 
-// parseNanobotMetadata parses the metadata JSON from frontmatter
-func parseNanobotMetadata(raw string) (SkillMetadata, error) {
+// parseOriMetadata parses the metadata JSON from frontmatter
+func parseOriMetadata(raw string) (SkillMetadata, error) {
 	var data map[string]json.RawMessage
 	meta := SkillMetadata{}
 
 	// Try to parse as JSON object
 	if err := json.Unmarshal([]byte(raw), &data); err != nil {
-		// Try extracting nanobot or openclaw key
-		re := regexp.MustCompile(`"nanobot"\s*:\s*(\{.*?\})\s*(?:,|\})`)
+		// Try extracting ori or openclaw key
+		re := regexp.MustCompile(`"ori"\s*:\s*(\{.*?\})\s*(?:,|\})`)
 		match := re.FindStringSubmatch(raw)
 		if len(match) < 2 {
 			return meta, err
@@ -165,10 +165,10 @@ func parseNanobotMetadata(raw string) (SkillMetadata, error) {
 		}
 	}
 
-	// Handle top-level nanobot or openclaw wrapper
-	if nanobotData, ok := data["nanobot"]; ok {
-		if err := json.Unmarshal(nanobotData, &data); err == nil {
-			delete(data, "nanobot")
+	// Handle top-level ori or openclaw wrapper
+	if oriData, ok := data["ori"]; ok {
+		if err := json.Unmarshal(oriData, &data); err == nil {
+			delete(data, "ori")
 		}
 	} else if openclawData, ok := data["openclaw"]; ok {
 		if err := json.Unmarshal(openclawData, &data); err == nil {

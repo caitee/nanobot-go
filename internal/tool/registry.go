@@ -6,7 +6,7 @@ import (
 	"strings"
 	"sync"
 
-	"nanobot-go/internal/llm"
+	"ori/internal/llm"
 )
 
 // Registry keeps AgentTool implementations addressable by name.

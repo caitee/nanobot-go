@@ -1,6 +1,6 @@
-# Nanobot-go Architecture
+# Ori-go Architecture
 
-Nanobot-go is a five-layer agent runtime inspired by [pi-mono](https://github.com/OpenPipe/pi-mono). The layers are ordered from lowest to highest dependency:
+Ori-go is a five-layer agent runtime inspired by [pi-mono](https://github.com/OpenPipe/pi-mono). The layers are ordered from lowest to highest dependency:
 
 ```
 entry → app → runtime → llm / tool / plugin / bus
@@ -9,12 +9,12 @@ entry → app → runtime → llm / tool / plugin / bus
 - `llm`, `tool`, `plugin`, `bus` are zero-dependency primitives
 - `runtime` composes `llm` and `tool` into an agent loop
 - `app` wires everything to I/O (channels, cron, sessions, plugin lifecycle)
-- `entry` (`cmd/nanobot`, `cmd/gateway`) is the process boundary
+- `entry` (`cmd/ori`, `cmd/gateway`) is the process boundary
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
 │ entry                                                            │
-│   cmd/nanobot  (CLI + TUI)     cmd/gateway  (HTTP + channels)   │
+│   cmd/ori  (CLI + TUI)     cmd/gateway  (HTTP + channels)   │
 └──────────────┬─────────────────────────────┬────────────────────┘
                │                             │
                ▼                             ▼
@@ -64,11 +64,11 @@ Shared primitives (no runtime dependency):
 
 ### 0. `entry` — process boundary
 
-`cmd/nanobot` and `cmd/gateway` are the only packages that contain `main()`. They:
+`cmd/ori` and `cmd/gateway` are the only packages that contain `main()`. They:
 
 - Parse flags and load `config.Config`
 - Construct `app.App` and call `app.Start`
-- Wire the TUI (nanobot) or HTTP server (gateway) to `app.Dispatcher`
+- Wire the TUI (ori) or HTTP server (gateway) to `app.Dispatcher`
 - Subscribe to `runtime.Event` directly via `Dispatcher.SubscribeRuntimeEvents` for the TUI
 
 Entry packages have **no business logic** — they are thin wiring only.

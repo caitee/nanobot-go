@@ -5,8 +5,8 @@ import (
 	"os"
 	"testing"
 
-	"nanobot-go/internal/app"
-	"nanobot-go/internal/config"
+	"ori/internal/app"
+	"ori/internal/config"
 )
 
 // TestProviderPluginsRegisterDirectlyToLLMRegistry verifies that provider

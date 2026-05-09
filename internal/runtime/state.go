@@ -3,8 +3,8 @@ package runtime
 import (
 	"sync"
 
-	"nanobot-go/internal/llm"
-	"nanobot-go/internal/tool"
+	"ori/internal/llm"
+	"ori/internal/tool"
 )
 
 // AgentState is the public, observable state of an Agent. Assigning Tools or

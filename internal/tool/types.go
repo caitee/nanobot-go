@@ -3,7 +3,7 @@ package tool
 import (
 	"context"
 
-	"nanobot-go/internal/llm"
+	"ori/internal/llm"
 )
 
 // ExecutionMode controls whether a batch of tool calls runs sequentially or

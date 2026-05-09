@@ -4,15 +4,15 @@ import (
 	"context"
 	"os"
 
-	"nanobot-go/internal/bus"
-	"nanobot-go/internal/channels"
-	"nanobot-go/internal/config"
-	"nanobot-go/internal/cron"
-	"nanobot-go/internal/llm"
-	"nanobot-go/internal/plugin"
-	"nanobot-go/internal/providers"
-	"nanobot-go/internal/tool"
-	legacytools "nanobot-go/internal/tools"
+	"ori/internal/bus"
+	"ori/internal/channels"
+	"ori/internal/config"
+	"ori/internal/cron"
+	"ori/internal/llm"
+	"ori/internal/plugin"
+	"ori/internal/providers"
+	"ori/internal/tool"
+	legacytools "ori/internal/tools"
 )
 
 // RegisterDefaults installs the stock set of providers, channels, and tools

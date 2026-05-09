@@ -6,8 +6,8 @@ import (
 	"sync"
 	"time"
 
-	"nanobot-go/internal/llm"
-	"nanobot-go/internal/tool"
+	"ori/internal/llm"
+	"ori/internal/tool"
 )
 
 // Agent is a stateful wrapper around the low-level loop. It owns the

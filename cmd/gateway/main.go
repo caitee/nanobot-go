@@ -7,9 +7,9 @@ import (
 	"os/signal"
 	"syscall"
 
-	"nanobot-go/internal/app"
-	"nanobot-go/internal/config"
-	"nanobot-go/internal/monitoring"
+	"ori/internal/app"
+	"ori/internal/config"
+	"ori/internal/monitoring"
 )
 
 func main() {

@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	oldprov "nanobot-go/internal/providers"
+	oldprov "ori/internal/providers"
 )
 
 // LegacyProvider is the transitional interface mirroring internal/providers.LLMProvider.

@@ -4,8 +4,8 @@ import (
 	"context"
 	"time"
 
-	"nanobot-go/internal/llm"
-	"nanobot-go/internal/tool"
+	"ori/internal/llm"
+	"ori/internal/tool"
 )
 
 // AgentMessage is the union visible to the agent runtime. It includes every

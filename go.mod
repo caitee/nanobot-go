@@ -1,4 +1,4 @@
-module nanobot-go
+module ori
 
 go 1.24.2
 

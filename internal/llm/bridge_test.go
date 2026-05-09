@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	oldprov "nanobot-go/internal/providers"
+	oldprov "ori/internal/providers"
 )
 
 // fakeLegacy scripts a streaming response.

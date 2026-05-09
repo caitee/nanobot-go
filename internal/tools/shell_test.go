@@ -8,8 +8,8 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"nanobot-go/internal/llm"
-	"nanobot-go/internal/tool"
+	"ori/internal/llm"
+	"ori/internal/tool"
 )
 
 func TestShellTool_BasicExecution(t *testing.T) {

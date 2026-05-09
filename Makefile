@@ -1,7 +1,7 @@
 .PHONY: build test lint fmt fmt-check check clean install
 
 build:
-	go build -o nanobot ./cmd/nanobot
+	go build -o ori ./cmd/ori
 	go build -o gateway ./cmd/gateway
 
 test:
@@ -23,8 +23,8 @@ fmt-check:
 check: fmt-check lint test
 
 clean:
-	rm -f nanobot gateway
+	rm -f ori gateway
 
 install:
-	go install ./cmd/nanobot
+	go install ./cmd/ori
 	go install ./cmd/gateway

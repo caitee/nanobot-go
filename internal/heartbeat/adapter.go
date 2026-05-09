@@ -3,7 +3,7 @@ package heartbeat
 import (
 	"context"
 
-	"nanobot-go/internal/providers"
+	"ori/internal/providers"
 )
 
 // LLMProviderAdapter adapts providers.LLMProvider to HeartbeatProvider

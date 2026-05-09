@@ -5,9 +5,9 @@ import (
 	stderrors "errors"
 	"testing"
 
-	"nanobot-go/internal/errors"
-	"nanobot-go/internal/llm"
-	"nanobot-go/internal/tool"
+	"ori/internal/errors"
+	"ori/internal/llm"
+	"ori/internal/tool"
 )
 
 // TestProviderErrorMapping tests that provider errors are mapped to structured errors

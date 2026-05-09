@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"nanobot-go/internal/llm"
+	"ori/internal/llm"
 )
 
 // Legacy mirrors the old internal/tools.Tool interface. Callers can pass any

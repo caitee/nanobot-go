@@ -8,13 +8,13 @@ import (
 	"testing"
 	"time"
 
-	"nanobot-go/internal/app"
-	"nanobot-go/internal/bus"
-	"nanobot-go/internal/errors"
-	"nanobot-go/internal/llm"
-	"nanobot-go/internal/runtime"
-	"nanobot-go/internal/session"
-	"nanobot-go/internal/tool"
+	"ori/internal/app"
+	"ori/internal/bus"
+	"ori/internal/errors"
+	"ori/internal/llm"
+	"ori/internal/runtime"
+	"ori/internal/session"
+	"ori/internal/tool"
 )
 
 // fakeStream returns a scripted stream that replies with fixed text.
@@ -36,7 +36,7 @@ func fakeStreamFn(reply string) llm.StreamFn {
 
 func newTestDispatcher(t *testing.T, reply string) (*app.Dispatcher, bus.MessageBus, string) {
 	t.Helper()
-	dir, err := os.MkdirTemp("", "nanobot-app-test-*")
+	dir, err := os.MkdirTemp("", "ori-app-test-*")
 	if err != nil {
 		t.Fatalf("tempdir: %v", err)
 	}
@@ -159,7 +159,7 @@ func TestDispatcherStopCommandAbortsRun(t *testing.T) {
 		go func() { <-ctx.Done(); close(out) }()
 		return out
 	}
-	dir, _ := os.MkdirTemp("", "nanobot-stop-*")
+	dir, _ := os.MkdirTemp("", "ori-stop-*")
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	store, _ := session.NewFileSessionStore(filepath.Join(dir, "sessions"))
 	b := bus.New(10)
@@ -221,7 +221,7 @@ func TestDispatcherFormatsErrorsForUser(t *testing.T) {
 		return out
 	}
 
-	dir, _ := os.MkdirTemp("", "nanobot-error-*")
+	dir, _ := os.MkdirTemp("", "ori-error-*")
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	store, _ := session.NewFileSessionStore(filepath.Join(dir, "sessions"))
 	b := bus.New(10)

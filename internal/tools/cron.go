@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"nanobot-go/internal/bus"
-	"nanobot-go/internal/cron"
+	"ori/internal/bus"
+	"ori/internal/cron"
 )
 
 type CronTool struct {

@@ -6,9 +6,9 @@ import (
 	"sync"
 	"time"
 
-	"nanobot-go/internal/llm"
-	"nanobot-go/internal/runtime"
-	"nanobot-go/internal/session"
+	"ori/internal/llm"
+	"ori/internal/runtime"
+	"ori/internal/session"
 )
 
 // finalCollector listens on an Agent's runtime event stream and captures the

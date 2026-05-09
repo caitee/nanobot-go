@@ -3,7 +3,7 @@ package channels
 import (
 	"context"
 	"fmt"
-	"nanobot-go/internal/bus"
+	"ori/internal/bus"
 )
 
 type WhatsAppConfig struct {

@@ -1,4 +1,4 @@
-// Package memory implements the two-layer memory model used by nanobot:
+// Package memory implements the two-layer memory model used by ori:
 //
 //   - MEMORY.md   — a long-term, curated scratchpad of facts the agent has
 //     chosen to remember. It is written verbatim into the system

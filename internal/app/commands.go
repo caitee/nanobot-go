@@ -9,10 +9,10 @@ import (
 	"strings"
 	"time"
 
-	"nanobot-go/internal/bus"
+	"ori/internal/bus"
 )
 
-// version is the legacy nanobot version string surfaced by /status.
+// version is the legacy ori version string surfaced by /status.
 const version = "0.2.0-go"
 
 // RegisterDefaultCommands installs the built-in /help /stop /restart
@@ -28,7 +28,7 @@ func RegisterDefaultCommands(d *Dispatcher) {
 
 func handleHelp(ctx context.Context, d *Dispatcher, args string, inbound bus.InboundMessage) (string, error) {
 	lines := []string{
-		"nanobot commands:",
+		"ori commands:",
 		"/new — Start a new conversation",
 		"/stop — Stop the current task",
 		"/restart — Restart the bot",
@@ -64,7 +64,7 @@ func handleRestart(ctx context.Context, d *Dispatcher, args string, inbound bus.
 func handleStatus(ctx context.Context, d *Dispatcher, args string, inbound bus.InboundMessage) (string, error) {
 	sess := d.Session(inbound.SessionKey)
 	lines := []string{
-		fmt.Sprintf("nanobot v%s", version),
+		fmt.Sprintf("ori v%s", version),
 		fmt.Sprintf("Model: %s", d.Model().ID),
 		"Status: running",
 		fmt.Sprintf("Uptime: %s", time.Since(d.StartTime()).Round(time.Second)),

@@ -3,7 +3,7 @@ package channels
 import (
 	"context"
 
-	"nanobot-go/internal/bus"
+	"ori/internal/bus"
 )
 
 // Channel defines the interface for chat channels

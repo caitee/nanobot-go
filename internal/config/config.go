@@ -16,17 +16,17 @@ func Load(configPath string) (*Config, error) {
 	if configPath != "" {
 		v.SetConfigFile(configPath)
 	} else {
-		// Look for config in ~/.nanobot/config.json
+		// Look for config in ~/.ori/config.json
 		home, err := os.UserHomeDir()
 		if err == nil {
-			v.AddConfigPath(home + "/.nanobot")
+			v.AddConfigPath(home + "/.ori")
 		}
 		v.SetConfigName("config")
 		v.SetConfigType("json")
 	}
 
 	// Environment variable overrides
-	v.SetEnvPrefix("NANOBOT")
+	v.SetEnvPrefix("ORI")
 	v.AutomaticEnv()
 
 	if err := v.ReadInConfig(); err != nil {

@@ -11,10 +11,10 @@ Use tmux only when you need an interactive TTY. Prefer exec background mode for 
 ## Quickstart (isolated socket, exec tool)
 
 ```bash
-SOCKET_DIR="${NANOBOT_TMUX_SOCKET_DIR:-${TMPDIR:-/tmp}/nanobot-tmux-sockets}"
+SOCKET_DIR="${ORI_TMUX_SOCKET_DIR:-${TMPDIR:-/tmp}/ori-tmux-sockets}"
 mkdir -p "$SOCKET_DIR"
-SOCKET="$SOCKET_DIR/nanobot.sock"
-SESSION=nanobot-go
+SOCKET="$SOCKET_DIR/ori.sock"
+SESSION=ori-go
 
 tmux -S "$SOCKET" new -d -s "$SESSION" -n shell
 tmux -S "$SOCKET" send-keys -t "$SESSION":0.0 -- 'python3 -q' Enter
@@ -23,8 +23,8 @@ tmux -S "$SOCKET" capture-pane -p -J -t "$SESSION":0.0 -S -200
 
 ## Socket convention
 
-- Use `NANOBOT_TMUX_SOCKET_DIR` environment variable.
-- Default socket path: `"$NANOBOT_TMUX_SOCKET_DIR/nanobot.sock"`.
+- Use `ORI_TMUX_SOCKET_DIR` environment variable.
+- Default socket path: `"$ORI_TMUX_SOCKET_DIR/ori.sock"`.
 
 ## Targeting panes and naming
 

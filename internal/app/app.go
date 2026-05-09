@@ -6,17 +6,17 @@ import (
 	"log/slog"
 	"path/filepath"
 
-	"nanobot-go/internal/bus"
-	"nanobot-go/internal/channels"
-	"nanobot-go/internal/config"
-	"nanobot-go/internal/cron"
-	"nanobot-go/internal/llm"
-	"nanobot-go/internal/plugin"
-	"nanobot-go/internal/providers"
-	"nanobot-go/internal/runtime"
-	"nanobot-go/internal/session"
-	"nanobot-go/internal/tool"
-	legacytools "nanobot-go/internal/tools"
+	"ori/internal/bus"
+	"ori/internal/channels"
+	"ori/internal/config"
+	"ori/internal/cron"
+	"ori/internal/llm"
+	"ori/internal/plugin"
+	"ori/internal/providers"
+	"ori/internal/runtime"
+	"ori/internal/session"
+	"ori/internal/tool"
+	legacytools "ori/internal/tools"
 )
 
 // App is the top-level container. It owns shared infrastructure
@@ -99,7 +99,7 @@ func New(cfg *config.Config) (*App, error) {
 // Start initializes plugins, builds the dispatcher, wires the subagent
 // manager, starts channels / cron, and begins consuming inbound messages.
 func (a *App) Start(ctx context.Context) error {
-	slog.Info("starting nanobot application")
+	slog.Info("starting ori application")
 
 	if err := a.PluginRegistry.InitAll(ctx, a); err != nil {
 		return fmt.Errorf("failed to initialize plugins: %w", err)
@@ -186,13 +186,13 @@ func (a *App) Start(ctx context.Context) error {
 		}
 	}()
 
-	slog.Info("nanobot application started", "provider", providerName, "model", modelName)
+	slog.Info("ori application started", "provider", providerName, "model", modelName)
 	return nil
 }
 
 // Stop performs graceful shutdown.
 func (a *App) Stop() error {
-	slog.Info("stopping nanobot application")
+	slog.Info("stopping ori application")
 	a.cancel()
 	a.ChannelManager.StopAll()
 	a.CronService.Stop()
@@ -200,7 +200,7 @@ func (a *App) Stop() error {
 	if err := a.PluginRegistry.CloseAll(); err != nil {
 		slog.Error("error closing plugins", "error", err)
 	}
-	slog.Info("nanobot application stopped")
+	slog.Info("ori application stopped")
 	return nil
 }
 

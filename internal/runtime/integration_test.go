@@ -4,10 +4,10 @@ import (
 	"context"
 	"testing"
 
-	"nanobot-go/internal/llm"
-	oldprov "nanobot-go/internal/providers"
-	"nanobot-go/internal/runtime"
-	"nanobot-go/internal/tool"
+	"ori/internal/llm"
+	oldprov "ori/internal/providers"
+	"ori/internal/runtime"
+	"ori/internal/tool"
 )
 
 // fakeLegacy drives the llm bridge end-to-end via the legacy shape.

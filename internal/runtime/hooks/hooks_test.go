@@ -4,10 +4,10 @@ import (
 	"context"
 	"testing"
 
-	"nanobot-go/internal/llm"
-	"nanobot-go/internal/runtime"
-	"nanobot-go/internal/runtime/hooks"
-	"nanobot-go/internal/tool"
+	"ori/internal/llm"
+	"ori/internal/runtime"
+	"ori/internal/runtime/hooks"
+	"ori/internal/tool"
 )
 
 func TestDenyListBlocksNamedTool(t *testing.T) {
