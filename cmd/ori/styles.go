@@ -17,6 +17,14 @@ var (
        '
 `
 
+	// starGlyph is the standalone craft icon used in the interactive banner.
+	// It is rendered next to (not inside) the info panel.
+	starGlyph = `  .
+./|\,
+<-=O=->
+ '\|/` + "`" + `
+  '  `
+
 	// Removed static renderers - now created dynamically based on terminal width
 
 	reasoningStyleJSON = []byte(`{
