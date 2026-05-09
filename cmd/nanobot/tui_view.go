@@ -11,7 +11,22 @@ import (
 // in progress, live streaming text with typewriter cursor, plus the footer
 // status bar and input line.
 func (m *interactiveModel) View() string {
-	sep := borderStyle.Render(strings.Repeat("─", getTerminalWidth()))
+	textInputOut := m.textInput.View()
+	width := getTerminalWidth()
+	key := viewCacheKey{
+		version:    m.viewVersion,
+		spinnerIdx: m.spinnerIdx,
+		width:      width,
+		textInput:  textInputOut,
+	}
+	// Cache hit: nothing relevant has changed since the last successful
+	// render. Returning the stored string lets bubbletea's own diff detect a
+	// no-op and skip writing to the terminal.
+	if m.cachedViewOutput != "" && m.cachedViewKey == key {
+		return m.cachedViewOutput
+	}
+
+	sep := borderStyle.Render(strings.Repeat("─", width))
 	var s strings.Builder
 
 	if m.quitting {
@@ -20,7 +35,10 @@ func (m *interactiveModel) View() string {
 			Foreground(lipgloss.Color("245")).
 			Render("Goodbye!\n"))
 		s.WriteString("\n")
-		return s.String()
+		out := s.String()
+		m.cachedViewKey = key
+		m.cachedViewOutput = out
+		return out
 	}
 
 	if m.active {
@@ -31,17 +49,8 @@ func (m *interactiveModel) View() string {
 		s.WriteString(assistantLabelStyle.Render("nanobot"))
 		s.WriteString("\n")
 
-		for i, round := range m.rounds {
-			if i > 0 {
-				s.WriteString("\n")
-			}
-			s.WriteString(m.renderRound(round, false))
-		}
-
+		// Only render the current round in progress (completed rounds are flushed to View above)
 		if m.currentRound != nil {
-			if len(m.rounds) > 0 {
-				s.WriteString("\n")
-			}
 			s.WriteString(m.renderRound(*m.currentRound, true))
 		}
 
@@ -69,10 +78,13 @@ func (m *interactiveModel) View() string {
 	}
 	s.WriteString(sep)
 	s.WriteString("\n")
-	s.WriteString(m.textInput.View())
+	s.WriteString(textInputOut)
 	s.WriteString("\n")
 
-	return s.String()
+	out := s.String()
+	m.cachedViewKey = key
+	m.cachedViewOutput = out
+	return out
 }
 
 // renderRound renders one round (reasoning + tool calls).
@@ -103,7 +115,8 @@ func (m *interactiveModel) renderRound(round thinkingRound, isLive bool) string 
 	}
 
 	if len(round.toolCalls) > 0 {
-		for _, tc := range round.toolCalls {
+		for i := range round.toolCalls {
+			tc := &round.toolCalls[i]
 			var icon, statusText string
 			var iconStyle lipgloss.Style
 			switch tc.status {
@@ -135,24 +148,21 @@ func (m *interactiveModel) renderRound(round thinkingRound, isLive bool) string 
 			s.WriteString(toolEntryStyle.Render(tc.name))
 			s.WriteString(toolDurationStyle.Render(statusText))
 			s.WriteString("\n")
-			maxWidth := getTerminalWidth() - 12
-			if maxWidth < 40 {
-				maxWidth = 40
-			}
 			hasResult := (tc.status == "done" && tc.result != "") || (tc.status == "error" && tc.result != "")
+			width := toolDisplayWidth()
 			if tc.args != "" {
 				prefix := "    ┌ "
 				if !hasResult {
 					prefix = "    └ "
 				}
-				s.WriteString(toolArgsStyle.Render(prefix + "Args: " + truncateStr(tc.args, maxWidth)))
+				s.WriteString(toolArgsStyle.Render(prefix + "Args: " + tc.displayArgs.get(width)))
 				s.WriteString("\n")
 			}
 			if tc.status == "error" && tc.result != "" {
-				s.WriteString("    └ " + toolErrorStyle.Render("Error: "+truncateStr(tc.result, maxWidth)))
+				s.WriteString("    └ " + toolErrorStyle.Render("Error: "+tc.displayResult.get(width)))
 				s.WriteString("\n")
 			} else if tc.status == "done" && tc.result != "" {
-				s.WriteString(toolArgsStyle.Render("    └ Result: " + truncateStr(tc.result, maxWidth)))
+				s.WriteString(toolArgsStyle.Render("    └ Result: " + tc.displayResult.get(width)))
 				s.WriteString("\n")
 			}
 		}
@@ -161,35 +171,67 @@ func (m *interactiveModel) renderRound(round thinkingRound, isLive bool) string 
 	return s.String()
 }
 
-// renderLiveContent renders live streaming content, falling back to raw text
-// if the markdown syntax is mid-construction.
+// renderLiveContent renders live streaming content. Instead of falling back
+// to raw text while markdown is mid-construction (which causes visible flicker
+// between plain and formatted rendering), we temporarily close any open
+// markdown constructs at the tail so glamour always sees syntactically
+// complete input.
+//
+// The render result is memoised on the model: View() runs on every tea.Msg
+// (spinner / typewriter ticks included), but the rendered output only needs to
+// change when displayedText or terminal width changes.
 func (m *interactiveModel) renderLiveContent(text string) string {
 	if text == "" {
 		return ""
 	}
-	if isIncompleteMarkdown(text) {
-		return text
+	width := getTerminalWidth()
+	if m.lastRenderedText == text && m.lastRenderedWidth == width && m.lastRenderedOutput != "" {
+		return m.lastRenderedOutput
 	}
-	processed := preprocessMath(text)
 	renderer := getMarkdownRenderer()
 	if renderer == nil {
+		m.lastRenderedText = text
+		m.lastRenderedWidth = width
+		m.lastRenderedOutput = text
 		return text
 	}
+	processed := preprocessMath(closeOpenMarkdown(text))
 	rendered, err := renderer.Render(processed)
 	if err != nil {
+		m.lastRenderedText = text
+		m.lastRenderedWidth = width
+		m.lastRenderedOutput = text
 		return text
 	}
-	return strings.TrimSuffix(rendered, "\n")
+	out := strings.TrimSuffix(rendered, "\n")
+	m.lastRenderedText = text
+	m.lastRenderedWidth = width
+	m.lastRenderedOutput = out
+	return out
 }
 
-// isIncompleteMarkdown reports whether the text ends with an unclosed fence,
-// $$ pair, inline $, or trailing backtick. Prevents glamour from rendering
-// partial markdown in weird ways while the stream is in flight.
-func isIncompleteMarkdown(text string) bool {
-	if strings.Count(text, "```")%2 != 0 {
-		return true
+// closeOpenMarkdown appends temporary closers for unclosed markdown constructs
+// at the tail of text so the parser sees well-formed input during streaming.
+// The appended bytes are discarded on the next frame when the real closers
+// arrive, so the user only ever sees complete formatting transition smoothly
+// instead of toggling between raw text and styled output.
+func closeOpenMarkdown(text string) string {
+	if text == "" {
+		return text
 	}
-	temp := text
+	out := text
+
+	// Fenced code block: ``` count must be even.
+	if strings.Count(out, "```")%2 != 0 {
+		if !strings.HasSuffix(out, "\n") {
+			out += "\n"
+		}
+		out += "```"
+	}
+
+	// Block math $$ ... $$: pair them off, close if dangling.
+	temp := out
+	dangling := false
 	for {
 		idx := strings.Index(temp, "$$")
 		if idx < 0 {
@@ -197,28 +239,92 @@ func isIncompleteMarkdown(text string) bool {
 		}
 		end := strings.Index(temp[idx+2:], "$$")
 		if end < 0 {
-			return true
+			dangling = true
+			break
 		}
-		temp = temp[:idx] + temp[idx+2+end+2:]
+		temp = temp[idx+2+end+2:]
 	}
-	count := 0
-	for i := 0; i < len(temp); i++ {
-		if temp[i] == '$' {
-			count++
+	if dangling {
+		out += "$$"
+	}
+
+	// Inline $ ... $: count $ outside of $$ pairs.
+	stripped := out
+	for {
+		idx := strings.Index(stripped, "$$")
+		if idx < 0 {
+			break
 		}
+		end := strings.Index(stripped[idx+2:], "$$")
+		if end < 0 {
+			break
+		}
+		stripped = stripped[:idx] + stripped[idx+2+end+2:]
 	}
-	if count%2 != 0 {
-		return true
+	if strings.Count(stripped, "$")%2 != 0 {
+		out += "$"
 	}
-	if idx := strings.LastIndex(text, "\n"); idx >= 0 {
-		lastLine := text[idx+1:]
+
+	// Inline code: only consider the last line to avoid touching fenced blocks.
+	lastLineStart := strings.LastIndex(out, "\n") + 1
+	lastLine := out[lastLineStart:]
+	if !strings.HasPrefix(strings.TrimSpace(lastLine), "```") {
 		if strings.Count(lastLine, "`")%2 != 0 {
-			return true
-		}
-	} else {
-		if strings.Count(text, "`")%2 != 0 {
-			return true
+			out += "`"
 		}
 	}
-	return false
+
+	// Link/image syntax on the last line: [text, [text](, ![text, ![text](.
+	// Only close the most recent unclosed construct; nested cases are rare in
+	// a single streamed chunk.
+	lastLine = out[strings.LastIndex(out, "\n")+1:]
+	if open := lastUnclosedLink(lastLine); open != "" {
+		out += open
+	}
+
+	return out
+}
+
+// lastUnclosedLink returns the closer needed if the last line has a dangling
+// link/image opener, or "" otherwise.
+func lastUnclosedLink(line string) string {
+	// Scan for the last '[' that hasn't been matched by ']'.
+	depth := 0
+	lastOpen := -1
+	for i := 0; i < len(line); i++ {
+		switch line[i] {
+		case '[':
+			if depth == 0 {
+				lastOpen = i
+			}
+			depth++
+		case ']':
+			if depth > 0 {
+				depth--
+				if depth == 0 {
+					lastOpen = -1
+				}
+			}
+		}
+	}
+	if lastOpen < 0 {
+		if depth == 0 {
+			return ""
+		}
+		// Unmatched ']' shouldn't happen, but be safe.
+		return ""
+	}
+	// We have an unclosed '['. Check if a '(' already followed a ']' we
+	// haven't seen yet — i.e. pattern "[text](partial".
+	afterOpen := line[lastOpen:]
+	if closeIdx := strings.Index(afterOpen, "]("); closeIdx >= 0 {
+		// "](url..." — make sure paren is also unclosed.
+		rest := afterOpen[closeIdx+2:]
+		if !strings.Contains(rest, ")") {
+			return ")"
+		}
+		return ""
+	}
+	// Just "[text..." with no closer yet.
+	return "]()"
 }

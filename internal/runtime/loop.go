@@ -89,6 +89,22 @@ func runTurnLoop(
 
 			assistant, toolResults, appended, err := runSingleTurn(ctx, transcript, cfg)
 			if err != nil {
+				// runSingleTurn may have returned a synthetic aborted
+				// assistant in `appended` even though err is non-nil. Fold
+				// it into the run's newMessages so the persister / caller
+				// can still see what was streamed up to the cancel point.
+				if len(appended) > 0 {
+					transcript = append(transcript, appended...)
+					newMessages = append(newMessages, appended...)
+					cfg.emit(Event{
+						Kind:      EventTurnEnd,
+						Timestamp: time.Now(),
+						Data: TurnEndData{
+							Assistant:   assistant,
+							ToolResults: toolResults,
+						},
+					})
+				}
 				// The provider / tool subsystem couldn't even encode the failure
 				// as a stream; bubble up so the Agent wrapper can synthesize a
 				// terminal assistant message.
@@ -222,6 +238,16 @@ func runSingleTurn(
 
 	assistant, err := consumeStream(ctx, stream, cfg)
 	if err != nil {
+		// consumeStream marks an aborted partial with StopReasonAborted and
+		// returns whatever was streamed up to the cancel point. Emit it as a
+		// real assistant message so downstream persistence / UI sees the
+		// truncated turn rather than silently losing the work.
+		if assistant.StopReason == llm.StopReasonAborted {
+			assistantMsg := WrapLLM(assistant)
+			cfg.emit(Event{Kind: EventMessageStart, Timestamp: time.Now(), Data: MessageStartData{Message: assistantMsg}})
+			cfg.emit(Event{Kind: EventMessageEnd, Timestamp: time.Now(), Data: MessageEndData{Message: assistantMsg}})
+			return assistant, nil, []AgentMessage{assistantMsg}, err
+		}
 		return llm.AssistantMessage{}, nil, nil, err
 	}
 
@@ -267,7 +293,16 @@ func consumeStream(
 	for {
 		select {
 		case <-ctx.Done():
-			return partial, ctx.Err()
+			// Mark the partial as aborted so callers that want to persist
+			// whatever was streamed so far (text/thinking blocks, in-progress
+			// tool calls) can distinguish "user hit ctrl+c" from a provider
+			// error. pi-mono does the same in agent.ts handleRunFailure.
+			err := ctx.Err()
+			partial.StopReason = llm.StopReasonAborted
+			if err != nil {
+				partial.ErrorMessage = err.Error()
+			}
+			return partial, err
 		case ev, ok := <-stream:
 			if !ok {
 				// Channel closed without a terminal event — treat as error.

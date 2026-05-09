@@ -341,8 +341,9 @@ func (d *Dispatcher) runTurn(parent context.Context, inbound bus.InboundMessage)
 	// Append the user message to the persistent transcript. We do it here
 	// (instead of inside the agent event listener) so subsequent turns in
 	// the same session can read this message before the agent finishes.
-	sess.Messages = append(sess.Messages, session.Message{Role: "user", Content: inbound.Content})
-	_ = d.sessionStore.Save(sess)
+	userMsg := session.Message{Role: "user", Content: inbound.Content}
+	sess.Messages = append(sess.Messages, userMsg)
+	_ = d.sessionStore.AppendMessage(sess, userMsg)
 
 	// Build the AgentMessage history from session history.
 	history := messagesFromSession(sess)
@@ -376,11 +377,17 @@ func (d *Dispatcher) runTurn(parent context.Context, inbound bus.InboundMessage)
 
 	// Subscribe to runtime events: a final collector grabs the assistant's
 	// final text/reasoning at agent_end so we can publish one OutboundMessage
-	// for channels, and a fan-out lets modern subscribers (the TUI) observe
-	// the raw stream.
+	// for channels, a transcript persister writes each completed assistant/
+	// tool-result message back into session state (so cancellations preserve
+	// intermediate progress), and a fan-out lets modern subscribers (the TUI)
+	// observe the raw stream.
 	final := newFinalCollector()
 	unsubFinal := a.Subscribe(final.handle)
 	defer unsubFinal()
+
+	persister := newTranscriptPersister(sess, d.sessionStore)
+	unsubPersist := a.Subscribe(persister.handle)
+	defer unsubPersist()
 
 	unsubFanout := a.Subscribe(func(e runtime.Event) {
 		if e.SessionID == "" {
@@ -392,15 +399,16 @@ func (d *Dispatcher) runTurn(parent context.Context, inbound bus.InboundMessage)
 
 	// The prompt is just the user message we already appended.
 	promptMsg := history[len(history)-1]
-	if err := a.Prompt(ctx, promptMsg); err != nil {
-		return nil, err
-	}
+	promptErr := a.Prompt(ctx, promptMsg)
 
-	// Persist the assistant's final content into the session transcript.
+	// Flush any remaining writes (the persister coalesces saves to avoid
+	// thrashing the session file during bursty turns).
+	persister.flush()
+
 	finalText, finalReasoning := final.Result()
-	if finalText != "" {
-		sess.Messages = append(sess.Messages, session.Message{Role: "assistant", Content: finalText})
-		_ = d.sessionStore.Save(sess)
+
+	if promptErr != nil {
+		return nil, promptErr
 	}
 
 	if finalText == "" && finalReasoning == "" {

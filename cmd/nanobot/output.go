@@ -178,6 +178,52 @@ func truncateStr(s string, maxLen int) string {
 	return "..."
 }
 
+// toolDisplayWidth returns the max column width we budget for a truncated
+// tool args/result line. Centralized so the cache below matches what the
+// renderers in tui_view.go / tui_update.go use.
+func toolDisplayWidth() int {
+	w := getTerminalWidth() - 12
+	if w < 40 {
+		return 40
+	}
+	return w
+}
+
+// truncatedField caches the truncated form of a string for a given display
+// width. truncateStr is O(len(source)) in the worst case; since View() runs
+// on every tea.Msg this would dominate CPU on long tool outputs. The cache
+// invalidates implicitly: when source or width changes, the next get() call
+// recomputes.
+type truncatedField struct {
+	source string
+	width  int
+	cached string
+}
+
+// set replaces the source string and invalidates the cache.
+func (t *truncatedField) set(s string) {
+	if s == t.source {
+		return
+	}
+	t.source = s
+	t.cached = ""
+	t.width = 0
+}
+
+// get returns the truncated form of source at the given width, reusing the
+// cache when possible.
+func (t *truncatedField) get(width int) string {
+	if t.source == "" {
+		return ""
+	}
+	if t.cached != "" && t.width == width {
+		return t.cached
+	}
+	t.cached = truncateStr(t.source, width)
+	t.width = width
+	return t.cached
+}
+
 // renderToolCallBlock renders a tool call's args/result/error as compact lines
 func renderToolCallBlock(tc toolCallEntry) string {
 	var b strings.Builder

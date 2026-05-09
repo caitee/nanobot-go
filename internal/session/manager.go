@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -11,10 +12,21 @@ import (
 	"time"
 )
 
-// SessionStore defines session persistence interface
+// SessionStore defines session persistence interface.
+//
+// Save rewrites the entire session file. It's the right tool for migrations,
+// compaction, or explicit flushes — but on hot paths prefer AppendMessage,
+// which appends a single JSONL line.
 type SessionStore interface {
 	GetOrCreate(key string) *Session
 	Save(session *Session) error
+	// AppendMessage appends a single message entry to the session file
+	// without rewriting existing content. The implementation must ensure
+	// the metadata header exists (lazily writing it, plus any buffered
+	// messages, on the first append to a fresh session). It does not
+	// modify session.Messages in memory — callers should append to the
+	// in-memory slice themselves before calling this.
+	AppendMessage(session *Session, msg Message) error
 	List() []SessionInfo
 	Invalidate(key string)
 }
@@ -130,6 +142,8 @@ func (s *fileSessionStore) loadSession(key string) *Session {
 			var msg Message
 			if content, ok := data["content"].(string); ok {
 				msg.Content = content
+			} else if contentArr, ok := data["content"].([]any); ok {
+				msg.Content = contentArr
 			}
 			if role, ok := data["role"].(string); ok {
 				msg.Role = role
@@ -140,6 +154,9 @@ func (s *fileSessionStore) loadSession(key string) *Session {
 			if v, ok := data["name"].(string); ok {
 				msg.Name = v
 			}
+			if v, ok := data["stop_reason"].(string); ok {
+				msg.StopReason = v
+			}
 			if toolCallsRaw, ok := data["tool_calls"].([]any); ok {
 				for _, tcRaw := range toolCallsRaw {
 					if tcMap, ok := tcRaw.(map[string]any); ok {
@@ -149,6 +166,9 @@ func (s *fileSessionStore) loadSession(key string) *Session {
 						}
 						if name, ok := tcMap["name"].(string); ok {
 							tc.Name = name
+						}
+						if args, ok := tcMap["arguments"].(map[string]any); ok {
+							tc.Arguments = args
 						}
 						msg.ToolCalls = append(msg.ToolCalls, tc)
 					}
@@ -192,7 +212,11 @@ func (s *fileSessionStore) migrateLegacySession(legacyPath, newPath string) erro
 func (s *fileSessionStore) Save(session *Session) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.saveLocked(session)
+}
 
+// saveLocked rewrites the entire session file. Caller must hold s.mu.
+func (s *fileSessionStore) saveLocked(session *Session) error {
 	session.UpdatedAt = time.Now()
 	filePath := s.sessionFile(session.Key)
 
@@ -202,7 +226,53 @@ func (s *fileSessionStore) Save(session *Session) error {
 	}
 	defer file.Close()
 
-	// Write metadata
+	if err := writeMetadataLine(file, session); err != nil {
+		return err
+	}
+
+	// Write messages
+	for _, msg := range session.Messages {
+		if err := writeMessageLine(file, msg); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// AppendMessage writes one message entry to the end of the session file. On
+// the very first append to a fresh session the metadata header + any already-
+// in-memory messages are flushed first, matching pi-mono's "buffer until the
+// first assistant arrives" semantics.
+func (s *fileSessionStore) AppendMessage(session *Session, msg Message) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	session.UpdatedAt = time.Now()
+	filePath := s.sessionFile(session.Key)
+
+	// If the file doesn't exist yet, fall through to a full rewrite. This
+	// handles the first write of a new session (ensuring header + any
+	// queued messages are on disk atomically) as well as recovery from a
+	// file that was externally deleted. Note: session.Messages is expected
+	// to already include `msg` — callers append to the in-memory slice
+	// before calling AppendMessage, so saveLocked writes the complete
+	// current state and is consistent with the append contract.
+	if _, err := os.Stat(filePath); os.IsNotExist(err) {
+		return s.saveLocked(session)
+	} else if err != nil {
+		return fmt.Errorf("stat session file: %w", err)
+	}
+
+	file, err := os.OpenFile(filePath, os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		return fmt.Errorf("open session file for append: %w", err)
+	}
+	defer file.Close()
+
+	return writeMessageLine(file, msg)
+}
+
+func writeMetadataLine(w io.Writer, session *Session) error {
 	meta := map[string]any{
 		"_type":             "metadata",
 		"key":               session.Key,
@@ -213,29 +283,28 @@ func (s *fileSessionStore) Save(session *Session) error {
 	}
 	metaBytes, err := json.Marshal(meta)
 	if err != nil {
-		return fmt.Errorf("failed to marshal metadata: %w", err)
+		return fmt.Errorf("marshal metadata: %w", err)
 	}
-	if _, err := file.Write(metaBytes); err != nil {
-		return fmt.Errorf("failed to write metadata: %w", err)
+	if _, err := w.Write(metaBytes); err != nil {
+		return fmt.Errorf("write metadata: %w", err)
 	}
-	if _, err := file.Write([]byte("\n")); err != nil {
-		return fmt.Errorf("failed to write newline: %w", err)
+	if _, err := w.Write([]byte("\n")); err != nil {
+		return fmt.Errorf("write metadata newline: %w", err)
 	}
+	return nil
+}
 
-	// Write messages
-	for _, msg := range session.Messages {
-		msgBytes, err := json.Marshal(msg)
-		if err != nil {
-			return fmt.Errorf("failed to marshal message: %w", err)
-		}
-		if _, err := file.Write(msgBytes); err != nil {
-			return fmt.Errorf("failed to write message: %w", err)
-		}
-		if _, err := file.Write([]byte("\n")); err != nil {
-			return fmt.Errorf("failed to write newline: %w", err)
-		}
+func writeMessageLine(w io.Writer, msg Message) error {
+	msgBytes, err := json.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("marshal message: %w", err)
 	}
-
+	if _, err := w.Write(msgBytes); err != nil {
+		return fmt.Errorf("write message: %w", err)
+	}
+	if _, err := w.Write([]byte("\n")); err != nil {
+		return fmt.Errorf("write message newline: %w", err)
+	}
 	return nil
 }
 

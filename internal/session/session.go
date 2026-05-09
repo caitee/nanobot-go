@@ -4,10 +4,13 @@ import (
 	"time"
 )
 
-// ToolCall represents a tool call from an assistant message
+// ToolCall represents a tool call from an assistant message. Arguments are
+// preserved so a later turn restored from disk can still see what the model
+// asked for, not just that a call happened.
 type ToolCall struct {
-	ID   string `json:"id"`
-	Name string `json:"name,omitempty"`
+	ID        string         `json:"id"`
+	Name      string         `json:"name,omitempty"`
+	Arguments map[string]any `json:"arguments,omitempty"`
 }
 
 // Message represents a session message
@@ -17,6 +20,9 @@ type Message struct {
 	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string     `json:"tool_call_id,omitempty"`
 	Name       string     `json:"name,omitempty"`
+	// StopReason is optional; populated for assistant messages so a session
+	// restored from disk can tell normal turns apart from aborted ones.
+	StopReason string `json:"stop_reason,omitempty"`
 }
 
 // Session represents a conversation session

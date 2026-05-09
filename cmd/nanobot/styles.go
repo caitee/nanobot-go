@@ -289,3 +289,20 @@ func getTerminalWidth() int {
 	// Final fallback
 	return 80
 }
+
+// getTerminalHeight returns the actual terminal height, or a reasonable default.
+func getTerminalHeight() int {
+	// Try to get actual terminal size from stdout
+	if _, height, err := term.GetSize(int(os.Stdout.Fd())); err == nil && height > 0 {
+		return height
+	}
+	// Fallback to LINES env var
+	if h := os.Getenv("LINES"); h != "" {
+		var ch int
+		if _, err := fmt.Sscanf(h, "%d", &ch); err == nil && ch > 0 {
+			return ch
+		}
+	}
+	// Final fallback
+	return 24
+}
