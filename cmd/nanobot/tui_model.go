@@ -37,8 +37,7 @@ type interactiveModel struct {
 	unsubRuntime  func()
 
 	active          bool
-	rounds          []thinkingRound // completed rounds (not yet flushed; kept for formatFinalMessage edge cases)
-	currentRound    *thinkingRound  // round in progress
+	currentRound    *thinkingRound  // round in progress; completed rounds are flushed to View above on TurnStart
 	streamText      string          // full text received from stream
 	displayedText   string          // text currently displayed (typewriter)
 	typewriterQueue []rune          // queue of runes waiting to be displayed

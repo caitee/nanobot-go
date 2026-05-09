@@ -42,12 +42,10 @@ func (m *interactiveModel) View() string {
 	}
 
 	if m.active {
-		s.WriteString(sep)
-		s.WriteString("\n")
-		s.WriteString(spinnerStyle.Render("✦"))
-		s.WriteString(" ")
-		s.WriteString(assistantLabelStyle.Render("nanobot"))
-		s.WriteString("\n")
+		// Header ("── / ✦ nanobot") was flushed above the TUI on agent_start,
+		// so we don't redraw it here — only the live current round + streaming
+		// text. This keeps the banner pinned above the first round instead of
+		// re-emitting it between rounds and the final message.
 
 		// Only render the current round in progress (completed rounds are flushed to View above)
 		if m.currentRound != nil {

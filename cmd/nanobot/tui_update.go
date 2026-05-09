@@ -122,7 +122,7 @@ func (m *interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.Type {
 		case tea.KeyCtrlC, tea.KeyCtrlD:
-			if m.active && (m.streamText != "" || (m.currentRound != nil && m.currentRound.reasoning != "") || len(m.rounds) > 0) {
+			if m.active && (m.streamText != "" || (m.currentRound != nil && (m.currentRound.reasoning != "" || len(m.currentRound.toolCalls) > 0))) {
 				output := m.formatCurrentState()
 				cmd := m.printAbove(output)
 				m.clearActiveState()
@@ -168,7 +168,6 @@ func (m *interactiveModel) handleEnter() (tea.Model, tea.Cmd) {
 	m.waiting = true
 	m.responseReceived = false
 	m.spinnerIdx = 0
-	m.rounds = nil
 	m.currentRound = nil
 	m.streamText = ""
 	m.displayedText = ""
@@ -198,17 +197,26 @@ func (m *interactiveModel) handleRuntimeEvent(ev runtime.Event) tea.Cmd {
 	switch ev.Kind {
 	case runtime.EventAgentStart:
 		m.status = "thinking"
+		// Flush the "✦ nanobot" banner once at the top of the response so it
+		// sits above the first round of reasoning/tool calls instead of
+		// appearing between the last round and the final message.
+		return m.printAbove(renderAssistantHeader())
 
 	case runtime.EventTurnStart:
 		m.status = "thinking"
-		// New turn → close out the previous round if it had content.
+		// New turn → flush the previous round (if non-empty) to the history
+		// area above the TUI, so the user sees it persist as the next round
+		// starts. View() only renders currentRound, so without this flush the
+		// finished round would vanish until finalizeAssistantMessage runs.
+		var flushCmd tea.Cmd
 		if m.currentRound != nil && (m.currentRound.reasoning != "" || len(m.currentRound.toolCalls) > 0) {
-			m.rounds = append(m.rounds, *m.currentRound)
+			flushCmd = m.printAbove(m.renderCompletedRound(*m.currentRound))
 		}
 		m.currentRound = &thinkingRound{}
 		m.streamText = ""
 		m.displayedText = ""
 		m.typewriterQueue = nil
+		return flushCmd
 
 	case runtime.EventMessageUpdate:
 		data, ok := ev.MessageUpdate()
@@ -285,10 +293,6 @@ func (m *interactiveModel) handleRuntimeEvent(ev runtime.Event) tea.Cmd {
 		// the agent_end payload directly — it's the authoritative record.
 		data, _ := ev.AgentEnd()
 		text, reasoning := appcore.ExtractFinalAssistant(data.Messages)
-		if m.currentRound != nil && (m.currentRound.reasoning != "" || len(m.currentRound.toolCalls) > 0) {
-			m.rounds = append(m.rounds, *m.currentRound)
-			m.currentRound = nil
-		}
 		return m.finalizeAssistantMessage(text, reasoning)
 	}
 	return nil
@@ -336,7 +340,6 @@ func (m *interactiveModel) finalizeAssistantMessage(content, reasoning string) t
 
 func (m *interactiveModel) formatCurrentState() string {
 	var allRounds []thinkingRound
-	allRounds = append(allRounds, m.rounds...)
 	if m.currentRound != nil && (m.currentRound.reasoning != "" || len(m.currentRound.toolCalls) > 0) {
 		allRounds = append(allRounds, *m.currentRound)
 	}
@@ -344,8 +347,12 @@ func (m *interactiveModel) formatCurrentState() string {
 }
 
 func (m *interactiveModel) formatFinalMessage(content, reasoning string) string {
+	// Previous rounds are already flushed above the TUI on each TurnStart, so
+	// we only need to render the last round (if any) plus the final content.
 	var allRounds []thinkingRound
-	allRounds = append(allRounds, m.rounds...)
+	if m.currentRound != nil && (m.currentRound.reasoning != "" || len(m.currentRound.toolCalls) > 0) {
+		allRounds = append(allRounds, *m.currentRound)
+	}
 	if reasoning != "" {
 		if len(allRounds) == 0 || allRounds[len(allRounds)-1].reasoning != reasoning {
 			allRounds = append(allRounds, thinkingRound{reasoning: reasoning})
@@ -355,7 +362,6 @@ func (m *interactiveModel) formatFinalMessage(content, reasoning string) string 
 }
 
 func (m *interactiveModel) clearActiveState() {
-	m.rounds = nil
 	m.currentRound = nil
 	m.streamText = ""
 	m.displayedText = ""

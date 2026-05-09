@@ -37,8 +37,13 @@ func TestView_RendersLiveToolCall(t *testing.T) {
 	}
 }
 
-func TestHandleRuntimeEvent_RendersToolCallsInFinalOutput(t *testing.T) {
+func TestHandleRuntimeEvent_TurnStartFlushesPreviousRound(t *testing.T) {
 	m := newTestModel()
+	var printed strings.Builder
+	m.printAboveFn = func(s string) {
+		printed.WriteString(s)
+		printed.WriteString("\n")
+	}
 
 	m.handleRuntimeEvent(runtime.Event{Kind: runtime.EventTurnStart, Timestamp: time.Now()})
 	startAt := time.Now()
@@ -62,23 +67,22 @@ func TestHandleRuntimeEvent_RendersToolCallsInFinalOutput(t *testing.T) {
 		},
 	})
 
-	m.handleRuntimeEvent(runtime.Event{Kind: runtime.EventTurnStart, Timestamp: time.Now()})
-	if m.currentRound == nil {
-		m.currentRound = &thinkingRound{}
+	// Second TurnStart should flush the previous round above the TUI.
+	cmd := m.handleRuntimeEvent(runtime.Event{Kind: runtime.EventTurnStart, Timestamp: time.Now()})
+	if cmd == nil {
+		t.Fatal("expected TurnStart to return a flush command for the previous round")
 	}
-	m.currentRound.reasoning = "I have the file contents now."
+	cmd()
 
-	text := "📄 demo.md 内容:\n\nhello world"
-	out := m.formatFinalMessage(text, "I have the file contents now.")
-
+	out := printed.String()
 	if !strings.Contains(out, "read_file") {
-		t.Fatalf("expected final output to include tool name; got:\n%s", out)
+		t.Fatalf("expected flushed output to include tool name; got:\n%s", out)
 	}
 	if !strings.Contains(out, "Args:") {
-		t.Fatalf("expected final output to include tool args; got:\n%s", out)
+		t.Fatalf("expected flushed output to include tool args; got:\n%s", out)
 	}
 	if !strings.Contains(out, "Result:") {
-		t.Fatalf("expected final output to include tool result; got:\n%s", out)
+		t.Fatalf("expected flushed output to include tool result; got:\n%s", out)
 	}
 }
 
@@ -143,8 +147,11 @@ func TestAgentEnd_PrintsFinalOutputWithToolCallsFromSameTurn(t *testing.T) {
 
 func TestAgentEnd_PrintsFinalOutputWithToolCallsFromPreviousTurn(t *testing.T) {
 	m := newTestModel()
-	var printed string
-	m.printAboveFn = func(s string) { printed = s }
+	var printed strings.Builder
+	m.printAboveFn = func(s string) {
+		printed.WriteString(s)
+		printed.WriteString("\n")
+	}
 
 	m.handleRuntimeEvent(runtime.Event{Kind: runtime.EventTurnStart, Timestamp: time.Now()})
 	startAt := time.Now()
@@ -168,7 +175,13 @@ func TestAgentEnd_PrintsFinalOutputWithToolCallsFromPreviousTurn(t *testing.T) {
 		},
 	})
 
-	m.handleRuntimeEvent(runtime.Event{Kind: runtime.EventTurnStart, Timestamp: time.Now()})
+	// Second TurnStart must flush the previous round above the TUI.
+	flushCmd := m.handleRuntimeEvent(runtime.Event{Kind: runtime.EventTurnStart, Timestamp: time.Now()})
+	if flushCmd == nil {
+		t.Fatal("expected TurnStart to return a flush command for the previous round")
+	}
+	flushCmd()
+
 	if m.currentRound == nil {
 		m.currentRound = &thinkingRound{}
 	}
@@ -192,11 +205,12 @@ func TestAgentEnd_PrintsFinalOutputWithToolCallsFromPreviousTurn(t *testing.T) {
 	}
 	cmd()
 
-	if !strings.Contains(printed, "read_file") {
-		t.Fatalf("expected final printed output to include read_file from a prior turn; got:\n%s", printed)
+	all := printed.String()
+	if !strings.Contains(all, "read_file") {
+		t.Fatalf("expected cumulative printed output to include read_file from a prior turn; got:\n%s", all)
 	}
-	if !strings.Contains(printed, "hello world") {
-		t.Fatalf("expected final printed output to include assistant answer; got:\n%s", printed)
+	if !strings.Contains(all, "hello world") {
+		t.Fatalf("expected cumulative printed output to include assistant answer; got:\n%s", all)
 	}
 }
 

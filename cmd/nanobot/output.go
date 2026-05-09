@@ -9,17 +9,26 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// formatAssistantMessage renders a complete assistant response for persistent terminal output.
-func formatAssistantMessage(rounds []thinkingRound, content, reasoning string) string {
+// renderAssistantHeader returns the persistent "✦ nanobot" banner (preceded
+// by a separator). Flushed once at the top of each assistant response so it
+// sits above the first round of reasoning/tool calls.
+func renderAssistantHeader() string {
 	var b strings.Builder
-	sep := borderStyle.Render(strings.Repeat("─", getTerminalWidth()))
-
-	b.WriteString(sep)
+	b.WriteString(borderStyle.Render(strings.Repeat("─", getTerminalWidth())))
 	b.WriteString("\n")
 	b.WriteString(spinnerStyle.Render("✦"))
 	b.WriteString(" ")
 	b.WriteString(assistantLabelStyle.Render("nanobot"))
 	b.WriteString("\n")
+	return b.String()
+}
+
+// formatAssistantMessage renders rounds + content for persistent terminal
+// output. Header is rendered separately (see renderAssistantHeader) so it can
+// be flushed once at the start of the response, not re-emitted on every
+// finalize/cancel call.
+func formatAssistantMessage(rounds []thinkingRound, content, reasoning string) string {
+	var b strings.Builder
 
 	// Display all rounds in order (reasoning + tool calls)
 	for i, round := range rounds {
