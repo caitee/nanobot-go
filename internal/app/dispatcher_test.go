@@ -189,6 +189,53 @@ description: "Demo skill"
 	}
 }
 
+func TestDispatcherSkillsCommandReturnsPlainText(t *testing.T) {
+	dir, err := os.MkdirTemp("", "ori-skills-command-*")
+	if err != nil {
+		t.Fatalf("tempdir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	t.Setenv("HOME", filepath.Join(dir, "home"))
+
+	skillsDir := filepath.Join(dir, "skills")
+	if err := os.MkdirAll(filepath.Join(skillsDir, "demo"), 0755); err != nil {
+		t.Fatalf("mkdir skill: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillsDir, "demo", "SKILL.md"), []byte(`---
+name: demo
+description: "Demo skill"
+---
+
+# Demo Skill
+`), 0644); err != nil {
+		t.Fatalf("write skill: %v", err)
+	}
+
+	store, err := session.NewFileSessionStore(filepath.Join(dir, "sessions"))
+	if err != nil {
+		t.Fatalf("session store: %v", err)
+	}
+	d := app.NewDispatcher(app.DispatcherOptions{
+		Bus:          bus.New(10),
+		SessionStore: store,
+		ToolRegistry: tool.NewRegistry(),
+		StreamFn:     fakeStreamFn("unused"),
+		Model:        llm.Model{ID: "test-model", Provider: "fake", API: "openai"},
+		SkillLoader:  skills.NewSkillLoader(skillsDir, filepath.Join(dir, "no-builtins")),
+	})
+
+	result, handled := d.ExecuteCommand(context.Background(), "/skills", bus.InboundMessage{SessionKey: "k"})
+	if !handled || result == nil {
+		t.Fatalf("expected /skills to be handled")
+	}
+	if result.Markdown != "" {
+		t.Fatalf("expected /skills to return plain text, got markdown %q", result.Markdown)
+	}
+	if !strings.Contains(result.Text, "/skill:demo") {
+		t.Fatalf("expected skill list in plain text, got %q", result.Text)
+	}
+}
+
 func TestDispatcherInboundCommandBypassesAgent(t *testing.T) {
 	d, _, _ := newTestDispatcher(t, "would-have-replied")
 

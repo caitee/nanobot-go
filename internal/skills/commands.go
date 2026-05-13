@@ -7,6 +7,8 @@ import (
 	"strings"
 )
 
+const maxSkillListDescriptionRunes = 140
+
 // FormatSkillList renders available skills as slash-command help text.
 func FormatSkillList(items []*Skill) string {
 	if len(items) == 0 {
@@ -17,7 +19,7 @@ func FormatSkillList(items []*Skill) string {
 		return sorted[i].Name < sorted[j].Name
 	})
 
-	lines := []string{"Available skills:"}
+	blocks := []string{"Available skills:"}
 	for _, skill := range sorted {
 		if skill == nil || skill.Name == "" {
 			continue
@@ -32,17 +34,17 @@ func FormatSkillList(items []*Skill) string {
 			status,
 		}
 		if skill.Description != "" {
-			parts = append(parts, "- "+skill.Description)
+			parts = append(parts, "- "+truncateSkillDescription(skill.Description))
 		}
 		if len(skill.MissingDeps) > 0 {
 			parts = append(parts, "(missing: "+formatMissingDeps(skill.MissingDeps)+")")
 		}
-		lines = append(lines, strings.Join(parts, " "))
+		blocks = append(blocks, strings.Join(parts, " "))
 	}
-	if len(lines) == 1 {
+	if len(blocks) == 1 {
 		return "No skills found."
 	}
-	return strings.Join(lines, "\n")
+	return strings.Join(blocks, "\n\n")
 }
 
 // ExpandSkillCommand expands /skill:<name> into the skill body plus arguments.
@@ -69,7 +71,7 @@ func ExpandSkillCommand(loader *SkillLoader, text string) (string, bool) {
 	baseDir := filepath.Dir(location)
 	block := fmt.Sprintf("<skill name=%q location=%q>\nReferences are relative to %s.\n\n%s\n</skill>", skill.Name, location, baseDir, body)
 	if args != "" {
-		return block + "\n\n" + args, true
+		return block + "\n\nUser: " + args, true
 	}
 	return block, true
 }
@@ -99,4 +101,16 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func truncateSkillDescription(description string) string {
+	description = strings.Join(strings.Fields(description), " ")
+	runes := []rune(description)
+	if len(runes) <= maxSkillListDescriptionRunes {
+		return description
+	}
+	if maxSkillListDescriptionRunes <= 3 {
+		return string(runes[:maxSkillListDescriptionRunes])
+	}
+	return strings.TrimSpace(string(runes[:maxSkillListDescriptionRunes-3])) + "..."
 }

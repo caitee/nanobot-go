@@ -122,9 +122,9 @@ func handleNew(ctx context.Context, d *Dispatcher, args string, inbound bus.Inbo
 
 func handleSkills(ctx context.Context, d *Dispatcher, args string, inbound bus.InboundMessage) (*CommandResult, error) {
 	if d.skillLoader == nil {
-		return &CommandResult{Markdown: "No skills found."}, nil
+		return &CommandResult{Text: "No skills found."}, nil
 	}
-	return &CommandResult{Markdown: skills.FormatSkillList(d.skillLoader.ListSkills(false))}, nil
+	return &CommandResult{Text: skills.FormatSkillList(d.skillLoader.ListSkills(false))}, nil
 }
 
 func handleTUIOnly(ctx context.Context, d *Dispatcher, args string, inbound bus.InboundMessage) (*CommandResult, error) {

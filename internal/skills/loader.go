@@ -3,6 +3,7 @@ package skills
 import (
 	"embed"
 	"io/fs"
+	"os"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -19,6 +20,11 @@ type SkillLoader struct {
 	loadedSkills     map[string]*Skill
 }
 
+type skillSource struct {
+	path   string
+	source string
+}
+
 // NewSkillLoader creates a new skill loader
 func NewSkillLoader(workspaceDir string, builtinSkillsDir string) *SkillLoader {
 	return &SkillLoader{
@@ -31,30 +37,30 @@ func NewSkillLoader(workspaceDir string, builtinSkillsDir string) *SkillLoader {
 // ListSkills returns all available skills with their metadata
 func (l *SkillLoader) ListSkills(filterUnavailable bool) []*Skill {
 	var result []*Skill
+	seen := map[string]bool{}
 
-	// Workspace skills (highest priority)
-	if l.workspaceDir != "" {
-		workspaceSkills := l.listSkillsFromDir(l.workspaceDir, "workspace")
-		for _, s := range workspaceSkills {
+	addSkills := func(items []*Skill) {
+		for _, s := range items {
+			if !isDiscoverable(s) {
+				continue
+			}
+			if seen[s.Name] {
+				continue
+			}
+			seen[s.Name] = true
+			l.loadedSkills[s.Name] = s
 			result = append(result, s)
 		}
 	}
 
-	// Built-in skills (lower priority, don't override workspace)
+	for _, source := range l.fileSources() {
+		addSkills(l.listSkillsFromDir(source.path, source.source))
+	}
+
 	if l.builtinSkillsDir != "" {
-		builtinSkills := l.listSkillsFromDir(l.builtinSkillsDir, "builtin")
-		for _, s := range builtinSkills {
-			if _, exists := l.loadedSkills[s.Name]; !exists {
-				result = append(result, s)
-			}
-		}
+		addSkills(l.listSkillsFromDir(l.builtinSkillsDir, "builtin"))
 	} else {
-		builtinSkills := l.listBuiltinEmbeddedSkills()
-		for _, s := range builtinSkills {
-			if _, exists := l.loadedSkills[s.Name]; !exists {
-				result = append(result, s)
-			}
-		}
+		addSkills(l.listBuiltinEmbeddedSkills())
 	}
 
 	// Filter if requested
@@ -69,6 +75,42 @@ func (l *SkillLoader) ListSkills(filterUnavailable bool) []*Skill {
 	}
 
 	return result
+}
+
+func (l *SkillLoader) fileSources() []skillSource {
+	var sources []skillSource
+	seen := map[string]bool{}
+	add := func(path string, source string) {
+		path = strings.TrimSpace(path)
+		if path == "" {
+			return
+		}
+		key, err := filepath.Abs(path)
+		if err != nil {
+			key = filepath.Clean(path)
+		}
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+		sources = append(sources, skillSource{path: path, source: source})
+	}
+
+	if l.workspaceDir != "" {
+		add(l.workspaceDir, "workspace")
+		workspaceRoot := filepath.Dir(l.workspaceDir)
+		add(filepath.Join(workspaceRoot, ".agents", "skills"), "project")
+	}
+
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		add(filepath.Join(home, ".agents", "skills"), "user")
+	}
+
+	return sources
+}
+
+func isDiscoverable(s *Skill) bool {
+	return s != nil && s.Name != "" && strings.TrimSpace(s.Description) != ""
 }
 
 // listSkillsFromDir loads all skills from a directory
@@ -86,49 +128,20 @@ func (l *SkillLoader) listSkillsFromDir(basePath string, source string) []*Skill
 			continue
 		}
 		skill.Source = source
-		l.loadedSkills[skill.Name] = skill
 		result = append(result, skill)
 	}
+	sort.SliceStable(result, func(i, j int) bool { return result[i].Name < result[j].Name })
 
 	return result
 }
 
 // LoadSkill loads a specific skill by name
 func (l *SkillLoader) LoadSkill(name string) *Skill {
-	// Check cache first
-	if skill, exists := l.loadedSkills[name]; exists {
-		return skill
-	}
-
-	// Try workspace first
-	if l.workspaceDir != "" {
-		skillPath := filepath.Join(l.workspaceDir, name, "SKILL.md")
-		if skill, err := ParseSkill(skillPath); err == nil {
-			skill.Source = "workspace"
-			l.loadedSkills[name] = skill
+	for _, skill := range l.ListSkills(false) {
+		if skill.Name == name {
 			return skill
 		}
 	}
-
-	// Try built-in
-	if l.builtinSkillsDir != "" {
-		skillPath := filepath.Join(l.builtinSkillsDir, name, "SKILL.md")
-		if skill, err := ParseSkill(skillPath); err == nil {
-			skill.Source = "builtin"
-			l.loadedSkills[name] = skill
-			return skill
-		}
-	} else {
-		skillPath := filepath.Join("builtin", name, "SKILL.md")
-		if data, err := builtinFS.ReadFile(skillPath); err == nil {
-			if skill, err := ParseSkillContent(string(data), skillPath); err == nil {
-				skill.Source = "builtin"
-				l.loadedSkills[name] = skill
-				return skill
-			}
-		}
-	}
-
 	return nil
 }
 
@@ -153,9 +166,9 @@ func (l *SkillLoader) listBuiltinEmbeddedSkills() []*Skill {
 			continue
 		}
 		skill.Source = "builtin"
-		l.loadedSkills[skill.Name] = skill
 		result = append(result, skill)
 	}
+	sort.SliceStable(result, func(i, j int) bool { return result[i].Name < result[j].Name })
 	return result
 }
 
@@ -185,6 +198,9 @@ func (l *SkillLoader) BuildSkillsSummary() string {
 	lines = append(lines, "<skills>")
 
 	for _, s := range allSkills {
+		if s.DisableModelInvocation {
+			continue
+		}
 		available := "true"
 		if !s.Available {
 			available = "false"
@@ -202,8 +218,12 @@ func (l *SkillLoader) BuildSkillsSummary() string {
 		lines = append(lines, "  </skill>")
 	}
 
+	if len(lines) == 1 {
+		return ""
+	}
+
 	lines = append(lines, "</skills>")
-	return joinStrings(lines, "\n")
+	return "## Available Skills\n\nThe following Agent Skills are available. Load the full SKILL.md before following a skill's instructions.\n\n" + joinStrings(lines, "\n")
 }
 
 // GetAlwaysSkills returns skills marked as always=true that are available
@@ -211,7 +231,7 @@ func (l *SkillLoader) GetAlwaysSkills() []string {
 	var result []string
 
 	for _, s := range l.ListSkills(true) {
-		if s.Always || s.Metadata.Always {
+		if !s.DisableModelInvocation && (s.Always || s.Metadata.Always) {
 			result = append(result, s.Name)
 		}
 	}

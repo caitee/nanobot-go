@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"strings"
 
 	"ori/internal/bus"
 	"ori/internal/channels"
@@ -168,7 +169,7 @@ func (a *App) Start(ctx context.Context) error {
 	}
 
 	// Build the dispatcher last so the subagent spawner is ready.
-	systemPrompt := runtime.NewSystemPromptBuilder(workspace).Build()
+	systemPrompt := buildSystemPrompt(workspace, a.SkillLoader)
 	a.Dispatcher = NewDispatcher(DispatcherOptions{
 		Bus:              a.Bus,
 		SessionStore:     a.SessionStore,
@@ -197,6 +198,23 @@ func (a *App) Start(ctx context.Context) error {
 
 	slog.Info("ori application started", "provider", providerName, "model", modelName)
 	return nil
+}
+
+func buildSystemPrompt(workspace string, loader *skills.SkillLoader) string {
+	builder := runtime.NewSystemPromptBuilder(workspace)
+	if loader != nil {
+		builder.Fragments = append(builder.Fragments,
+			runtime.PromptFragmentFunc(loader.BuildSkillsSummary),
+			runtime.PromptFragmentFunc(func() string {
+				content := strings.TrimSpace(loader.LoadSkillsForContext(loader.GetAlwaysSkills()))
+				if content == "" {
+					return ""
+				}
+				return "## Always-On Skills\n\n" + content
+			}),
+		)
+	}
+	return builder.Build()
 }
 
 // Stop performs graceful shutdown.

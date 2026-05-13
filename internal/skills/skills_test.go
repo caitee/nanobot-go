@@ -153,6 +153,7 @@ func TestSkillLoader(t *testing.T) {
 		t.Fatalf("Failed to create temp dir: %v", err)
 	}
 	defer os.RemoveAll(tmpDir)
+	t.Setenv("HOME", filepath.Join(tmpDir, "home"))
 
 	// Create a workspace skill
 	workspaceSkillsDir := filepath.Join(tmpDir, "skills")
@@ -165,7 +166,7 @@ description: "Workspace skill"
 # Workspace Skill
 `), 0644)
 
-	loader := NewSkillLoader(workspaceSkillsDir, "")
+	loader := NewSkillLoader(workspaceSkillsDir, filepath.Join(tmpDir, "no-builtins"))
 
 	// Load the skill
 	skill := loader.LoadSkill("ws-skill")
@@ -180,6 +181,197 @@ description: "Workspace skill"
 	skills := loader.ListSkills(false)
 	if len(skills) != 1 {
 		t.Errorf("Expected 1 skill, got %d", len(skills))
+	}
+}
+
+func TestSkillLoaderDiscoversGenericAgentSkillDirsOnly(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "skill-discovery-test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	workspace := filepath.Join(tmpDir, "workspace")
+	home := filepath.Join(tmpDir, "home")
+	t.Setenv("HOME", home)
+
+	writeSkillFile(t, filepath.Join(workspace, "skills", "ori-skill", "SKILL.md"), `---
+name: ori-skill
+description: "Ori workspace skill"
+---
+
+# Ori Skill
+`)
+	writeSkillFile(t, filepath.Join(workspace, ".agents", "skills", "team", "project-skill", "SKILL.md"), `---
+name: project-skill
+description: "Project agent skill"
+---
+
+# Project Skill
+`)
+	writeSkillFile(t, filepath.Join(home, ".agents", "skills", "user-skill", "SKILL.md"), `---
+name: user-skill
+description: "User agent skill"
+---
+
+# User Skill
+`)
+	writeSkillFile(t, filepath.Join(workspace, ".pi", "skills", "pi-skill", "SKILL.md"), `---
+name: pi-skill
+description: "Pi-specific skill"
+---
+
+# Pi Skill
+`)
+
+	loader := NewSkillLoader(filepath.Join(workspace, "skills"), filepath.Join(tmpDir, "no-builtins"))
+	names := loader.ListSkillNames(false)
+
+	for _, name := range []string{"ori-skill", "project-skill", "user-skill"} {
+		if !containsString(names, name) {
+			t.Fatalf("expected %s in discovered skills, got %v", name, names)
+		}
+	}
+	if containsString(names, "pi-skill") {
+		t.Fatalf("did not expect pi-specific skill directory to be discovered: %v", names)
+	}
+	if got := loader.LoadSkill("project-skill"); got == nil || got.Source != "project" {
+		t.Fatalf("expected project skill source, got %+v", got)
+	}
+	if got := loader.LoadSkill("user-skill"); got == nil || got.Source != "user" {
+		t.Fatalf("expected user skill source, got %+v", got)
+	}
+}
+
+func TestSkillLoaderPrefersWorkspaceOverGenericAgentDirs(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "skill-priority-test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	workspace := filepath.Join(tmpDir, "workspace")
+	t.Setenv("HOME", filepath.Join(tmpDir, "home"))
+
+	writeSkillFile(t, filepath.Join(workspace, "skills", "demo", "SKILL.md"), `---
+name: demo
+description: "Workspace copy"
+---
+
+# Workspace Demo
+`)
+	writeSkillFile(t, filepath.Join(workspace, ".agents", "skills", "demo", "SKILL.md"), `---
+name: demo
+description: "Project copy"
+---
+
+# Project Demo
+`)
+
+	loader := NewSkillLoader(filepath.Join(workspace, "skills"), filepath.Join(tmpDir, "no-builtins"))
+	skill := loader.LoadSkill("demo")
+	if skill == nil {
+		t.Fatal("expected demo skill")
+	}
+	if skill.Source != "workspace" || skill.Description != "Workspace copy" {
+		t.Fatalf("expected workspace skill to win, got source=%q description=%q", skill.Source, skill.Description)
+	}
+}
+
+func TestParseSkillContentSupportsYAMLMetadata(t *testing.T) {
+	content := `---
+name: yaml-skill
+description: "YAML skill"
+metadata:
+  always: true
+  requires:
+    env:
+      - ORI_TEST_MISSING_ENV
+allowed-tools:
+  - read_file
+  - shell
+disable-model-invocation: true
+---
+
+# YAML Skill
+`
+
+	skill, err := ParseSkillContent(content, "/test/path/SKILL.md")
+	if err != nil {
+		t.Fatalf("ParseSkillContent failed: %v", err)
+	}
+	if !skill.Metadata.Always {
+		t.Fatalf("expected metadata.always to be parsed")
+	}
+	if len(skill.Metadata.Requires.Env) != 1 || skill.Metadata.Requires.Env[0] != "ORI_TEST_MISSING_ENV" {
+		t.Fatalf("expected env requirement, got %+v", skill.Metadata.Requires.Env)
+	}
+	if !skill.DisableModelInvocation {
+		t.Fatalf("expected disable-model-invocation to be parsed")
+	}
+	if got := strings.Join(skill.AllowedTools, ","); got != "read_file,shell" {
+		t.Fatalf("expected allowed tools read_file,shell, got %q", got)
+	}
+}
+
+func TestListSkillsSkipsMissingDescription(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "skill-description-test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	writeSkillFile(t, filepath.Join(tmpDir, "skills", "missing-description", "SKILL.md"), `---
+name: missing-description
+---
+
+# Missing Description
+`)
+
+	loader := NewSkillLoader(filepath.Join(tmpDir, "skills"), filepath.Join(tmpDir, "no-builtins"))
+	names := loader.ListSkillNames(false)
+	if containsString(names, "missing-description") {
+		t.Fatalf("expected missing-description skill to be skipped, got %v", names)
+	}
+}
+
+func TestBuildSkillsSummarySkipsModelDisabledSkills(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "skill-summary-test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	writeSkillFile(t, filepath.Join(tmpDir, "skills", "visible", "SKILL.md"), `---
+name: visible
+description: "Visible skill"
+metadata:
+  requires:
+    env:
+      - ORI_TEST_MISSING_ENV
+---
+
+# Visible
+`)
+	writeSkillFile(t, filepath.Join(tmpDir, "skills", "manual-only", "SKILL.md"), `---
+name: manual-only
+description: "Manual only skill"
+disable-model-invocation: true
+---
+
+# Manual Only
+`)
+
+	loader := NewSkillLoader(filepath.Join(tmpDir, "skills"), filepath.Join(tmpDir, "no-builtins"))
+	summary := loader.BuildSkillsSummary()
+	if !strings.Contains(summary, "visible") || !strings.Contains(summary, "Visible skill") {
+		t.Fatalf("expected visible skill in summary, got:\n%s", summary)
+	}
+	if !strings.Contains(summary, "ORI_TEST_MISSING_ENV") {
+		t.Fatalf("expected missing dependency in summary, got:\n%s", summary)
+	}
+	if strings.Contains(summary, "manual-only") {
+		t.Fatalf("did not expect disable-model-invocation skill in summary, got:\n%s", summary)
 	}
 }
 
@@ -222,6 +414,27 @@ metadata: {"requires":{"bins":["nonexistent-skill-bin-12345"]}}
 	}
 }
 
+func TestFormatSkillListIsReadableForLongDescriptions(t *testing.T) {
+	longDescription := "Create distinctive, production-grade frontend interfaces with high design quality. " +
+		"Use this skill when the user asks to build web components, pages, artifacts, posters, or applications. " +
+		"Generates creative, polished code and UI design that avoids generic AI aesthetics."
+	items := []*Skill{
+		{Name: "frontend-design", Source: "user", Available: true, Description: longDescription},
+		{Name: "weather", Source: "builtin", Available: true, Description: "Get current weather and forecasts."},
+	}
+
+	out := FormatSkillList(items)
+	if !strings.Contains(out, "\n\n/skill:weather") {
+		t.Fatalf("expected blank line between skills, got:\n%s", out)
+	}
+	if strings.Contains(out, "Generates creative") {
+		t.Fatalf("expected long description to be truncated, got:\n%s", out)
+	}
+	if !strings.Contains(out, "...") {
+		t.Fatalf("expected truncated description marker, got:\n%s", out)
+	}
+}
+
 func TestExpandSkillCommandWrapsSkillContentAndArgs(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "skill-expand-test")
 	if err != nil {
@@ -252,9 +465,28 @@ Use this carefully.
 	if !strings.Contains(expanded, `<skill name="demo"`) || !strings.Contains(expanded, "Use this carefully.") {
 		t.Fatalf("expected skill block content, got:\n%s", expanded)
 	}
-	if !strings.HasSuffix(expanded, "inspect this") {
+	if !strings.HasSuffix(expanded, "User: inspect this") {
 		t.Fatalf("expected args appended, got:\n%s", expanded)
 	}
+}
+
+func writeSkillFile(t *testing.T, path string, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		t.Fatalf("mkdir skill dir: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatalf("write skill file: %v", err)
+	}
+}
+
+func containsString(items []string, needle string) bool {
+	for _, item := range items {
+		if item == needle {
+			return true
+		}
+	}
+	return false
 }
 
 func TestEscapeXML(t *testing.T) {

@@ -2,26 +2,35 @@ package skills
 
 import (
 	"encoding/json"
+	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 )
 
 // Skill represents an agent skill with instructions and metadata
 type Skill struct {
-	Name        string        `json:"name"`
-	Description string        `json:"description"`
-	Homepage    string        `json:"homepage,omitempty"`
-	Always      bool          `json:"always,omitempty"`
-	Metadata    SkillMetadata `json:"metadata,omitempty"`
-	Content     string        `json:"content,omitempty"`
-	Path        string        `json:"path,omitempty"`
-	Source      string        `json:"source,omitempty"` // "workspace" or "builtin"
-	Available   bool          `json:"available,omitempty"`
-	MissingDeps []string      `json:"missing_deps,omitempty"`
+	Name                   string        `json:"name"`
+	Description            string        `json:"description"`
+	Homepage               string        `json:"homepage,omitempty"`
+	License                string        `json:"license,omitempty"`
+	Compatibility          []string      `json:"compatibility,omitempty"`
+	Always                 bool          `json:"always,omitempty"`
+	Metadata               SkillMetadata `json:"metadata,omitempty"`
+	AllowedTools           []string      `json:"allowed_tools,omitempty"`
+	DisableModelInvocation bool          `json:"disable_model_invocation,omitempty"`
+	Content                string        `json:"content,omitempty"`
+	Path                   string        `json:"path,omitempty"`
+	Source                 string        `json:"source,omitempty"` // "workspace", "project", "user", or "builtin"
+	Available              bool          `json:"available,omitempty"`
+	MissingDeps            []string      `json:"missing_deps,omitempty"`
+	Warnings               []string      `json:"warnings,omitempty"`
 }
 
 // SkillMetadata contains ori-specific metadata
@@ -51,11 +60,15 @@ type SkillInstall struct {
 
 // skillFrontmatter represents the YAML frontmatter of a SKILL.md file
 type skillFrontmatter struct {
-	Name        string `json:"name"`
-	Description string `json:"description"`
-	Homepage    string `json:"homepage,omitempty"`
-	Always      bool   `json:"always,omitempty"`
-	Metadata    string `json:"metadata,omitempty"`
+	Name                   string   `yaml:"name"`
+	Description            string   `yaml:"description"`
+	Homepage               string   `yaml:"homepage,omitempty"`
+	License                string   `yaml:"license,omitempty"`
+	Compatibility          []string `yaml:"compatibility,omitempty"`
+	Always                 bool     `yaml:"always,omitempty"`
+	Metadata               any      `yaml:"metadata,omitempty"`
+	AllowedTools           []string `yaml:"allowed-tools,omitempty"`
+	DisableModelInvocation bool     `yaml:"disable-model-invocation,omitempty"`
 }
 
 // ParseSkill parses a SKILL.md file and returns a Skill
@@ -83,18 +96,25 @@ func ParseSkillContent(content string, path string) (*Skill, error) {
 	skill.Name = frontmatter.Name
 	skill.Description = frontmatter.Description
 	skill.Homepage = frontmatter.Homepage
+	skill.License = frontmatter.License
+	skill.Compatibility = append([]string(nil), frontmatter.Compatibility...)
 	skill.Always = frontmatter.Always
+	skill.AllowedTools = append([]string(nil), frontmatter.AllowedTools...)
+	skill.DisableModelInvocation = frontmatter.DisableModelInvocation
 
 	// Parse metadata JSON
-	if frontmatter.Metadata != "" {
+	if frontmatter.Metadata != nil {
 		meta, err := parseOriMetadata(frontmatter.Metadata)
 		if err == nil {
 			skill.Metadata = meta
+		} else {
+			skill.Warnings = append(skill.Warnings, "metadata: "+err.Error())
 		}
 	}
 
 	// Strip frontmatter from content for the body
 	skill.Content = body
+	skill.Warnings = append(skill.Warnings, validateSkillMetadata(skill)...)
 
 	// Check availability
 	skill.Available = skill.checkRequirements()
@@ -107,60 +127,47 @@ func ParseSkillContent(content string, path string) (*Skill, error) {
 func parseFrontmatter(content string) (*skillFrontmatter, string, error) {
 	frontmatter := &skillFrontmatter{}
 
-	if !strings.HasPrefix(content, "---") {
+	normalized := strings.ReplaceAll(content, "\r\n", "\n")
+	if !strings.HasPrefix(normalized, "---\n") {
 		return frontmatter, content, nil
 	}
 
 	// Find end of frontmatter
-	endIdx := strings.Index(content[3:], "---")
+	endIdx := strings.Index(normalized[4:], "\n---")
 	if endIdx < 0 {
 		return frontmatter, content, nil
 	}
-	endIdx += 3 // Account for the opening ---
+	endIdx += 4 // Account for the opening "---\n"
 
-	frontmatterContent := content[3:endIdx]
-	body := content[endIdx+3:]
+	frontmatterContent := normalized[4:endIdx]
+	body := normalized[endIdx+4:]
+	if strings.HasPrefix(body, "\n") {
+		body = body[1:]
+	}
 
-	// Parse frontmatter lines
-	for _, line := range strings.Split(frontmatterContent, "\n") {
-		if idx := strings.Index(line, ":"); idx > 0 {
-			key := strings.TrimSpace(line[:idx])
-			value := strings.TrimSpace(line[idx+1:])
-			value = strings.Trim(value, "\"")
-
-			switch key {
-			case "name":
-				frontmatter.Name = value
-			case "description":
-				frontmatter.Description = value
-			case "homepage":
-				frontmatter.Homepage = value
-			case "always":
-				frontmatter.Always = value == "true" || value == "yes"
-			case "metadata":
-				frontmatter.Metadata = value
-			}
-		}
+	if err := yaml.Unmarshal([]byte(frontmatterContent), frontmatter); err != nil {
+		return nil, content, err
 	}
 
 	return frontmatter, body, nil
 }
 
 // parseOriMetadata parses the metadata JSON from frontmatter
-func parseOriMetadata(raw string) (SkillMetadata, error) {
+func parseOriMetadata(raw any) (SkillMetadata, error) {
 	var data map[string]json.RawMessage
 	meta := SkillMetadata{}
 
-	// Try to parse as JSON object
-	if err := json.Unmarshal([]byte(raw), &data); err != nil {
-		// Try extracting ori or openclaw key
-		re := regexp.MustCompile(`"ori"\s*:\s*(\{.*?\})\s*(?:,|\})`)
-		match := re.FindStringSubmatch(raw)
-		if len(match) < 2 {
+	normalized := normalizeYAMLValue(raw)
+	if text, ok := normalized.(string); ok {
+		if err := json.Unmarshal([]byte(text), &data); err != nil {
 			return meta, err
 		}
-		raw = match[1]
-		if err := json.Unmarshal([]byte(raw), &data); err != nil {
+	} else {
+		encoded, err := json.Marshal(normalized)
+		if err != nil {
+			return meta, err
+		}
+		if err := json.Unmarshal(encoded, &data); err != nil {
 			return meta, err
 		}
 	}
@@ -217,6 +224,53 @@ func parseOriMetadata(raw string) (SkillMetadata, error) {
 	}
 
 	return meta, nil
+}
+
+func normalizeYAMLValue(v any) any {
+	switch value := v.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(value))
+		for k, v := range value {
+			out[k] = normalizeYAMLValue(v)
+		}
+		return out
+	case map[any]any:
+		out := make(map[string]any, len(value))
+		for k, v := range value {
+			out[fmt.Sprint(k)] = normalizeYAMLValue(v)
+		}
+		return out
+	case []any:
+		out := make([]any, len(value))
+		for i, v := range value {
+			out[i] = normalizeYAMLValue(v)
+		}
+		return out
+	default:
+		return value
+	}
+}
+
+var skillNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
+
+func validateSkillMetadata(skill *Skill) []string {
+	var warnings []string
+	if strings.TrimSpace(skill.Name) == "" {
+		warnings = append(warnings, "missing name")
+	} else if !skillNamePattern.MatchString(skill.Name) {
+		warnings = append(warnings, "name should use lowercase letters, digits, and hyphens")
+	}
+	if strings.TrimSpace(skill.Description) == "" {
+		warnings = append(warnings, "missing description")
+	}
+	dirName := filepath.Base(filepath.Dir(skill.Path))
+	if dirName != "." && dirName != "" && skill.Name != "" && dirName != skill.Name {
+		warnings = append(warnings, "directory name does not match skill name")
+	}
+	if len(skill.Description) > 240 {
+		warnings = append(warnings, "description is longer than 240 characters")
+	}
+	return warnings
 }
 
 // checkRequirements verifies if skill dependencies are met
@@ -322,26 +376,36 @@ type skillFileInfo struct {
 func ListSkillDirs(basePath string) ([]skillFileInfo, error) {
 	var skills []skillFileInfo
 
-	entries, err := os.ReadDir(basePath)
-	if err != nil {
+	if _, err := os.Stat(basePath); err != nil {
 		if os.IsNotExist(err) {
 			return skills, nil
 		}
 		return nil, err
 	}
 
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
+	err := filepath.WalkDir(basePath, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return nil
 		}
-		skillFile := filepath.Join(basePath, entry.Name(), "SKILL.md")
+		if !entry.IsDir() {
+			return nil
+		}
+		if path == basePath {
+			return nil
+		}
+		skillFile := filepath.Join(path, "SKILL.md")
 		if _, err := os.Stat(skillFile); err == nil {
 			skills = append(skills, skillFileInfo{
 				Name:   entry.Name(),
 				Path:   skillFile,
 				Source: "directory",
 			})
+			return filepath.SkipDir
 		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 
 	return skills, nil
