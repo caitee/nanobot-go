@@ -1,10 +1,25 @@
-# Bubbletea 与 Bubbles 终端 UI 库使用指南
+# Ori TUI 设计与实现指南
+
+本文档记录 `cmd/ori` 中交互式 TUI 的实现约定。它不是通用 Bubbletea
+教程，而是维护 `ori agent`、onboarding wizard 和相关终端渲染代码时应遵守的
+项目指南。
+
+Ori 的 TUI 当前基于 Charm 生态：
+
+```go
+github.com/charmbracelet/bubbletea    // Elm-style TUI runtime
+github.com/charmbracelet/bubbles      // textinput 等组件
+github.com/charmbracelet/lipgloss     // 终端样式和显示宽度计算
+github.com/charmbracelet/glamour      // Markdown 渲染
+```
 
 ## 设计思想
 
-### Bubbletea：Elm 架构的 TUI 框架
+### Bubbletea：Elm-style 数据流
 
-Bubbletea 是 Charm 生态的核心框架，采用 **Elm 架构**（Model-Update-View），这是一种纯粹的函数式编程模式：
+Bubbletea 采用 Model-Update-View 数据流。Ori 的实现使用 Go 指针 receiver，
+因此不是严格不可变模型；实际约定是：状态变更集中在 `Update`，副作用通过
+`tea.Cmd` 或明确封装的打印函数执行，`View` 保持只读渲染。
 
 ```
 ┌─────────────────────────────────────────────────────┐
@@ -30,47 +45,36 @@ Bubbletea 是 Charm 生态的核心框架，采用 **Elm 架构**（Model-Update
 | 概念 | 说明 |
 |------|------|
 | **Model** | 应用程序的全部状态（唯一数据源） |
-| **Update** | 处理消息并返回新的 Model + 命令 |
-| **View** | 根据当前 Model 渲染界面 |
-| **Msg** | 用户输入、系统事件（键盘、鼠标、计时器） |
-| **Cmd** | 命令，用于执行副作用（IO、网络请求） |
+| **Update** | 处理消息，更新 Model，并返回后续命令 |
+| **View** | 根据当前 Model 渲染界面，不做 IO |
+| **Msg** | 用户输入、runtime event、outbound message、计时器 tick |
+| **Cmd** | 延迟执行副作用，例如 tick、printAbove、quit |
 
 **设计原则：**
 - **单向数据流**：数据总是从 Model → View，事件通过 Msg 回传到 Update
-- **不可变更新**：Update 返回新的 Model，不直接修改状态
-- **命令式渲染**：View 是 Model 的纯函数，每次都完整重绘
+- **集中状态转换**：runtime event、键盘输入、typewriter tick 都在 `Update` 中转换为 Model 状态
+- **View 只读**：除缓存字段外，`View` 不应触发业务状态变化或外部副作用
+- **副作用显式化**：打印历史区、退出程序、定时 tick 都通过 `tea.Cmd` 返回
 
-### Bubbles：可复用组件库
+### Bubbles：只用于必要组件
 
-Bubbles 是基于 Bubbletea 架构的 **组件库**，提供开箱即用的 UI 元素：
+Bubbles 提供可嵌入的 UI 组件。Ori 当前主要使用 `textinput`，不要为了简单状态
+引入额外组件；只有当组件能明显减少复杂交互代码时再使用。
 
 | 组件 | 用途 |
 |------|------|
-| `list` | 可滚动列表（文件浏览、菜单） |
-| `textinput` | 单行文本输入 |
+| `textinput` | `ori agent` 输入行、onboarding 字段编辑 |
+| `list` | 可滚动菜单或选择器，当前主 TUI 未使用 |
 | `textarea` | 多行文本输入 |
 | `progress` | 进度条 |
 | `spinner` | 加载动画 |
 | `table` | 表格 |
 | `pager` | 分页器 |
 | `viewport` | 可滚动视口 |
-| `keypair` | 键值对输入 |
-
-**使用哲学：** Bubbles 组件本身就是完整的 Bubbletea 程序——它们有自己的 Model、Update、View，可以直接嵌入到你的应用程序中。
 
 ---
 
-## 核心依赖
-
-```go
-github.com/charmbracelet/bubbletea    // 框架
-github.com/charmbracelet/lipgloss     // 样式系统
-github.com/charmbracelet/bubbles      // 组件库
-```
-
----
-
-## 最小示例：计数器
+## 最小 Bubbletea 示例
 
 ```go
 package main
@@ -108,15 +112,19 @@ func main() {
 }
 ```
 
+Ori 的实际 `interactiveModel` 比这个例子多了 runtime event pump、outbound
+fallback、typewriter queue、stream flush 和 render cache。改动时优先理解
+`cmd/ori/tui_model.go`、`cmd/ori/tui_update.go`、`cmd/ori/tui_view.go` 的职责边界。
+
 ---
 
 ## 四条黄金法则
 
-Bubbletea 布局的核心规则，防止 90% 的 TUI 布局 bug：
+Ori TUI 布局和渲染的核心规则：
 
 ### 法则 1：始终计算边框
 
-**高度计算时要减去边框占用的 2 行。**
+如果使用有边框的组件，高度计算时要减去边框占用的 2 行。
 
 ```
 总高度: 25
@@ -146,9 +154,10 @@ func (m model) calculateLayout() (int, int) {
 }
 ```
 
-### 法则 2：禁止自动换行
+### 法则 2：显式约束长文本
 
-**始终显式截断文本，防止面板高度不一致。**
+不要依赖终端自动换行来控制工具详情、状态栏或固定格式 UI。Markdown 正文可以
+由 glamour word wrap；工具参数、工具结果 preview、状态行必须显式截断到预算宽度。
 
 ```go
 maxTextWidth := panelWidth - 4 // -2 边框, -2 内边距
@@ -163,34 +172,22 @@ func truncateString(s string, maxLen int) string {
 title = truncateString(title, maxTextWidth)
 ```
 
-### 法则 3：鼠标检测匹配布局方向
+### 法则 3：事件语义先于视觉效果
 
-| 布局方向 | 使用坐标 |
-|---------|---------|
-| 水平并列 | `msg.X` |
-| 垂直堆叠 | `msg.Y` |
+`ori agent` 的渲染来源是 `runtime.Event`。不要在 View 层猜测业务阶段；应在
+`Update` 中把事件转换成明确状态：
 
-```go
-func (m model) handleLeftClick(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
-    if m.shouldUseVerticalStack() {
-        // 垂直模式：用 Y 坐标
-        relY := msg.Y - contentStartY
-        if relY < topHeight {
-            m.focusedPanel = "top"
-        }
-    } else {
-        // 水平模式：用 X 坐标
-        if msg.X < leftWidth {
-            m.focusedPanel = "left"
-        }
-    }
-    return m, nil
-}
-```
+- `agent_start` 打印 assistant header
+- `turn_start` flush 上一轮活动并创建新 round
+- `message_update` 更新 reasoning 或 streaming text
+- `tool_execution_start/update/end` 更新工具活动块
+- `agent_end` 输出最终未 flush 内容
 
 ### 法则 4：使用权重而非像素
 
-**比例布局在终端缩放时完美适应。**
+需要多区域布局时使用比例或终端宽高计算，不写死像素或列数。`ori agent` 当前
+主界面是历史区 + live 区 + footer + input 的纵向结构；新增面板时要重新审视
+高度预算和 flush 策略。
 
 ```go
 // 聚焦面板获得更大权重 (2:1 = 66%/33%)
@@ -200,6 +197,117 @@ totalWeight := leftWeight + rightWeight
 leftWidth := (availableWidth * leftWeight) / totalWeight
 rightWidth := availableWidth - leftWidth
 ```
+
+---
+
+## Ori Agent 活动流渲染约定
+
+`ori agent` 的交互输出不是普通日志，而是运行中的活动流。渲染层只消费
+`runtime.Event`，不改变 `internal/runtime`、`internal/llm`、`internal/tool`
+的事件契约。当前实现位于 `cmd/ori`：
+
+| 文件 | 职责 |
+|------|------|
+| `tui_model.go` | Bubbletea model、运行态字段、当前 thinking round 和 tool call entry |
+| `tui_update.go` | runtime event 到 TUI view model 的状态转换 |
+| `tui_view.go` | live 区域、底部状态栏、输入框整体 View |
+| `output.go` | Markdown、reasoning、工具块和持久输出的共享 renderer |
+| `styles.go` | Lipgloss 样式和 spinner frames |
+| `tui_render_test.go` | 渲染行为测试 |
+
+### 活动流分层
+
+每次 assistant 响应按下面的视觉层级组织：
+
+1. `✦ ori` header：在 `agent_start` 时打印到历史区。
+2. `thinking` 区：展示模型 reasoning 的摘要。
+3. 工具活动区：展示工具名、参数、运行中 preview、最终 result/error。
+4. assistant answer：展示最终文本流。
+5. footer status：展示全局状态和输入框。
+
+不要把这些层级重新合并成一段自由文本。`View()` 只渲染当前 live round；
+已完成 round 在 `turn_start` 时通过 `printAbove` flush 到历史区，最终响应在
+`agent_end` 或 outbound fallback 时补齐未 flush 的文本。
+
+### Reasoning 摘要
+
+Reasoning 默认不全量展示。完整内容保留在 runtime/session 数据里，TUI 只显示摘要。
+当前 renderer 会先取非空原始行，再交给 reasoning Markdown renderer：
+
+- live 模式展示最后 5 条非空 reasoning 行。
+- completed/final 模式展示最后 3 条非空 reasoning 行。
+- 三条路径都必须使用同一个 `renderReasoningBlock`，避免 live 截断但 final 全量展开。
+- 标题格式为 `thinking · N lines summarized`。
+
+如果要调整展示行数，必须同时更新 live、completed、final 的测试，确认三条路径一致。
+
+### 工具调用块
+
+工具调用默认使用结构化多行块，而不是单行 `Args:` / `Result:`：
+
+```text
+  ● shell running 1.2s
+    │ command    go test ./cmd/ori
+    │ timeout    30
+    │ Preview
+    │ ok   ori/cmd/ori  0.48s
+```
+
+约定：
+
+- 参数按 key 排序，保证 snapshot 和测试稳定。
+- 单值和多值参数都走 key/value 行，长 key 和长 value 必须截断到终端宽度内。
+- `tool_execution_update` 用于运行中 preview；没有 partial update 的工具只显示 start/end。
+- result/error 默认展示最多 4 条非空行，超出时显示 `... N more lines`。
+- 完成态显示 `✓ tool duration · size`，错误态显示 `✗ tool duration · size`。
+- 工具块只做扫读预览，不替代完整工具结果。
+
+### 动画职责
+
+底部状态栏和工具运行态必须使用不同视觉语言：
+
+- footer 使用 `spinnerFrames` 表示全局 `waiting`、`thinking`、`responding`、`running tools`。
+- 工具运行态使用静态 pulse/dot 和 `running <duration>`，不要复用 footer spinner。
+- 工具结束后 footer 应回落到 `thinking`，除非还有其他工具仍在运行。
+
+这样用户能区分“整个 agent 正在推进”和“某个工具正在运行”，避免两个相同 spinner
+同时出现造成层级混淆。
+
+### 宽度与缓存
+
+渲染宽度一律通过 `getTerminalWidth()`、`toolDisplayWidth()` 和 `lipgloss.Width`
+计算。新增工具详情行时要遵守：
+
+- 不依赖终端自动换行。
+- 所有 args/result/error 行在窄终端下也不能超过 terminal width。
+- 长文本先归一化换行，再按 display width 截断。
+- live Markdown 继续走 `renderLiveContent` 缓存，避免 spinner/typewriter tick
+  触发昂贵的重复 glamour render。
+
+### 测试要求
+
+修改 `cmd/ori` TUI 渲染时至少运行：
+
+```bash
+go test ./cmd/ori
+```
+
+涉及 Go 代码改动时最终运行：
+
+```bash
+make fmt
+make check
+```
+
+重点覆盖：
+
+- reasoning live/completed/final 都只显示摘要。
+- final response 不重复打印已 flush 的 reasoning 或 stream text。
+- 工具参数按 key 稳定排序，并渲染为多行块。
+- 长工具 result 显示 preview 和隐藏行数。
+- `EventToolExecUpdate` 更新运行中 preview。
+- 工具运行态不复用 footer spinner。
+- 80 列和窄终端下工具详情行不溢出。
 
 ---
 
@@ -307,51 +415,47 @@ func (m Model) View() string {
 
 ---
 
-## 项目结构模板
+## Ori TUI 文件结构
 
+`cmd/ori` 是 CLI/TUI 入口层，应保持薄入口，不放业务逻辑。当前 TUI 相关文件：
+
+```text
+cmd/ori/
+├── cmd_agent.go       # agent 命令、配置加载、dispatcher wiring、program 启动
+├── tui_model.go       # interactiveModel、runtime pump、TUI 状态类型
+├── tui_update.go      # Update、键盘输入、runtime event、finalize/flush
+├── tui_view.go        # View、live markdown、current round 渲染入口
+├── output.go          # assistant header、Markdown、reasoning、tool block renderer
+├── styles.go          # lipgloss 样式、terminal width/height、spinner frames
+└── tui_render_test.go # TUI 渲染和 runtime event 行为测试
 ```
-your-app/
-├── main.go              # 入口 (最小化，约 20 行)
-├── types.go             # 类型定义、结构体
-├── model.go             # Model 初始化和布局计算
-├── update.go            # 消息分发器
-├── update_keyboard.go   # 键盘处理
-├── update_mouse.go      # 鼠标处理
-├── view.go              # 视图渲染
-├── styles.go            # Lipgloss 样式定义
-└── config.go            # 配置管理
-```
 
-**main.go 最小示例：**
-```go
-package main
-
-import (
-    "os"
-    "github.com/charmbracelet/bubbletea"
-)
-
-func main() {
-    m := NewModel()
-    p := tea.NewProgram(m, tea.WithAltScreen())
-    if _, err := p.Run(); err != nil {
-        fmt.Fprintf(os.Stderr, "错误: %v", err)
-        os.Exit(1)
-    }
-}
-```
+新增 TUI 行为时，优先把状态转换放进 `tui_update.go`，把纯渲染 helper 放进
+`output.go` 或 `tui_view.go`。如果 helper 被 live、completed、final 三条路径复用，
+应放在 `output.go`，避免路径之间产生视觉漂移。
 
 ---
 
 ## 常用 Tea 选项
 
+`ori agent` 保持普通终端历史可见：
+
 ```go
 tea.NewProgram(m,
-    tea.WithAltScreen(),       // 使用替代屏幕（不闪烁）
-    tea.WithMouseCellMotion(), // 启用鼠标移动检测
-    tea.With CrispEdges(),     // 禁用抗锯齿
+    tea.WithoutSignals(),
 )
 ```
+
+onboarding wizard 更像独立配置界面，因此使用替代屏幕：
+
+```go
+tea.NewProgram(m,
+    tea.WithAltScreen(),
+)
+```
+
+只有真正需要鼠标交互时才启用 `tea.WithMouseCellMotion()`。不要在 `ori agent`
+里随意切到 alt screen，否则会破坏历史区输出体验。
 
 ---
 
@@ -359,10 +463,11 @@ tea.NewProgram(m,
 
 | 场景 | 推荐 |
 |------|------|
-| 需要基础 UI 元素（列表、输入框、进度条） | Bubbles 组件 |
+| 输入框、列表、进度条等标准交互组件 | Bubbles 组件 |
 | 需要自定义渲染和复杂布局 | Bubbletea + Lipgloss |
-| 需要快速原型 | Bubbles 组合 |
-| 需要完全控制渲染 | 纯 Bubbletea + Lipgloss |
+| runtime event 驱动的活动流 | 自定义 Model + renderer |
+| Markdown assistant 输出 | Glamour + 缓存 |
+| 固定格式工具详情 | Lipgloss + 显式截断 |
 
 **组合使用：** 常见模式是在 Bubbletea 程序中使用 Bubbles 组件作为子模块：
 
@@ -378,10 +483,12 @@ type Model struct {
 
 ## 调试技巧
 
-1. **高度不对？** 检查是否减去 2 行的边框
-2. **文本换行？** 显式截断到 `maxWidth = panelWidth - 4`
-3. **鼠标点击失效？** 确认布局方向与坐标匹配
-4. **布局不响应？** 使用权重而非固定像素
+1. **reasoning 又全量出现？** 检查 live、completed、final 是否都走 `renderReasoningBlock`。
+2. **工具输出挤成一行？** 检查是否绕过了结构化 tool block renderer。
+3. **工具动画和底部动画混淆？** 工具运行态不能使用 `spinnerFrames`。
+4. **长输出导致布局跳动？** 使用 `lipgloss.Width` 和 `toolDisplayWidth()` 做显式截断。
+5. **最终答案重复打印？** 检查 `flushedText`、`unflushedFinalContent` 和 `turn_start` flush。
+6. **长回答时 spinner 卡顿？** 检查是否在 tick/delta 中重复运行完整 glamour render。
 
 ---
 
