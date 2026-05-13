@@ -39,7 +39,7 @@ func TestNewBuildsStructuredError(t *testing.T) {
 func TestWrapKeepsCauseAndMetadata(t *testing.T) {
 	cause := stderrors.New("deadline exceeded")
 	ctx := map[string]any{
-		"tool":   "web_search",
+		"tool":    "web_search",
 		"timeout": 30,
 	}
 

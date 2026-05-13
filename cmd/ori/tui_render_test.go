@@ -1,6 +1,7 @@
 package main
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -8,10 +9,18 @@ import (
 	appcore "ori/internal/app"
 	"ori/internal/llm"
 	"ori/internal/runtime"
+
+	"github.com/charmbracelet/lipgloss"
 )
 
 func newTestModel() *interactiveModel {
 	return &interactiveModel{active: true}
+}
+
+var ansiEscapeRE = regexp.MustCompile(`\x1b\[[0-9;]*m`)
+
+func plainView(s string) string {
+	return ansiEscapeRE.ReplaceAllString(s, "")
 }
 
 func TestView_RendersLiveToolCall(t *testing.T) {
@@ -34,6 +43,142 @@ func TestView_RendersLiveToolCall(t *testing.T) {
 	}
 	if !strings.Contains(view, "/tmp/demo.md") {
 		t.Fatalf("expected live View to show tool args; got:\n%s", view)
+	}
+}
+
+func TestViewCacheInvalidatesWhenDisplayedTextChanges(t *testing.T) {
+	m := newTestModel()
+	m.displayedText = "first response"
+
+	view := plainView(m.View())
+	if !strings.Contains(view, "first response") {
+		t.Fatalf("expected initial View to show first response; got:\n%s", view)
+	}
+
+	m.displayedText = "second response"
+	view = plainView(m.View())
+	if strings.Contains(view, "first response") || !strings.Contains(view, "second response") {
+		t.Fatalf("expected View cache to refresh after displayed text changed; got:\n%s", view)
+	}
+}
+
+func TestCloseOpenMarkdownCompletesDanglingLinkDestination(t *testing.T) {
+	got := closeOpenMarkdown("see [docs](https://example.com")
+	if got != "see [docs](https://example.com)" {
+		t.Fatalf("expected dangling link destination to be closed, got %q", got)
+	}
+}
+
+func TestFormatFinalMessageSkipsAlreadyFlushedStreamPrefix(t *testing.T) {
+	m := newTestModel()
+	m.flushedText = "already printed"
+
+	out := plainView(m.formatFinalMessage("already printed\n\nnew tail", ""))
+	if strings.Contains(out, "already printed") {
+		t.Fatalf("expected final output to omit already flushed prefix; got:\n%s", out)
+	}
+	if !strings.Contains(out, "new tail") {
+		t.Fatalf("expected final output to include unflushed tail; got:\n%s", out)
+	}
+}
+
+func TestMaybeFlushStreamWindowRecordsFlushedPrefix(t *testing.T) {
+	t.Setenv("COLUMNS", "40")
+	t.Setenv("LINES", "20")
+
+	m := newTestModel()
+	m.displayedText = strings.Join([]string{
+		"already printed",
+		"",
+		"also printed",
+		"",
+		"tail line 1",
+		"tail line 2",
+		"tail line 3",
+		"tail line 4",
+		"tail line 5",
+		"tail line 6",
+		"tail line 7",
+		"tail line 8",
+		"tail line 9",
+		"tail line 10",
+		"tail line 11",
+		"tail line 12",
+		"tail line 13",
+		"tail line 14",
+		"tail line 15",
+		"tail line 16",
+	}, "\n")
+
+	cmd := m.maybeFlushStreamWindow()
+	if cmd == nil {
+		t.Fatal("expected stream window flush command")
+	}
+	if !strings.Contains(m.flushedText, "already printed") || !strings.Contains(m.flushedText, "also printed") {
+		t.Fatalf("expected flushedText to record flushed prefix, got %q", m.flushedText)
+	}
+	if strings.Contains(m.displayedText, "already printed") {
+		t.Fatalf("expected displayedText to keep only unflushed tail, got %q", m.displayedText)
+	}
+}
+
+func TestMaybeFlushStreamWindowSkipsWhenCurrentRoundIsUnflushed(t *testing.T) {
+	t.Setenv("COLUMNS", "40")
+	t.Setenv("LINES", "20")
+
+	m := newTestModel()
+	m.currentRound = &thinkingRound{reasoning: "internal reasoning"}
+	m.displayedText = strings.Join([]string{
+		"answer prefix",
+		"",
+		"answer middle",
+		"",
+		"tail line 1",
+		"tail line 2",
+		"tail line 3",
+		"tail line 4",
+		"tail line 5",
+		"tail line 6",
+		"tail line 7",
+		"tail line 8",
+		"tail line 9",
+		"tail line 10",
+		"tail line 11",
+		"tail line 12",
+		"tail line 13",
+		"tail line 14",
+		"tail line 15",
+		"tail line 16",
+	}, "\n")
+
+	if cmd := m.maybeFlushStreamWindow(); cmd != nil {
+		t.Fatal("expected no stream-window flush while current round is still unflushed")
+	}
+	if m.flushedText != "" {
+		t.Fatalf("expected no flushed text while current round is unflushed, got %q", m.flushedText)
+	}
+}
+
+func TestRenderRoundToolDetailLinesFitTerminalWidth(t *testing.T) {
+	t.Setenv("COLUMNS", "80")
+
+	m := newTestModel()
+	entry := toolCallEntry{
+		name:   "web",
+		args:   strings.Repeat("argument ", 20),
+		status: "done",
+		result: strings.Repeat("result ", 20),
+	}
+	entry.displayArgs.set(entry.args)
+	entry.displayResult.set(entry.result)
+
+	out := plainView(m.renderRound(thinkingRound{toolCalls: []toolCallEntry{entry}}, true))
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "Args:") || strings.Contains(line, "Result:") {
+			if width := lipgloss.Width(line); width > 80 {
+				t.Fatalf("expected tool detail line to fit terminal width, got width %d for line %q", width, line)
+			}
+		}
 	}
 }
 
@@ -277,12 +422,12 @@ func TestHandleRuntimeEvent_ToolEndKeepsUsingToolsWhileOthersRun(t *testing.T) {
 	m.handleRuntimeEvent(runtime.Event{
 		Kind:      runtime.EventToolExecutionStart,
 		Timestamp: time.Now(),
-		Data: runtime.ToolStartData{ToolCallID: "call_1", ToolName: "read_file"},
+		Data:      runtime.ToolStartData{ToolCallID: "call_1", ToolName: "read_file"},
 	})
 	m.handleRuntimeEvent(runtime.Event{
 		Kind:      runtime.EventToolExecutionStart,
 		Timestamp: time.Now(),
-		Data: runtime.ToolStartData{ToolCallID: "call_2", ToolName: "web_search"},
+		Data:      runtime.ToolStartData{ToolCallID: "call_2", ToolName: "web_search"},
 	})
 
 	m.handleRuntimeEvent(runtime.Event{

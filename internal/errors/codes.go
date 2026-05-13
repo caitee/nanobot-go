@@ -15,8 +15,8 @@ const (
 	CodeRuntimeContextOverflow Code = "runtime.context_overflow"
 	CodeRuntimeInternalError   Code = "runtime.internal_error"
 
-	CodeConfigInvalid        Code = "config.invalid"
-	CodeConfigMissingValue   Code = "config.missing_value"
+	CodeConfigInvalid      Code = "config.invalid"
+	CodeConfigMissingValue Code = "config.missing_value"
 
 	CodePluginLoadFailed     Code = "plugin.load_failed"
 	CodePluginExecutionError Code = "plugin.execution_error"

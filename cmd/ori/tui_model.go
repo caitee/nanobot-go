@@ -37,12 +37,12 @@ type interactiveModel struct {
 	unsubRuntime  func()
 
 	active          bool
-	currentRound    *thinkingRound  // round in progress; completed rounds are flushed to View above on TurnStart
-	streamText      string          // full text received from stream
-	displayedText   string          // text currently displayed (typewriter)
-	typewriterQueue []rune          // queue of runes waiting to be displayed
-	flushedText     string          // cumulative stream text already flushed to View above (for dedup on finalize)
-	status          string          // current agent status
+	currentRound    *thinkingRound // round in progress; completed rounds are flushed to View above on TurnStart
+	streamText      string         // full text received from stream
+	displayedText   string         // text currently displayed (typewriter)
+	typewriterQueue []rune         // queue of runes waiting to be displayed
+	flushedText     string         // cumulative stream text already flushed to View above (for dedup on finalize)
+	status          string         // current agent status
 
 	// Live-render cache for displayedText. renderLiveContent runs glamour,
 	// which is linear in the input size and gets called on every frame (every
@@ -54,10 +54,9 @@ type interactiveModel struct {
 	lastRenderedWidth  int
 
 	// View-level cache. viewVersion is bumped by any Update branch that
-	// changes visible state; View() short-circuits when (viewVersion,
-	// spinnerIdx, terminal width) hasn't changed since the last successful
-	// render. Caches are only used when safe — if textInput reports that its
-	// own state changed (cursor blink, input edits), the cache is bypassed.
+	// changes visible state; View() also keys on cheap direct render inputs
+	// such as spinner frame, terminal width, live text, and input output.
+	// Returning the cached string lets bubbletea's own diff detect no-ops.
 	viewVersion      uint64
 	cachedViewKey    viewCacheKey
 	cachedViewOutput string
@@ -67,10 +66,16 @@ type interactiveModel struct {
 // viewCacheKey is the tuple we key the View cache on. Equality across calls
 // means nothing affecting the output has changed.
 type viewCacheKey struct {
-	version    uint64
-	spinnerIdx int
-	width      int
-	textInput  string
+	version            uint64
+	spinnerIdx         int
+	width              int
+	textInput          string
+	active             bool
+	waiting            bool
+	quitting           bool
+	status             string
+	displayedText      string
+	typewriterQueueLen int
 }
 
 // thinkingRound represents one round of thinking + tool calls.
@@ -80,16 +85,16 @@ type thinkingRound struct {
 }
 
 type toolCallEntry struct {
-	id              string
-	name            string
-	args            string
-	status          string // "pending" | "running" | "done" | "error"
-	result          string
-	durationMs      int64
-	startTime       time.Time
-	expanded        bool
-	displayArgs     truncatedField // cached truncation of args for render
-	displayResult   truncatedField // cached truncation of result for render
+	id            string
+	name          string
+	args          string
+	status        string // "pending" | "running" | "done" | "error"
+	result        string
+	durationMs    int64
+	startTime     time.Time
+	expanded      bool
+	displayArgs   truncatedField // cached truncation of args for render
+	displayResult truncatedField // cached truncation of result for render
 }
 
 // Messages flowing through tea.Update. Runtime events and outbound messages

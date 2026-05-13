@@ -7,17 +7,17 @@ import (
 
 // mockPlugin 是一个用于测试的 mock plugin
 type mockPlugin struct {
-	name         string
-	pluginType   Type
-	metadata     Metadata
-	initCalled   bool
-	closeCalled  bool
-	startCalled  bool
-	stopCalled   bool
-	initErr      error
-	closeErr     error
-	startErr     error
-	stopErr      error
+	name        string
+	pluginType  Type
+	metadata    Metadata
+	initCalled  bool
+	closeCalled bool
+	startCalled bool
+	stopCalled  bool
+	initErr     error
+	closeErr    error
+	startErr    error
+	stopErr     error
 }
 
 func (m *mockPlugin) Name() string {
@@ -55,14 +55,14 @@ func (m *mockPlugin) Stop(ctx context.Context) error {
 // TestPluginMetadata 测试 plugin 元数据功能
 func TestPluginMetadata(t *testing.T) {
 	meta := Metadata{
-		Name:        "test-plugin",
-		Type:        TypeProvider,
-		Source:      "builtin",
-		Version:     "1.0.0",
-		Description: "A test plugin",
-		Author:      "test-author",
+		Name:         "test-plugin",
+		Type:         TypeProvider,
+		Source:       "builtin",
+		Version:      "1.0.0",
+		Description:  "A test plugin",
+		Author:       "test-author",
 		Dependencies: []string{"dep1", "dep2"},
-		Removable:   true,
+		Removable:    true,
 	}
 
 	plugin := &mockPlugin{

@@ -151,9 +151,9 @@ func renderBanner(cfg *config.Config, sessionKey string) string {
 	_ = sessionKey // session is intentionally omitted from the banner
 
 	const (
-		desiredW = 68
-		starW    = 7
-		starGap  = 2 // blank cells between star and border
+		desiredW  = 68
+		starW     = 7
+		starGap   = 2 // blank cells between star and border
 		starShift = 6 // shift star from right edge by this many cells
 	)
 

@@ -13,7 +13,7 @@ var (
        .
      ./|\,
     <-=O=->         ori
-     '\|/`+"`"+`          a small craft in your orbit.
+     '\|/` + "`" + `          a small craft in your orbit.
        '
 `
 

@@ -191,9 +191,10 @@ func truncateStr(s string, maxLen int) string {
 // tool args/result line. Centralized so the cache below matches what the
 // renderers in tui_view.go / tui_update.go use.
 func toolDisplayWidth() int {
-	w := getTerminalWidth() - 12
-	if w < 40 {
-		return 40
+	const maxToolDetailPrefixWidth = 14 // "    └ Result: "
+	w := getTerminalWidth() - maxToolDetailPrefixWidth
+	if w < 1 {
+		return 1
 	}
 	return w
 }
@@ -236,10 +237,7 @@ func (t *truncatedField) get(width int) string {
 // renderToolCallBlock renders a tool call's args/result/error as compact lines
 func renderToolCallBlock(tc toolCallEntry) string {
 	var b strings.Builder
-	maxWidth := getTerminalWidth() - 12 // padding for prefix
-	if maxWidth < 40 {
-		maxWidth = 40
-	}
+	maxWidth := toolDisplayWidth()
 	hasResult := (tc.status == "done" && tc.result != "") || (tc.status == "error" && tc.result != "")
 	if tc.args != "" {
 		prefix := "    ┌ "

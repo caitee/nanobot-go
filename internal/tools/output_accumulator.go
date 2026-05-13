@@ -15,13 +15,13 @@ const (
 
 // TruncationInfo describes how the accumulator truncated output.
 type TruncationInfo struct {
-	Truncated    bool
-	TruncatedBy  string // "lines" or "bytes"
-	TotalLines   int
-	OutputLines  int
-	OutputBytes  int
-	MaxLines     int
-	MaxBytes     int
+	Truncated   bool
+	TruncatedBy string // "lines" or "bytes"
+	TotalLines  int
+	OutputLines int
+	OutputBytes int
+	MaxLines    int
+	MaxBytes    int
 }
 
 // OutputSnapshot is the public view of the accumulator at a moment in time.
@@ -34,17 +34,17 @@ type OutputSnapshot struct {
 // OutputAccumulator buffers streaming output, applies line/byte limits, and
 // persists the full stream to a temp file when truncation kicks in.
 type OutputAccumulator struct {
-	mu        sync.Mutex
-	buf       bytes.Buffer
+	mu         sync.Mutex
+	buf        bytes.Buffer
 	totalBytes int
 	totalLines int
-	maxLines  int
-	maxBytes  int
-	tempPath  string
-	tempFile  *os.File
-	truncated bool
-	truncBy   string
-	prefix    string
+	maxLines   int
+	maxBytes   int
+	tempPath   string
+	tempFile   *os.File
+	truncated  bool
+	truncBy    string
+	prefix     string
 }
 
 // NewOutputAccumulator returns an accumulator with default limits.

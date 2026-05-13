@@ -172,6 +172,7 @@ func (m *interactiveModel) handleEnter() (tea.Model, tea.Cmd) {
 	m.streamText = ""
 	m.displayedText = ""
 	m.typewriterQueue = nil
+	m.flushedText = ""
 	m.status = "waiting"
 	m.viewVersion++
 	m.mu.Unlock()
@@ -364,6 +365,7 @@ func (m *interactiveModel) formatCurrentState() string {
 func (m *interactiveModel) formatFinalMessage(content, reasoning string) string {
 	// Previous rounds are already flushed above the TUI on each TurnStart, so
 	// we only need to render the last round (if any) plus the final content.
+	content = m.unflushedFinalContent(content)
 	var allRounds []thinkingRound
 	if m.currentRound != nil && (m.currentRound.reasoning != "" || len(m.currentRound.toolCalls) > 0) {
 		allRounds = append(allRounds, *m.currentRound)
@@ -376,11 +378,22 @@ func (m *interactiveModel) formatFinalMessage(content, reasoning string) string 
 	return formatAssistantMessage(allRounds, content, reasoning)
 }
 
+func (m *interactiveModel) unflushedFinalContent(content string) string {
+	if m.flushedText == "" || content == "" {
+		return content
+	}
+	if strings.HasPrefix(content, m.flushedText) {
+		return strings.TrimPrefix(content, m.flushedText)
+	}
+	return content
+}
+
 func (m *interactiveModel) clearActiveState() {
 	m.currentRound = nil
 	m.streamText = ""
 	m.displayedText = ""
 	m.typewriterQueue = nil
+	m.flushedText = ""
 }
 
 func (m *interactiveModel) printAbove(content string) tea.Cmd {
@@ -448,6 +461,9 @@ func (m *interactiveModel) maybeFlushStreamWindow() tea.Cmd {
 	if m.displayedText == "" {
 		return nil
 	}
+	if m.currentRound != nil && (m.currentRound.reasoning != "" || len(m.currentRound.toolCalls) > 0) {
+		return nil
+	}
 
 	// Calculate how many lines displayedText would render to
 	renderer := getMarkdownRenderer()
@@ -485,11 +501,23 @@ func (m *interactiveModel) maybeFlushStreamWindow() tea.Cmd {
 	prefix := strings.Join(textLines[:cutIndex], "\n")
 	renderedPrefix := m.renderLiveContent(prefix)
 	flushCmd := m.printAbove(renderedPrefix)
+	m.rememberFlushedText(prefix)
 
 	// Keep the suffix in displayedText
 	m.displayedText = strings.Join(textLines[cutIndex:], "\n")
 
 	return flushCmd
+}
+
+func (m *interactiveModel) rememberFlushedText(prefix string) {
+	if prefix == "" {
+		return
+	}
+	if m.flushedText == "" {
+		m.flushedText = prefix
+		return
+	}
+	m.flushedText += "\n" + prefix
 }
 
 // renderCompletedRound renders a single completed round (reasoning + tool calls)

@@ -14,10 +14,16 @@ func (m *interactiveModel) View() string {
 	textInputOut := m.textInput.View()
 	width := getTerminalWidth()
 	key := viewCacheKey{
-		version:    m.viewVersion,
-		spinnerIdx: m.spinnerIdx,
-		width:      width,
-		textInput:  textInputOut,
+		version:            m.viewVersion,
+		spinnerIdx:         m.spinnerIdx,
+		width:              width,
+		textInput:          textInputOut,
+		active:             m.active,
+		waiting:            m.waiting,
+		quitting:           m.quitting,
+		status:             m.status,
+		displayedText:      m.displayedText,
+		typewriterQueueLen: len(m.typewriterQueue),
 	}
 	// Cache hit: nothing relevant has changed since the last successful
 	// render. Returning the stored string lets bubbletea's own diff detect a
@@ -286,6 +292,13 @@ func closeOpenMarkdown(text string) string {
 // lastUnclosedLink returns the closer needed if the last line has a dangling
 // link/image opener, or "" otherwise.
 func lastUnclosedLink(line string) string {
+	if closeIdx := strings.LastIndex(line, "]("); closeIdx >= 0 {
+		rest := line[closeIdx+2:]
+		if !strings.Contains(rest, ")") && strings.LastIndex(line[:closeIdx], "[") >= 0 {
+			return ")"
+		}
+	}
+
 	// Scan for the last '[' that hasn't been matched by ']'.
 	depth := 0
 	lastOpen := -1
@@ -310,17 +323,6 @@ func lastUnclosedLink(line string) string {
 			return ""
 		}
 		// Unmatched ']' shouldn't happen, but be safe.
-		return ""
-	}
-	// We have an unclosed '['. Check if a '(' already followed a ']' we
-	// haven't seen yet — i.e. pattern "[text](partial".
-	afterOpen := line[lastOpen:]
-	if closeIdx := strings.Index(afterOpen, "]("); closeIdx >= 0 {
-		// "](url..." — make sure paren is also unclosed.
-		rest := afterOpen[closeIdx+2:]
-		if !strings.Contains(rest, ")") {
-			return ")"
-		}
 		return ""
 	}
 	// Just "[text..." with no closer yet.
