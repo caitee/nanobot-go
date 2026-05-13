@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -27,6 +28,7 @@ import (
 	"ori/internal/llm"
 	"ori/internal/runtime"
 	"ori/internal/session"
+	"ori/internal/skills"
 	"ori/internal/tool"
 )
 
@@ -42,7 +44,8 @@ type Dispatcher struct {
 	toolRegistry tool.Registry
 	streamFn     llm.StreamFn
 	model        llm.Model
-	commands     map[string]CommandHandler
+	commands     map[string]Command
+	skillLoader  *skills.SkillLoader
 
 	enableReasoning bool
 	reasoningStates sync.Map // sessionKey -> bool
@@ -77,8 +80,7 @@ type activeRun struct {
 	cancel context.CancelFunc
 }
 
-// CommandHandler matches the legacy handler signature to keep command
-// implementations portable.
+// CommandHandler adapts simple text commands into the metadata-aware registry.
 type CommandHandler func(ctx context.Context, d *Dispatcher, args string, inbound bus.InboundMessage) (string, error)
 
 // DispatcherOptions bundles what New needs.
@@ -89,6 +91,7 @@ type DispatcherOptions struct {
 	StreamFn         llm.StreamFn
 	Model            llm.Model
 	EnableReasoning  bool
+	SkillLoader      *skills.SkillLoader
 	SystemPrompt     string
 	TransformContext runtime.TransformContext
 	Subagents        SubagentSpawner
@@ -111,10 +114,11 @@ func NewDispatcher(opts DispatcherOptions) *Dispatcher {
 		streamFn:         opts.StreamFn,
 		model:            opts.Model,
 		enableReasoning:  opts.EnableReasoning,
+		skillLoader:      opts.SkillLoader,
 		systemPrompt:     opts.SystemPrompt,
 		transformContext: opts.TransformContext,
 		subagents:        opts.Subagents,
-		commands:         map[string]CommandHandler{},
+		commands:         map[string]Command{},
 		running:          map[string]*activeRun{},
 		runtimeListeners: map[int]func(runtime.Event){},
 	}
@@ -124,7 +128,60 @@ func NewDispatcher(opts DispatcherOptions) *Dispatcher {
 
 // RegisterCommand adds or replaces a slash command handler.
 func (d *Dispatcher) RegisterCommand(name string, h CommandHandler) {
-	d.commands[name] = h
+	d.RegisterSlashCommand(Command{
+		Name:  name,
+		Scope: CommandScopeApp,
+		Handler: func(ctx context.Context, d *Dispatcher, args string, inbound bus.InboundMessage) (*CommandResult, error) {
+			text, err := h(ctx, d, args, inbound)
+			if err != nil {
+				return nil, err
+			}
+			return &CommandResult{Text: text}, nil
+		},
+	})
+}
+
+// RegisterSlashCommand adds or replaces a slash command and its aliases.
+func (d *Dispatcher) RegisterSlashCommand(cmd Command) {
+	cmd.Name = strings.TrimPrefix(strings.TrimSpace(cmd.Name), "/")
+	if cmd.Name == "" {
+		return
+	}
+	if cmd.Scope == "" {
+		cmd.Scope = CommandScopeApp
+	}
+	d.commands[cmd.Name] = cmd
+	for _, alias := range cmd.Aliases {
+		alias = strings.TrimPrefix(strings.TrimSpace(alias), "/")
+		if alias == "" {
+			continue
+		}
+		aliasCmd := cmd
+		aliasCmd.Name = alias
+		d.commands[alias] = aliasCmd
+	}
+}
+
+// ListCommands returns registered slash commands plus dynamic skill commands.
+func (d *Dispatcher) ListCommands() []Command {
+	seen := map[string]bool{}
+	out := make([]Command, 0, len(d.commands))
+	for _, cmd := range d.commands {
+		if seen[cmd.Name] {
+			continue
+		}
+		seen[cmd.Name] = true
+		out = append(out, cmd)
+	}
+	for _, cmd := range skillCommands(d.skillLoader) {
+		if seen[cmd.Name] {
+			continue
+		}
+		seen[cmd.Name] = true
+		out = append(out, cmd)
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
 }
 
 // SetSystemPrompt updates the prompt passed to newly created agents.
@@ -267,11 +324,15 @@ func (d *Dispatcher) ProcessDirect(ctx context.Context, content, sessionKey, cha
 // handleInbound dispatches commands or runs a turn and publishes the result.
 func (d *Dispatcher) handleInbound(ctx context.Context, inbound bus.InboundMessage) {
 	if strings.HasPrefix(inbound.Content, "/") {
-		if out, handled := d.tryCommand(ctx, inbound); handled {
-			if out != nil {
-				d.bus.PublishOutbound(*out)
+		if result, handled := d.ExecuteCommand(ctx, inbound.Content, inbound); handled {
+			if result != nil && result.PromptReplacement != "" {
+				inbound.Content = result.PromptReplacement
+			} else {
+				if out := d.outboundFromCommandResult(inbound, result); out != nil {
+					d.bus.PublishOutbound(*out)
+				}
+				return
 			}
-			return
 		}
 	}
 
@@ -298,38 +359,65 @@ func (d *Dispatcher) handleInbound(ctx context.Context, inbound bus.InboundMessa
 	}()
 }
 
-func (d *Dispatcher) tryCommand(ctx context.Context, inbound bus.InboundMessage) (*bus.OutboundMessage, bool) {
-	parts := splitCommand(inbound.Content)
+// ExecuteCommand parses and executes a slash command. It returns handled=false
+// when the input is not a registered command and not a dynamic skill command.
+func (d *Dispatcher) ExecuteCommand(ctx context.Context, content string, inbound bus.InboundMessage) (*CommandResult, bool) {
+	if !strings.HasPrefix(content, "/") {
+		return nil, false
+	}
+	parts := splitCommand(content)
 	cmd := strings.TrimPrefix(parts[0], "/")
 	args := ""
 	if len(parts) > 1 {
 		args = parts[1]
 	}
-	handler, ok := d.commands[cmd]
+	if strings.HasPrefix(cmd, "skill:") {
+		return d.executeSkillCommand(content), true
+	}
+	command, ok := d.commands[cmd]
 	if !ok {
 		return nil, false
 	}
-	resp, err := handler(ctx, d, args, inbound)
+	if command.Handler == nil {
+		return nil, false
+	}
+	resp, err := command.Handler(ctx, d, args, inbound)
 	if err != nil {
 		slog.Error("dispatcher: command error", "cmd", cmd, "error", err)
-		// Format error for user
-		userMsg := errors.FormatUserMessage(err)
-		return &bus.OutboundMessage{
-			Channel: inbound.Channel,
-			ChatID:  inbound.ChatID,
-			Content: userMsg,
-			ReplyTo: inbound.SenderID,
-		}, true
+		return &CommandResult{Text: errors.FormatUserMessage(err)}, true
 	}
-	if resp == "" {
-		return nil, true
+	return resp, true
+}
+
+func (d *Dispatcher) executeSkillCommand(content string) *CommandResult {
+	expanded, ok := skills.ExpandSkillCommand(d.skillLoader, content)
+	if !ok {
+		name := strings.TrimPrefix(splitCommand(content)[0], "/skill:")
+		return &CommandResult{Text: fmt.Sprintf("Unknown skill: %s", name)}
+	}
+	return &CommandResult{PromptReplacement: expanded}
+}
+
+func (d *Dispatcher) outboundFromCommandResult(inbound bus.InboundMessage, result *CommandResult) *bus.OutboundMessage {
+	if result == nil {
+		return nil
+	}
+	content := result.Text
+	if content == "" {
+		content = result.Markdown
+	}
+	if content == "" && result.Status != "" {
+		content = result.Status
+	}
+	if content == "" {
+		return nil
 	}
 	return &bus.OutboundMessage{
 		Channel: inbound.Channel,
 		ChatID:  inbound.ChatID,
-		Content: resp,
+		Content: content,
 		ReplyTo: inbound.SenderID,
-	}, true
+	}
 }
 
 // runTurn creates an Agent, primes it with session history, wires the event

@@ -12,7 +12,6 @@ import (
 	"ori/internal/tool"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 )
 
 func (m *interactiveModel) tickSpinner() tea.Cmd {
@@ -143,6 +142,10 @@ func (m *interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		switch msg.Type {
+		case tea.KeyTab:
+			if m.acceptSlashCommandCompletion() {
+				return m, nil
+			}
 		case tea.KeyEnter:
 			return m.handleEnter()
 		}
@@ -154,40 +157,29 @@ func (m *interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m *interactiveModel) handleEnter() (tea.Model, tea.Cmd) {
 	userInput := strings.TrimSpace(m.textInput.Value())
-	m.textInput.SetValue("")
 	if userInput == "" {
+		m.textInput.SetValue("")
 		return m, nil
 	}
 	lower := strings.ToLower(userInput)
-	if lower == "exit" || lower == "quit" || lower == "/exit" || lower == "/quit" || lower == ":q" {
+	if lower == "exit" || lower == "quit" || lower == ":q" {
+		m.textInput.SetValue("")
 		m.quitting = true
 		m.shutdown()
 		return m, tea.Quit
 	}
-	m.mu.Lock()
-	m.active = true
-	m.waiting = true
-	m.responseReceived = false
-	m.spinnerIdx = 0
-	m.currentRound = nil
-	m.streamText = ""
-	m.displayedText = ""
-	m.typewriterQueue = nil
-	m.flushedText = ""
-	m.status = "waiting"
-	m.viewVersion++
-	m.mu.Unlock()
-
-	padded := userInput + strings.Repeat(" ", max(0, getTerminalWidth()-lipgloss.Width(userInput)))
-	userMsg := "\n" + userMessageStyle.Render(padded)
-	cmd := m.printAbove(userMsg)
-
-	m.dispatcher.Bus().PublishInbound(bus.InboundMessage{
-		Channel: "cli", SenderID: "user", ChatID: m.chatID,
-		Content: userInput, SessionKey: m.sessionKey,
-	})
-
-	return m, tea.Batch(cmd, m.tickSpinner())
+	if strings.HasPrefix(userInput, "/") {
+		if m.shouldCompleteSlashCommandOnEnter(userInput) && m.acceptSlashCommandCompletion() {
+			return m, nil
+		}
+		m.textInput.SetValue("")
+		if handled, cmd := m.handleSlashCommand(userInput); handled {
+			return m, cmd
+		}
+	} else {
+		m.textInput.SetValue("")
+	}
+	return m, m.submitPrompt(userInput, userInput)
 }
 
 // handleRuntimeEvent processes a single runtime.Event. Called with m.mu held.

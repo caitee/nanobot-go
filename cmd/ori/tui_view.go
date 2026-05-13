@@ -81,6 +81,9 @@ func (m *interactiveModel) View() string {
 	}
 	s.WriteString(sep)
 	s.WriteString("\n")
+	if suggestions := m.renderSlashCommandSuggestions(); suggestions != "" {
+		s.WriteString(suggestions)
+	}
 	s.WriteString(textInputOut)
 	s.WriteString("\n")
 

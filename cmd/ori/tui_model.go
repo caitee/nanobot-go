@@ -22,6 +22,7 @@ type interactiveModel struct {
 	dispatcher *appcore.Dispatcher
 	sessionKey string
 	chatID     string
+	banner     string
 
 	waiting          bool
 	quitting         bool
@@ -120,7 +121,7 @@ type responseMsg struct {
 
 // newInteractiveModel constructs the TUI model and subscribes to the
 // dispatcher's runtime event stream for sessionKey.
-func newInteractiveModel(dispatcher *appcore.Dispatcher, messageBus bus.MessageBus, sessionKey, chatID string) *interactiveModel {
+func newInteractiveModel(dispatcher *appcore.Dispatcher, messageBus bus.MessageBus, sessionKey, chatID, banner string) *interactiveModel {
 	ti := textinput.New()
 	ti.Placeholder = "Type a message..."
 	ti.Focus()
@@ -134,6 +135,7 @@ func newInteractiveModel(dispatcher *appcore.Dispatcher, messageBus bus.MessageB
 		dispatcher:    dispatcher,
 		sessionKey:    sessionKey,
 		chatID:        chatID,
+		banner:        banner,
 		done:          make(chan struct{}),
 		runtimeEvents: eventCh,
 		outboundCh:    messageBus.ConsumeOutbound(),

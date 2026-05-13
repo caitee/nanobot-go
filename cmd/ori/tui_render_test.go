@@ -10,11 +10,15 @@ import (
 	"ori/internal/llm"
 	"ori/internal/runtime"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/lipgloss"
 )
 
 func newTestModel() *interactiveModel {
-	return &interactiveModel{active: true}
+	ti := textinput.New()
+	ti.Focus()
+	ti.Prompt = "> "
+	return &interactiveModel{active: true, textInput: ti}
 }
 
 var ansiEscapeRE = regexp.MustCompile(`\x1b\[[0-9;]*m`)
@@ -287,6 +291,84 @@ func TestAgentEnd_PrintsFinalOutputWithToolCallsFromSameTurn(t *testing.T) {
 	}
 	if !strings.Contains(printed, "Result") {
 		t.Fatalf("expected final printed output to include tool result; got:\n%s", printed)
+	}
+}
+
+func TestInteractiveModelClearCommandResetsVisibleState(t *testing.T) {
+	m := newTestModel()
+	m.waiting = true
+	m.currentRound = &thinkingRound{reasoning: "thinking"}
+	m.streamText = "stream"
+	m.displayedText = "displayed"
+	m.typewriterQueue = []rune("queued")
+	m.flushedText = "flushed"
+	m.status = "thinking"
+
+	m.applyClearCommandResult()
+
+	if m.active || m.waiting || m.currentRound != nil || m.streamText != "" || m.displayedText != "" || len(m.typewriterQueue) != 0 || m.flushedText != "" {
+		t.Fatalf("expected clear command to reset visible state, got active=%v waiting=%v round=%+v stream=%q displayed=%q queued=%q flushed=%q",
+			m.active, m.waiting, m.currentRound, m.streamText, m.displayedText, string(m.typewriterQueue), m.flushedText)
+	}
+	if m.status != "ready" {
+		t.Fatalf("expected ready status, got %q", m.status)
+	}
+}
+
+func TestSlashCommandCompletionAcceptsFirstMatch(t *testing.T) {
+	m := newTestModel()
+	m.textInput.SetValue("/sk")
+
+	if !m.acceptSlashCommandCompletion() {
+		t.Fatal("expected slash command completion to be accepted")
+	}
+	if got := m.textInput.Value(); got != "/skills " {
+		t.Fatalf("expected /skills completion, got %q", got)
+	}
+}
+
+func TestHandleEnterCompletesPartialSlashCommandWithoutClearingInput(t *testing.T) {
+	m := newTestModel()
+	m.textInput.SetValue("/sk")
+
+	_, cmd := m.handleEnter()
+	if cmd != nil {
+		t.Fatal("expected completion to avoid dispatch command")
+	}
+	if got := m.textInput.Value(); got != "/skills " {
+		t.Fatalf("expected partial slash command to complete, got %q", got)
+	}
+}
+
+func TestRenderCommandResultBlockIncludesCommandAndResult(t *testing.T) {
+	out := plainView(renderCommandResultBlock("/status", &appcore.CommandResult{
+		Text: "ori v0.2.0-go\nStatus: running",
+	}))
+
+	if !strings.Contains(out, "/status") {
+		t.Fatalf("expected command block to include command, got:\n%s", out)
+	}
+	if !strings.Contains(out, "ori v0.2.0-go") || !strings.Contains(out, "Status: running") {
+		t.Fatalf("expected command block to include result, got:\n%s", out)
+	}
+	if !regexp.MustCompile(`(?m)^─{8,}$`).MatchString(out) {
+		t.Fatalf("expected separator line between command and result, got:\n%s", out)
+	}
+}
+
+func TestRenderResetCommandOutputIncludesBannerBeforeCommand(t *testing.T) {
+	out := plainView(renderResetCommandOutput("BANNER", "/clear", &appcore.CommandResult{
+		Text: "New session started.",
+	}))
+
+	bannerIdx := strings.Index(out, "BANNER")
+	commandIdx := strings.Index(out, "/clear")
+	resultIdx := strings.Index(out, "New session started.")
+	if bannerIdx < 0 || commandIdx < 0 || resultIdx < 0 {
+		t.Fatalf("expected banner, command, and result in reset output, got:\n%s", out)
+	}
+	if !(bannerIdx < commandIdx && commandIdx < resultIdx) {
+		t.Fatalf("expected banner before command before result, got:\n%s", out)
 	}
 }
 

@@ -15,6 +15,7 @@ import (
 	"ori/internal/providers"
 	"ori/internal/runtime"
 	"ori/internal/session"
+	"ori/internal/skills"
 	"ori/internal/tool"
 	legacytools "ori/internal/tools"
 )
@@ -27,6 +28,7 @@ type App struct {
 	Bus    bus.MessageBus
 
 	SessionStore session.SessionStore
+	SkillLoader  *skills.SkillLoader
 	ToolRegistry tool.Registry
 	LLMRegistry  *llm.Registry
 
@@ -78,10 +80,16 @@ func New(cfg *config.Config) (*App, error) {
 		messageBus.PublishInbound(msg)
 	})
 
+	workspace := cfg.Agents.Workspace
+	if workspace == "" {
+		workspace = "."
+	}
+
 	a := &App{
 		Config:                 cfg,
 		Bus:                    messageBus,
 		SessionStore:           sessionStore,
+		SkillLoader:            skills.NewSkillLoader(filepath.Join(workspace, "skills"), ""),
 		ToolRegistry:           tool.NewRegistry(),
 		LLMRegistry:            llm.NewRegistry(),
 		LegacyProviderRegistry: providers.NewRegistry(),
@@ -168,6 +176,7 @@ func (a *App) Start(ctx context.Context) error {
 		StreamFn:         streamFn,
 		Model:            model,
 		EnableReasoning:  a.Config.Agents.EnableReasoning,
+		SkillLoader:      a.SkillLoader,
 		SystemPrompt:     systemPrompt,
 		TransformContext: runtime.RuntimeContextTransform(runtime.RuntimeContext{}),
 		Subagents:        a.Subagents,

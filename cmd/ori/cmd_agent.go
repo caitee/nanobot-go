@@ -131,9 +131,10 @@ func runAgentSingle(ctx context.Context, app *appcore.App, sessionKey, chatID st
 }
 
 func runAgentInteractive(ctx context.Context, app *appcore.App, cfg *config.Config, sessionKey, chatID string) {
-	fmt.Print(renderBanner(cfg, sessionKey))
+	banner := renderBanner(cfg, sessionKey)
+	fmt.Print(banner)
 
-	model := newInteractiveModel(app.Dispatcher, app.Bus, sessionKey, chatID)
+	model := newInteractiveModel(app.Dispatcher, app.Bus, sessionKey, chatID, banner)
 	p := tea.NewProgram(model, tea.WithoutSignals())
 	model.SetProgram(p)
 	if _, err := p.Run(); err != nil {

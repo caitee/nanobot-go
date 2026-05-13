@@ -2,8 +2,10 @@ package skills
 
 import (
 	"embed"
+	"io/fs"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 )
 
@@ -41,6 +43,13 @@ func (l *SkillLoader) ListSkills(filterUnavailable bool) []*Skill {
 	// Built-in skills (lower priority, don't override workspace)
 	if l.builtinSkillsDir != "" {
 		builtinSkills := l.listSkillsFromDir(l.builtinSkillsDir, "builtin")
+		for _, s := range builtinSkills {
+			if _, exists := l.loadedSkills[s.Name]; !exists {
+				result = append(result, s)
+			}
+		}
+	} else {
+		builtinSkills := l.listBuiltinEmbeddedSkills()
 		for _, s := range builtinSkills {
 			if _, exists := l.loadedSkills[s.Name]; !exists {
 				result = append(result, s)
@@ -109,9 +118,45 @@ func (l *SkillLoader) LoadSkill(name string) *Skill {
 			l.loadedSkills[name] = skill
 			return skill
 		}
+	} else {
+		skillPath := filepath.Join("builtin", name, "SKILL.md")
+		if data, err := builtinFS.ReadFile(skillPath); err == nil {
+			if skill, err := ParseSkillContent(string(data), skillPath); err == nil {
+				skill.Source = "builtin"
+				l.loadedSkills[name] = skill
+				return skill
+			}
+		}
 	}
 
 	return nil
+}
+
+func (l *SkillLoader) listBuiltinEmbeddedSkills() []*Skill {
+	entries, err := fs.ReadDir(builtinFS, "builtin")
+	if err != nil {
+		return nil
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
+	result := make([]*Skill, 0, len(entries))
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		skillPath := filepath.Join("builtin", entry.Name(), "SKILL.md")
+		data, err := builtinFS.ReadFile(skillPath)
+		if err != nil {
+			continue
+		}
+		skill, err := ParseSkillContent(string(data), skillPath)
+		if err != nil {
+			continue
+		}
+		skill.Source = "builtin"
+		l.loadedSkills[skill.Name] = skill
+		result = append(result, skill)
+	}
+	return result
 }
 
 // LoadSkillsForContext loads specific skills and returns formatted content

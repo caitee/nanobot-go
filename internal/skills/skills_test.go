@@ -3,6 +3,7 @@ package skills
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -179,6 +180,80 @@ description: "Workspace skill"
 	skills := loader.ListSkills(false)
 	if len(skills) != 1 {
 		t.Errorf("Expected 1 skill, got %d", len(skills))
+	}
+}
+
+func TestFormatSkillListIsStable(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "skill-list-test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	workspaceSkillsDir := filepath.Join(tmpDir, "skills")
+	os.MkdirAll(filepath.Join(workspaceSkillsDir, "zeta"), 0755)
+	os.MkdirAll(filepath.Join(workspaceSkillsDir, "alpha"), 0755)
+	os.WriteFile(filepath.Join(workspaceSkillsDir, "zeta", "SKILL.md"), []byte(`---
+name: zeta
+description: "Last skill"
+---
+
+# Zeta
+`), 0644)
+	os.WriteFile(filepath.Join(workspaceSkillsDir, "alpha", "SKILL.md"), []byte(`---
+name: alpha
+description: "First skill"
+metadata: {"requires":{"bins":["nonexistent-skill-bin-12345"]}}
+---
+
+# Alpha
+`), 0644)
+
+	loader := NewSkillLoader(workspaceSkillsDir, "")
+	out := FormatSkillList(loader.ListSkills(false))
+
+	alphaIdx := strings.Index(out, "/skill:alpha")
+	zetaIdx := strings.Index(out, "/skill:zeta")
+	if alphaIdx < 0 || zetaIdx < 0 || alphaIdx > zetaIdx {
+		t.Fatalf("expected stable sorted skill command list, got:\n%s", out)
+	}
+	if !strings.Contains(out, "workspace") || !strings.Contains(out, "missing: bin:nonexistent-skill-bin-12345") {
+		t.Fatalf("expected source and missing deps in list, got:\n%s", out)
+	}
+}
+
+func TestExpandSkillCommandWrapsSkillContentAndArgs(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "skill-expand-test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	workspaceSkillsDir := filepath.Join(tmpDir, "skills")
+	os.MkdirAll(filepath.Join(workspaceSkillsDir, "demo"), 0755)
+	os.WriteFile(filepath.Join(workspaceSkillsDir, "demo", "SKILL.md"), []byte(`---
+name: demo
+description: "Demo skill"
+---
+
+# Demo Skill
+
+Use this carefully.
+`), 0644)
+
+	loader := NewSkillLoader(workspaceSkillsDir, "")
+	expanded, ok := ExpandSkillCommand(loader, "/skill:demo inspect this")
+	if !ok {
+		t.Fatal("expected skill command to expand")
+	}
+	if strings.Contains(expanded, "description:") {
+		t.Fatalf("expected frontmatter stripped, got:\n%s", expanded)
+	}
+	if !strings.Contains(expanded, `<skill name="demo"`) || !strings.Contains(expanded, "Use this carefully.") {
+		t.Fatalf("expected skill block content, got:\n%s", expanded)
+	}
+	if !strings.HasSuffix(expanded, "inspect this") {
+		t.Fatalf("expected args appended, got:\n%s", expanded)
 	}
 }
 

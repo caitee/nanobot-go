@@ -14,6 +14,7 @@ import (
 	"ori/internal/llm"
 	"ori/internal/runtime"
 	"ori/internal/session"
+	"ori/internal/skills"
 	"ori/internal/tool"
 )
 
@@ -70,6 +71,121 @@ func TestDispatcherProcessDirectReturnsOutbound(t *testing.T) {
 	}
 	if out.Content != "hello back" {
 		t.Fatalf("content = %q", out.Content)
+	}
+}
+
+func TestDispatcherListsDefaultSlashCommands(t *testing.T) {
+	d, _, _ := newTestDispatcher(t, "hello")
+
+	commands := d.ListCommands()
+	names := map[string]bool{}
+	for _, cmd := range commands {
+		names[cmd.Name] = true
+	}
+
+	for _, name := range []string{"help", "clear", "new", "status", "stop", "reasoning"} {
+		if !names[name] {
+			t.Fatalf("expected default command %q in command list: %+v", name, commands)
+		}
+	}
+}
+
+func TestDispatcherExecuteCommandHandlesAliasesAndResetSession(t *testing.T) {
+	d, _, _ := newTestDispatcher(t, "hello")
+	sess := d.Session("cli:test")
+	sess.Messages = append(sess.Messages, session.Message{Role: "user", Content: "old"})
+
+	result, handled := d.ExecuteCommand(context.Background(), "/clear", bus.InboundMessage{
+		Channel: "cli", SenderID: "u", ChatID: "test", SessionKey: "cli:test",
+	})
+	if !handled {
+		t.Fatal("expected /clear to be handled")
+	}
+	if result == nil || !result.ResetSession {
+		t.Fatalf("expected reset-session result, got %+v", result)
+	}
+	if got := len(d.Session("cli:test").Messages); got != 0 {
+		t.Fatalf("expected session messages to be cleared, got %d", got)
+	}
+}
+
+func TestDispatcherHelpIncludesRegisteredCommandMetadata(t *testing.T) {
+	d, _, _ := newTestDispatcher(t, "hello")
+
+	result, handled := d.ExecuteCommand(context.Background(), "/help", bus.InboundMessage{
+		Channel: "cli", SenderID: "u", ChatID: "test", SessionKey: "cli:test",
+	})
+	if !handled {
+		t.Fatal("expected /help to be handled")
+	}
+	if result == nil || !strings.Contains(result.Text, "/clear") || !strings.Contains(result.Text, "/skills") {
+		t.Fatalf("expected help to include registered command metadata, got %+v", result)
+	}
+}
+
+func TestDispatcherSkillCommandExpandsIntoPrompt(t *testing.T) {
+	dir, err := os.MkdirTemp("", "ori-skill-command-*")
+	if err != nil {
+		t.Fatalf("tempdir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+
+	skillsDir := filepath.Join(dir, "skills")
+	if err := os.MkdirAll(filepath.Join(skillsDir, "demo"), 0755); err != nil {
+		t.Fatalf("mkdir skill: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillsDir, "demo", "SKILL.md"), []byte(`---
+name: demo
+description: "Demo skill"
+---
+
+# Demo Skill
+`), 0644); err != nil {
+		t.Fatalf("write skill: %v", err)
+	}
+
+	store, err := session.NewFileSessionStore(filepath.Join(dir, "sessions"))
+	if err != nil {
+		t.Fatalf("session store: %v", err)
+	}
+	b := bus.New(10)
+	var capturedUser string
+	stream := func(ctx context.Context, model llm.Model, c llm.Context, opts llm.StreamOptions) llm.EventStream {
+		if len(c.Messages) > 0 {
+			if user, ok := c.Messages[len(c.Messages)-1].(llm.UserMessage); ok {
+				for _, content := range user.Content {
+					if text, ok := content.(llm.TextContent); ok {
+						capturedUser += text.Text
+					}
+				}
+			}
+		}
+		return fakeStreamFn("done")(ctx, model, c, opts)
+	}
+	d := app.NewDispatcher(app.DispatcherOptions{
+		Bus:          b,
+		SessionStore: store,
+		ToolRegistry: tool.NewRegistry(),
+		StreamFn:     stream,
+		Model:        llm.Model{ID: "test-model", Provider: "fake", API: "openai"},
+		SkillLoader:  skills.NewSkillLoader(skillsDir, ""),
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = d.Run(ctx) }()
+	outbound := b.ConsumeOutbound()
+	b.PublishInbound(bus.InboundMessage{
+		Channel: "cli", SenderID: "u", ChatID: "c", Content: "/skill:demo inspect", SessionKey: "k",
+	})
+
+	select {
+	case <-outbound:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for skill command response")
+	}
+	if !strings.Contains(capturedUser, `<skill name="demo"`) || !strings.Contains(capturedUser, "inspect") {
+		t.Fatalf("expected expanded skill prompt, got %q", capturedUser)
 	}
 }
 
