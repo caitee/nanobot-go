@@ -252,6 +252,13 @@ var (
 			Foreground(lipgloss.Color("245")).
 			Italic(true)
 
+	toolPreviewStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("244"))
+
+	toolPulseStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("75")).
+			Bold(true)
+
 	toolDurationStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("245"))
 
@@ -261,6 +268,10 @@ var (
 	reasoningStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("238")).
 			Italic(true)
+
+	reasoningHeaderStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("245")).
+				Italic(true)
 
 	streamingCursorStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("86")).

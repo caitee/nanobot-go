@@ -223,10 +223,10 @@ func TestHandleRuntimeEvent_TurnStartFlushesPreviousRound(t *testing.T) {
 	if !strings.Contains(out, "read_file") {
 		t.Fatalf("expected flushed output to include tool name; got:\n%s", out)
 	}
-	if !strings.Contains(out, "Args:") {
-		t.Fatalf("expected flushed output to include tool args; got:\n%s", out)
+	if !strings.Contains(out, "path") || !strings.Contains(out, "/tmp/demo.md") {
+		t.Fatalf("expected flushed output to include structured tool args; got:\n%s", out)
 	}
-	if !strings.Contains(out, "Result:") {
+	if !strings.Contains(out, "Result") {
 		t.Fatalf("expected flushed output to include tool result; got:\n%s", out)
 	}
 }
@@ -282,10 +282,10 @@ func TestAgentEnd_PrintsFinalOutputWithToolCallsFromSameTurn(t *testing.T) {
 	if !strings.Contains(printed, "read_file") {
 		t.Fatalf("expected final printed output to include tool name; got:\n%s", printed)
 	}
-	if !strings.Contains(printed, "Args:") {
-		t.Fatalf("expected final printed output to include tool args; got:\n%s", printed)
+	if !strings.Contains(printed, "path") || !strings.Contains(printed, "/tmp/demo.md") {
+		t.Fatalf("expected final printed output to include structured tool args; got:\n%s", printed)
 	}
-	if !strings.Contains(printed, "Result:") {
+	if !strings.Contains(printed, "Result") {
 		t.Fatalf("expected final printed output to include tool result; got:\n%s", printed)
 	}
 }
@@ -392,8 +392,8 @@ func TestHandleRuntimeEvent_ToolEndFallsBackToThinking(t *testing.T) {
 			Args:       map[string]any{"path": "/tmp/demo.md"},
 		},
 	})
-	if m.status != "using tools" {
-		t.Fatalf("expected status %q while tool is running, got %q", "using tools", m.status)
+	if m.status != "running tools" {
+		t.Fatalf("expected status %q while tool is running, got %q", "running tools", m.status)
 	}
 
 	m.handleRuntimeEvent(runtime.Event{
@@ -410,8 +410,8 @@ func TestHandleRuntimeEvent_ToolEndFallsBackToThinking(t *testing.T) {
 	}
 
 	view := m.View()
-	if strings.Contains(view, "using tools") {
-		t.Fatalf("expected status line not to show 'using tools' after tool ended; got:\n%s", view)
+	if strings.Contains(view, "running tools") {
+		t.Fatalf("expected status line not to show 'running tools' after tool ended; got:\n%s", view)
 	}
 }
 
@@ -439,7 +439,166 @@ func TestHandleRuntimeEvent_ToolEndKeepsUsingToolsWhileOthersRun(t *testing.T) {
 			Result:     []llm.Content{llm.TextContent{Text: "ok"}},
 		},
 	})
-	if m.status != "using tools" {
-		t.Fatalf("expected status to stay %q while another tool is still running, got %q", "using tools", m.status)
+	if m.status != "running tools" {
+		t.Fatalf("expected status to stay %q while another tool is still running, got %q", "running tools", m.status)
+	}
+}
+
+func TestRenderReasoningBlockSummarizesAcrossLiveCompletedAndFinal(t *testing.T) {
+	reasoning := strings.Join([]string{
+		"line 1 hidden",
+		"line 2 hidden",
+		"line 3 hidden",
+		"line 4 visible in live only",
+		"line 5 visible",
+		"line 6 visible",
+		"line 7 visible",
+	}, "\n")
+
+	m := newTestModel()
+	live := plainView(m.renderRound(thinkingRound{reasoning: reasoning}, true))
+	completed := plainView(m.renderCompletedRound(thinkingRound{reasoning: reasoning}))
+	final := plainView(formatAssistantMessage([]thinkingRound{{reasoning: reasoning}}, "", reasoning))
+
+	for name, out := range map[string]string{"live": live, "completed": completed, "final": final} {
+		if !strings.Contains(out, "thinking · 7 lines summarized") {
+			t.Fatalf("%s reasoning should include summary header, got:\n%s", name, out)
+		}
+		if strings.Contains(out, "line 1 hidden") || strings.Contains(out, "line 2 hidden") {
+			t.Fatalf("%s reasoning should hide older lines, got:\n%s", name, out)
+		}
+	}
+	if !strings.Contains(live, "line 4 visible in live only") {
+		t.Fatalf("live reasoning should show last five lines, got:\n%s", live)
+	}
+	if strings.Contains(completed, "line 4 visible in live only") || strings.Contains(final, "line 4 visible in live only") {
+		t.Fatalf("completed/final reasoning should show only last three lines, completed:\n%s\nfinal:\n%s", completed, final)
+	}
+}
+
+func TestRenderToolCallUsesStableMultilineArguments(t *testing.T) {
+	m := newTestModel()
+	m.handleRuntimeEvent(runtime.Event{Kind: runtime.EventTurnStart, Timestamp: time.Now()})
+	m.handleRuntimeEvent(runtime.Event{
+		Kind:      runtime.EventToolExecutionStart,
+		Timestamp: time.Now(),
+		Data: runtime.ToolStartData{
+			ToolCallID: "call_1",
+			ToolName:   "shell",
+			Args:       map[string]any{"timeout": 5, "command": "go test ./cmd/ori"},
+		},
+	})
+
+	view := plainView(m.View())
+	commandIdx := strings.Index(view, "command")
+	timeoutIdx := strings.Index(view, "timeout")
+	if commandIdx < 0 || timeoutIdx < 0 {
+		t.Fatalf("expected structured argument keys in view, got:\n%s", view)
+	}
+	if commandIdx > timeoutIdx {
+		t.Fatalf("expected argument keys to be sorted, got:\n%s", view)
+	}
+	if strings.Contains(view, "Args:") {
+		t.Fatalf("expected multiline argument block instead of Args line, got:\n%s", view)
+	}
+}
+
+func TestRenderToolArgumentLinesFitNarrowTerminal(t *testing.T) {
+	t.Setenv("COLUMNS", "32")
+
+	m := newTestModel()
+	entry := toolCallEntry{
+		name:    "shell",
+		status:  "running",
+		argsMap: map[string]any{"extremely_long_argument_key": strings.Repeat("value ", 20)},
+	}
+
+	out := plainView(m.renderRound(thinkingRound{toolCalls: []toolCallEntry{entry}}, true))
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "extremely") || strings.Contains(line, "...") {
+			if width := lipgloss.Width(line); width > 32 {
+				t.Fatalf("expected structured arg line to fit terminal width, got width %d for line %q", width, line)
+			}
+		}
+	}
+}
+
+func TestRenderToolResultShowsPreviewAndHiddenLineCount(t *testing.T) {
+	m := newTestModel()
+	entry := toolCallEntry{
+		name:   "read_file",
+		status: "done",
+		result: strings.Join([]string{
+			"line 1",
+			"line 2",
+			"line 3",
+			"line 4",
+			"line 5 hidden",
+			"line 6 hidden",
+		}, "\n"),
+	}
+	entry.displayResult.set(entry.result)
+
+	out := plainView(m.renderRound(thinkingRound{toolCalls: []toolCallEntry{entry}}, false))
+	for _, want := range []string{"line 1", "line 2", "line 3", "line 4", "... 2 more lines"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected result preview to include %q, got:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "line 5 hidden") || strings.Contains(out, "line 6 hidden") {
+		t.Fatalf("expected long result preview to hide tail lines, got:\n%s", out)
+	}
+}
+
+func TestHandleRuntimeEvent_ToolUpdateRendersRunningPreview(t *testing.T) {
+	m := newTestModel()
+	m.handleRuntimeEvent(runtime.Event{Kind: runtime.EventTurnStart, Timestamp: time.Now()})
+	m.handleRuntimeEvent(runtime.Event{
+		Kind:      runtime.EventToolExecutionStart,
+		Timestamp: time.Now(),
+		Data:      runtime.ToolStartData{ToolCallID: "call_1", ToolName: "shell", Args: map[string]any{"command": "printf hi"}},
+	})
+	m.handleRuntimeEvent(runtime.Event{
+		Kind:      runtime.EventToolExecUpdate,
+		Timestamp: time.Now(),
+		Data: runtime.ToolUpdateData{
+			ToolCallID: "call_1",
+			ToolName:   "shell",
+			Partial:    []llm.Content{llm.TextContent{Text: "partial output"}},
+		},
+	})
+
+	view := plainView(m.View())
+	if !strings.Contains(view, "partial output") {
+		t.Fatalf("expected running tool preview to include partial output, got:\n%s", view)
+	}
+}
+
+func TestRunningToolDoesNotReuseGlobalSpinnerFrame(t *testing.T) {
+	m := newTestModel()
+	m.spinnerIdx = 3
+	m.handleRuntimeEvent(runtime.Event{Kind: runtime.EventTurnStart, Timestamp: time.Now()})
+	m.handleRuntimeEvent(runtime.Event{
+		Kind:      runtime.EventToolExecutionStart,
+		Timestamp: time.Now(),
+		Data:      runtime.ToolStartData{ToolCallID: "call_1", ToolName: "read_file"},
+	})
+
+	view := plainView(m.View())
+	toolLine := ""
+	for _, line := range strings.Split(view, "\n") {
+		if strings.Contains(line, "read_file") {
+			toolLine = line
+			break
+		}
+	}
+	if toolLine == "" {
+		t.Fatalf("expected tool line in view, got:\n%s", view)
+	}
+	if strings.Contains(toolLine, spinnerFrames[m.spinnerIdx]) {
+		t.Fatalf("expected running tool line not to reuse global spinner frame %q, got %q", spinnerFrames[m.spinnerIdx], toolLine)
+	}
+	if !strings.Contains(view, spinnerFrames[m.spinnerIdx]+" running tools") {
+		t.Fatalf("expected bottom status to keep global spinner, got:\n%s", view)
 	}
 }

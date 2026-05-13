@@ -85,16 +85,20 @@ type thinkingRound struct {
 }
 
 type toolCallEntry struct {
-	id            string
-	name          string
-	args          string
-	status        string // "pending" | "running" | "done" | "error"
-	result        string
-	durationMs    int64
-	startTime     time.Time
-	expanded      bool
-	displayArgs   truncatedField // cached truncation of args for render
-	displayResult truncatedField // cached truncation of result for render
+	id             string
+	name           string
+	args           string
+	argsMap        map[string]any
+	status         string // "pending" | "running" | "done" | "error"
+	partial        string
+	result         string
+	durationMs     int64
+	startTime      time.Time
+	lastUpdate     time.Time
+	expanded       bool
+	displayArgs    truncatedField // cached truncation of args for render
+	displayPartial truncatedField
+	displayResult  truncatedField // cached truncation of result for render
 }
 
 // Messages flowing through tea.Update. Runtime events and outbound messages

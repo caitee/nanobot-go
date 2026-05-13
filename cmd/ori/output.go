@@ -3,7 +3,9 @@ package main
 import (
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
@@ -37,46 +39,68 @@ func formatAssistantMessage(rounds []thinkingRound, content, reasoning string) s
 			b.WriteString("\n")
 		}
 
-		// Reasoning for this round
-		if round.reasoning != "" {
-			b.WriteString(renderReasoningMarkdown(round.reasoning))
-			b.WriteString("\n")
-		}
-
-		// Tool calls for this round
-		if len(round.toolCalls) > 0 {
-			for _, tc := range round.toolCalls {
-				var icon, statusText string
-				var iconStyle lipgloss.Style
-				switch tc.status {
-				case "done":
-					icon = "✓"
-					statusText = fmt.Sprintf(" • %s", formatDuration(tc.durationMs))
-					iconStyle = toolDoneStyle
-				case "error":
-					icon = "✗"
-					if tc.durationMs > 0 {
-						statusText = fmt.Sprintf(" • %s", formatDuration(tc.durationMs))
-					}
-					iconStyle = toolErrorStyle
-				default:
-					icon = "○"
-					iconStyle = toolEntryStyle
-				}
-				b.WriteString("  ")
-				b.WriteString(iconStyle.Render(icon) + " ")
-				b.WriteString(toolEntryStyle.Render(tc.name))
-				b.WriteString(toolDurationStyle.Render(statusText))
-				b.WriteString("\n")
-				b.WriteString(renderToolCallBlock(tc))
-			}
-		}
+		b.WriteString(renderRoundContent(round, false))
 	}
 
 	// Content with reasoning-detection
 	b.WriteString(formatContentWithReasoning(content, reasoning))
 	b.WriteString("\n")
 	return b.String()
+}
+
+type reasoningRenderMode int
+
+const (
+	reasoningModeCompleted reasoningRenderMode = iota
+	reasoningModeLive
+)
+
+func renderRoundContent(round thinkingRound, isLive bool) string {
+	var b strings.Builder
+	mode := reasoningModeCompleted
+	if isLive {
+		mode = reasoningModeLive
+	}
+	if round.reasoning != "" {
+		b.WriteString(renderReasoningBlock(round.reasoning, mode))
+		b.WriteString("\n")
+	}
+	for i := range round.toolCalls {
+		b.WriteString(renderToolCallBlock(round.toolCalls[i], isLive))
+	}
+	return b.String()
+}
+
+func renderReasoningBlock(reasoning string, mode reasoningRenderMode) string {
+	lines := nonEmptyLines(reasoning)
+	if len(lines) == 0 {
+		return ""
+	}
+	visible := 3
+	if mode == reasoningModeLive {
+		visible = 5
+	}
+	if len(lines) < visible {
+		visible = len(lines)
+	}
+	preview := strings.Join(lines[len(lines)-visible:], "\n")
+	var b strings.Builder
+	b.WriteString(reasoningHeaderStyle.Render(fmt.Sprintf("  thinking · %d lines summarized", len(lines))))
+	b.WriteString("\n")
+	b.WriteString(renderReasoningMarkdown(preview))
+	return b.String()
+}
+
+func nonEmptyLines(s string) []string {
+	raw := strings.Split(s, "\n")
+	out := make([]string, 0, len(raw))
+	for _, line := range raw {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			out = append(out, line)
+		}
+	}
+	return out
 }
 
 // formatContentWithReasoning splits content into reasoning (gray) and answer (white).
@@ -151,14 +175,17 @@ func formatContentWithReasoning(content string, reasoning string) string {
 	return b.String()
 }
 
-// formatArgs formats tool arguments as a compact single-line string
+// formatArgs formats tool arguments as a stable compact string for fallback
+// paths and tests. Structured rendering uses the original args map when
+// available.
 func formatArgs(args map[string]any) string {
 	if args == nil || len(args) == 0 {
 		return ""
 	}
-	var parts []string
-	for k, v := range args {
-		s := fmt.Sprintf("%v", v)
+	keys := sortedArgKeys(args)
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		s := formatArgValue(args[k])
 		s = strings.ReplaceAll(s, "\n", " ")
 		parts = append(parts, fmt.Sprintf("%s: %s", k, s))
 	}
@@ -166,6 +193,24 @@ func formatArgs(args map[string]any) string {
 		return parts[0]
 	}
 	return strings.Join(parts, ", ")
+}
+
+func sortedArgKeys(args map[string]any) []string {
+	keys := make([]string, 0, len(args))
+	for k := range args {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func formatArgValue(v any) string {
+	switch x := v.(type) {
+	case string:
+		return x
+	default:
+		return fmt.Sprintf("%v", v)
+	}
 }
 
 // truncateStr collapses newlines and truncates a string to maxLen display width.
@@ -234,24 +279,154 @@ func (t *truncatedField) get(width int) string {
 	return t.cached
 }
 
-// renderToolCallBlock renders a tool call's args/result/error as compact lines
-func renderToolCallBlock(tc toolCallEntry) string {
+// renderToolCallBlock renders a tool call's args/result/error as a structured
+// activity block.
+func renderToolCallBlock(tc toolCallEntry, isLive bool) string {
 	var b strings.Builder
-	maxWidth := toolDisplayWidth()
-	hasResult := (tc.status == "done" && tc.result != "") || (tc.status == "error" && tc.result != "")
-	if tc.args != "" {
-		prefix := "    ┌ "
-		if !hasResult {
-			prefix = "    └ "
-		}
-		b.WriteString(toolArgsStyle.Render(prefix+"Args: "+truncateStr(tc.args, maxWidth)) + "\n")
+	icon, statusText, iconStyle := toolStatusParts(tc, isLive)
+	b.WriteString("  ")
+	b.WriteString(iconStyle.Render(icon) + " ")
+	b.WriteString(toolEntryStyle.Render(tc.name))
+	b.WriteString(toolDurationStyle.Render(statusText))
+	b.WriteString("\n")
+
+	b.WriteString(renderToolArgsBlock(tc))
+
+	if tc.status == "running" && tc.partial != "" {
+		b.WriteString(renderPreviewBlock("Preview", tc.partial, toolPreviewStyle, 4))
+		return b.String()
 	}
 	if tc.status == "error" && tc.result != "" {
-		b.WriteString("    └ " + toolErrorStyle.Render("Error: "+truncateStr(tc.result, maxWidth)) + "\n")
+		b.WriteString(renderPreviewBlock("Error", tc.result, toolErrorStyle, 4))
 	} else if tc.status == "done" && tc.result != "" {
-		b.WriteString(toolArgsStyle.Render("    └ Result: "+truncateStr(tc.result, maxWidth)) + "\n")
+		b.WriteString(renderPreviewBlock("Result", tc.result, toolPreviewStyle, 4))
 	}
 	return b.String()
+}
+
+func toolStatusParts(tc toolCallEntry, isLive bool) (string, string, lipgloss.Style) {
+	switch tc.status {
+	case "done":
+		return "✓", fmt.Sprintf(" %s", toolMetaText(tc)), toolDoneStyle
+	case "error":
+		return "✗", fmt.Sprintf(" %s", toolMetaText(tc)), toolErrorStyle
+	case "running":
+		if isLive {
+			if tc.startTime.IsZero() {
+				return "●", " running", toolPulseStyle
+			}
+			return "●", " running " + formatDuration(timeSince(tc.startTime)), toolPulseStyle
+		}
+		return "○", " running", toolRunningStyle
+	default:
+		return "○", " pending", toolEntryStyle
+	}
+}
+
+func toolMetaText(tc toolCallEntry) string {
+	parts := make([]string, 0, 2)
+	if tc.durationMs >= 0 {
+		parts = append(parts, formatDuration(tc.durationMs))
+	}
+	if size := toolResultSize(tc); size != "" {
+		parts = append(parts, size)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.Join(parts, " · ")
+}
+
+func toolResultSize(tc toolCallEntry) string {
+	source := tc.result
+	if source == "" {
+		source = tc.partial
+	}
+	source = strings.TrimSpace(source)
+	if source == "" {
+		return ""
+	}
+	return fmt.Sprintf("%d chars", len([]rune(source)))
+}
+
+func timeSince(t time.Time) int64 {
+	if t.IsZero() {
+		return 0
+	}
+	ms := time.Now().Sub(t).Milliseconds()
+	if ms < 0 {
+		return 0
+	}
+	return ms
+}
+
+func renderToolArgsBlock(tc toolCallEntry) string {
+	if len(tc.argsMap) == 0 && tc.args == "" {
+		return ""
+	}
+	if len(tc.argsMap) == 0 {
+		return renderKeyValueBlock([]toolKeyValue{{key: "arg", value: tc.args}}, toolArgsStyle)
+	}
+	rows := make([]toolKeyValue, 0, len(tc.argsMap))
+	for _, key := range sortedArgKeys(tc.argsMap) {
+		rows = append(rows, toolKeyValue{key: key, value: formatArgValue(tc.argsMap[key])})
+	}
+	return renderKeyValueBlock(rows, toolArgsStyle)
+}
+
+type toolKeyValue struct {
+	key   string
+	value string
+}
+
+func renderKeyValueBlock(rows []toolKeyValue, style lipgloss.Style) string {
+	var b strings.Builder
+	width := toolDisplayWidth()
+	for _, row := range rows {
+		key := truncateStr(row.key, 10)
+		value := strings.ReplaceAll(row.value, "\n", " ")
+		line := fmt.Sprintf("    │ %-10s %s", key, truncateStr(value, width-15))
+		b.WriteString(style.Render(line))
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+func renderPreviewBlock(label, content string, style lipgloss.Style, maxLines int) string {
+	lines := previewLines(content)
+	if len(lines) == 0 {
+		return ""
+	}
+	visible := maxLines
+	if len(lines) < visible {
+		visible = len(lines)
+	}
+	width := toolDisplayWidth()
+	var b strings.Builder
+	b.WriteString(style.Render("    │ " + label))
+	b.WriteString("\n")
+	for _, line := range lines[:visible] {
+		b.WriteString(style.Render("    │ " + truncateStr(line, width)))
+		b.WriteString("\n")
+	}
+	if hidden := len(lines) - visible; hidden > 0 {
+		b.WriteString(style.Render(fmt.Sprintf("    │ ... %d more lines", hidden)))
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+func previewLines(content string) []string {
+	raw := strings.Split(strings.TrimSpace(content), "\n")
+	out := make([]string, 0, len(raw))
+	for _, line := range raw {
+		line = strings.TrimRight(line, "\r")
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		out = append(out, line)
+	}
+	return out
 }
 
 // formatDuration formats duration in milliseconds to a human-readable string

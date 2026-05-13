@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -93,86 +92,7 @@ func (m *interactiveModel) View() string {
 
 // renderRound renders one round (reasoning + tool calls).
 func (m *interactiveModel) renderRound(round thinkingRound, isLive bool) string {
-	var s strings.Builder
-
-	if round.reasoning != "" {
-		renderedReasoning := renderReasoningMarkdown(round.reasoning)
-		const maxReasoningLines = 5
-		lines := strings.Split(renderedReasoning, "\n")
-		// Keep trailing empty lines to maintain spacing with tool calls
-		if len(lines) > maxReasoningLines {
-			// Count non-empty lines from the end
-			nonEmptyCount := 0
-			for i := len(lines) - 1; i >= 0 && nonEmptyCount < maxReasoningLines; i-- {
-				if strings.TrimSpace(lines[i]) != "" {
-					nonEmptyCount++
-				}
-			}
-			hidden := len(lines) - maxReasoningLines
-			s.WriteString(reasoningStyle.Render(fmt.Sprintf("  ⋮ (%d more lines)", hidden)))
-			s.WriteString("\n")
-			s.WriteString(strings.Join(lines[len(lines)-maxReasoningLines:], "\n"))
-		} else {
-			s.WriteString(strings.Join(lines, "\n"))
-		}
-		s.WriteString("\n")
-	}
-
-	if len(round.toolCalls) > 0 {
-		for i := range round.toolCalls {
-			tc := &round.toolCalls[i]
-			var icon, statusText string
-			var iconStyle lipgloss.Style
-			switch tc.status {
-			case "done":
-				icon = "✓"
-				statusText = fmt.Sprintf(" • %s", formatDuration(tc.durationMs))
-				iconStyle = toolDoneStyle
-			case "error":
-				icon = "✗"
-				if tc.durationMs > 0 {
-					statusText = fmt.Sprintf(" • %s", formatDuration(tc.durationMs))
-				}
-				iconStyle = toolErrorStyle
-			case "running":
-				if isLive {
-					icon = spinnerFrames[m.spinnerIdx]
-				} else {
-					icon = "○"
-				}
-				statusText = " running..."
-				iconStyle = toolRunningStyle
-			default:
-				icon = "○"
-				statusText = " pending"
-				iconStyle = toolEntryStyle
-			}
-			s.WriteString("  ")
-			s.WriteString(iconStyle.Render(icon) + " ")
-			s.WriteString(toolEntryStyle.Render(tc.name))
-			s.WriteString(toolDurationStyle.Render(statusText))
-			s.WriteString("\n")
-			hasResult := (tc.status == "done" && tc.result != "") || (tc.status == "error" && tc.result != "")
-			width := toolDisplayWidth()
-			if tc.args != "" {
-				prefix := "    ┌ "
-				if !hasResult {
-					prefix = "    └ "
-				}
-				s.WriteString(toolArgsStyle.Render(prefix + "Args: " + tc.displayArgs.get(width)))
-				s.WriteString("\n")
-			}
-			if tc.status == "error" && tc.result != "" {
-				s.WriteString("    └ " + toolErrorStyle.Render("Error: "+tc.displayResult.get(width)))
-				s.WriteString("\n")
-			} else if tc.status == "done" && tc.result != "" {
-				s.WriteString(toolArgsStyle.Render("    └ Result: " + tc.displayResult.get(width)))
-				s.WriteString("\n")
-			}
-		}
-	}
-
-	return s.String()
+	return renderRoundContent(round, isLive)
 }
 
 // renderLiveContent renders live streaming content. Instead of falling back

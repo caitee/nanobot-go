@@ -9,6 +9,7 @@ import (
 	"ori/internal/bus"
 	"ori/internal/llm"
 	"ori/internal/runtime"
+	"ori/internal/tool"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -250,7 +251,7 @@ func (m *interactiveModel) handleRuntimeEvent(ev runtime.Event) tea.Cmd {
 		}
 
 	case runtime.EventToolExecutionStart:
-		m.status = "using tools"
+		m.status = "running tools"
 		data, ok := ev.ToolStart()
 		if !ok {
 			return nil
@@ -263,11 +264,24 @@ func (m *interactiveModel) handleRuntimeEvent(ev runtime.Event) tea.Cmd {
 			id:        data.ToolCallID,
 			name:      data.ToolName,
 			args:      args,
+			argsMap:   cloneToolArgs(data.Args),
 			status:    "running",
 			startTime: ev.Timestamp,
 		}
 		entry.displayArgs.set(args)
 		m.currentRound.toolCalls = append(m.currentRound.toolCalls, entry)
+
+	case runtime.EventToolExecUpdate:
+		data, ok := ev.ToolUpdate()
+		if !ok {
+			return nil
+		}
+		if idx := m.findToolCall(data.ToolCallID, data.ToolName); idx >= 0 {
+			partial := contentsToString(data.Partial)
+			m.currentRound.toolCalls[idx].partial = partial
+			m.currentRound.toolCalls[idx].displayPartial.set(partial)
+			m.currentRound.toolCalls[idx].lastUpdate = ev.Timestamp
+		}
 
 	case runtime.EventToolExecutionEnd:
 		data, ok := ev.ToolEnd()
@@ -333,6 +347,17 @@ func hasRunningToolCall(calls []toolCallEntry) bool {
 	return false
 }
 
+func cloneToolArgs(args map[string]any) map[string]any {
+	if len(args) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(args))
+	for k, v := range args {
+		out[k] = v
+	}
+	return out
+}
+
 // finalizeAssistantMessage prints the final response above the TUI and clears
 // the active scratch area. Callers must hold m.mu.
 func (m *interactiveModel) finalizeAssistantMessage(content, reasoning string) tea.Cmd {
@@ -370,12 +395,21 @@ func (m *interactiveModel) formatFinalMessage(content, reasoning string) string 
 	if m.currentRound != nil && (m.currentRound.reasoning != "" || len(m.currentRound.toolCalls) > 0) {
 		allRounds = append(allRounds, *m.currentRound)
 	}
-	if reasoning != "" {
+	if reasoning != "" && !roundsContainReasoning(allRounds, reasoning) {
 		if len(allRounds) == 0 || allRounds[len(allRounds)-1].reasoning != reasoning {
 			allRounds = append(allRounds, thinkingRound{reasoning: reasoning})
 		}
 	}
 	return formatAssistantMessage(allRounds, content, reasoning)
+}
+
+func roundsContainReasoning(rounds []thinkingRound, reasoning string) bool {
+	for _, round := range rounds {
+		if round.reasoning == reasoning {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *interactiveModel) unflushedFinalContent(content string) string {
@@ -523,60 +557,7 @@ func (m *interactiveModel) rememberFlushedText(prefix string) {
 // renderCompletedRound renders a single completed round (reasoning + tool calls)
 // for flushing to View above. Similar to renderRound but without live state.
 func (m *interactiveModel) renderCompletedRound(round thinkingRound) string {
-	var s strings.Builder
-
-	if round.reasoning != "" {
-		renderedReasoning := renderReasoningMarkdown(round.reasoning)
-		s.WriteString(renderedReasoning)
-		s.WriteString("\n")
-	}
-
-	if len(round.toolCalls) > 0 {
-		for i := range round.toolCalls {
-			tc := &round.toolCalls[i]
-			var icon, statusText string
-			var iconStyle lipgloss.Style
-			switch tc.status {
-			case "done":
-				icon = "✓"
-				statusText = fmt.Sprintf(" • %s", formatDuration(tc.durationMs))
-				iconStyle = toolDoneStyle
-			case "error":
-				icon = "✗"
-				if tc.durationMs > 0 {
-					statusText = fmt.Sprintf(" • %s", formatDuration(tc.durationMs))
-				}
-				iconStyle = toolErrorStyle
-			default:
-				icon = "○"
-				iconStyle = toolEntryStyle
-			}
-			s.WriteString("  ")
-			s.WriteString(iconStyle.Render(icon) + " ")
-			s.WriteString(toolEntryStyle.Render(tc.name))
-			s.WriteString(toolDurationStyle.Render(statusText))
-			s.WriteString("\n")
-			hasResult := (tc.status == "done" && tc.result != "") || (tc.status == "error" && tc.result != "")
-			width := toolDisplayWidth()
-			if tc.args != "" {
-				prefix := "    ┌ "
-				if !hasResult {
-					prefix = "    └ "
-				}
-				s.WriteString(toolArgsStyle.Render(prefix + "Args: " + tc.displayArgs.get(width)))
-				s.WriteString("\n")
-			}
-			if tc.status == "error" && tc.result != "" {
-				s.WriteString("    └ " + toolErrorStyle.Render("Error: "+tc.displayResult.get(width)))
-				s.WriteString("\n")
-			} else if tc.status == "done" && tc.result != "" {
-				s.WriteString(toolArgsStyle.Render("    └ Result: " + tc.displayResult.get(width)))
-				s.WriteString("\n")
-			}
-		}
-	}
-
-	return s.String()
+	return renderRoundContent(round, false)
 }
 
 // outboundFromAgentEventFinal reports whether an outbound message came from
@@ -606,6 +587,13 @@ func contentsToString(v any) string {
 			}
 		}
 		return b.String()
+	case tool.Result:
+		return contentsToString(x.Content)
+	case *tool.Result:
+		if x == nil {
+			return ""
+		}
+		return contentsToString(x.Content)
 	}
 	return fmt.Sprintf("%v", v)
 }
