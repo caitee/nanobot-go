@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"sync"
 )
 
 //go:embed builtin/*
@@ -18,6 +19,8 @@ type SkillLoader struct {
 	workspaceDir     string
 	builtinSkillsDir string
 	loadedSkills     map[string]*Skill
+	mu               sync.RWMutex
+	disabled         map[string]bool
 }
 
 type skillSource struct {
@@ -31,11 +34,24 @@ func NewSkillLoader(workspaceDir string, builtinSkillsDir string) *SkillLoader {
 		workspaceDir:     workspaceDir,
 		builtinSkillsDir: builtinSkillsDir,
 		loadedSkills:     make(map[string]*Skill),
+		disabled:         map[string]bool{},
 	}
 }
 
 // ListSkills returns all available skills with their metadata
 func (l *SkillLoader) ListSkills(filterUnavailable bool) []*Skill {
+	all := l.ListAllSkills(filterUnavailable)
+	result := make([]*Skill, 0, len(all))
+	for _, skill := range all {
+		if skill.Enabled {
+			result = append(result, skill)
+		}
+	}
+	return result
+}
+
+// ListAllSkills returns all discoverable skills, including disabled skills.
+func (l *SkillLoader) ListAllSkills(filterUnavailable bool) []*Skill {
 	var result []*Skill
 	seen := map[string]bool{}
 
@@ -47,6 +63,7 @@ func (l *SkillLoader) ListSkills(filterUnavailable bool) []*Skill {
 			if seen[s.Name] {
 				continue
 			}
+			l.applyEnabled(s)
 			seen[s.Name] = true
 			l.loadedSkills[s.Name] = s
 			result = append(result, s)
@@ -75,6 +92,38 @@ func (l *SkillLoader) ListSkills(filterUnavailable bool) []*Skill {
 	}
 
 	return result
+}
+
+// SetDisabled replaces the set of skills hidden from model-facing surfaces.
+func (l *SkillLoader) SetDisabled(names []string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	disabled := map[string]bool{}
+	for _, name := range names {
+		name = strings.TrimSpace(name)
+		if name != "" {
+			disabled[name] = true
+		}
+	}
+	l.disabled = disabled
+}
+
+// Disabled returns the disabled skill names in stable order.
+func (l *SkillLoader) Disabled() []string {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	out := make([]string, 0, len(l.disabled))
+	for name := range l.disabled {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func (l *SkillLoader) applyEnabled(skill *Skill) {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	skill.Enabled = !l.disabled[skill.Name]
 }
 
 func (l *SkillLoader) fileSources() []skillSource {

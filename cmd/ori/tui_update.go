@@ -141,6 +141,11 @@ func (m *interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.waiting {
 			return m, nil
 		}
+		if m.panel != nil {
+			if handled, cmd := m.handleManagementPanelKey(msg); handled {
+				return m, cmd
+			}
+		}
 		switch msg.Type {
 		case tea.KeyTab:
 			if m.acceptSlashCommandCompletion() {

@@ -57,6 +57,17 @@ mcp_chrome_devtools_take_screenshot
 
 direct tools 依赖缓存。新 server 第一次接入时，先通过 `mcp` proxy 调 `connect`、`list` 或 `search` 刷新缓存；重启 Ori 后，符合 `directTools` 规则的 direct tools 才会在默认工具列表中出现。
 
+### `/mcp` TUI 管理
+
+在 `ori agent` 交互模式中输入 `/mcp` 会打开 MCP server 管理面板：
+
+- `↑` / `↓` 逐行选择 server。
+- `Space` 持久切换 server enabled 状态，写入 `~/.ori/mcp.json`。
+- `Enter` 或 `r` 连接/刷新当前 server 的 tools/resources/prompts 元数据。
+- `Esc` 关闭面板。
+
+禁用 server 会立即关闭对应 session，并从后续模型可见的 direct MCP tools 中移除该 server 的 direct tools。
+
 ### Manager
 
 `MCPManager` 负责：
@@ -277,7 +288,7 @@ mcp_minimax_web_search
 }
 ```
 
-搜索工具：
+搜索工具元数据。注意：`action: "search"` 只查 MCP tool 的名称和描述，不会调用远端搜索工具：
 
 ```json
 {
@@ -305,6 +316,19 @@ mcp_minimax_web_search
   "tool": "web_search",
   "arguments": {
     "query": "百合竹怎么养护"
+  }
+}
+```
+
+例如要通过 MiniMax MCP 搜索“百合竹”，应该调用 MiniMax 的 `web_search` 工具，而不是把“百合竹”传给 `action: "search"`：
+
+```json
+{
+  "action": "call",
+  "server": "MiniMax",
+  "tool": "web_search",
+  "arguments": {
+    "query": "百合竹"
   }
 }
 ```
@@ -412,6 +436,5 @@ MCP server 可能是本地进程，也可能是远端服务。它们可能读取
 
 - OAuth 流程。
 - host-specific config imports。
-- `/mcp` TUI 管理面板。
 - MCP UI/AppBridge。
 - MCP sampling。

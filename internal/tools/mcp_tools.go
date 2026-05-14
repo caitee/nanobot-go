@@ -25,7 +25,7 @@ type mcpProxyTool struct {
 func (t *mcpProxyTool) Name() string  { return "mcp" }
 func (t *mcpProxyTool) Label() string { return "MCP" }
 func (t *mcpProxyTool) Description() string {
-	return "Discover and call tools, resources, and prompt templates from configured MCP servers. Prefer search or describe before call when the exact server/tool is unknown."
+	return "Discover and call tools, resources, and prompt templates from configured MCP servers. action=search only searches MCP tool metadata; it does not run remote tools. To use a remote MCP tool, use action=call with server, tool, and arguments."
 }
 func (t *mcpProxyTool) ExecutionMode() tool.ExecutionMode { return tool.ExecutionDefault }
 func (t *mcpProxyTool) PrepareArguments(raw map[string]any) (map[string]any, error) {
@@ -61,15 +61,18 @@ func (t *mcpProxyTool) Parameters() map[string]any {
 				"status", "list", "search", "describe", "connect", "call",
 				"tools", "resources", "prompts",
 			},
-			"description": "MCP action. New actions: status/list/search/describe/connect/call. Legacy aliases: tools/resources/prompts.",
+			"description": "MCP action. search finds MCP tool metadata only. call invokes a remote MCP tool. Legacy aliases: tools/resources/prompts.",
 		},
 		"server": map[string]any{"type": "string", "description": "MCP server name"},
-		"query":  map[string]any{"type": "string", "description": "Search query"},
-		"tool":   map[string]any{"type": "string", "description": "Tool name for call/describe"},
-		"name":   map[string]any{"type": "string", "description": "Prompt name for prompts/get"},
+		"query": map[string]any{
+			"type":        "string",
+			"description": "Metadata search text for action=search. Do not put remote tool input here; use arguments with action=call instead.",
+		},
+		"tool": map[string]any{"type": "string", "description": "Remote MCP tool name for call/describe, for example web_search"},
+		"name": map[string]any{"type": "string", "description": "Prompt name for prompts/get"},
 		"arguments": map[string]any{
 			"type":        "object",
-			"description": "Arguments for a tool call or prompt template",
+			"description": "Arguments for a remote MCP tool call or prompt template. Put remote tool inputs here when action=call.",
 		},
 		"resource_action": map[string]any{
 			"type":        "string",
@@ -109,11 +112,13 @@ func (t *mcpProxyTool) Execute(ctx context.Context, callID string, args map[stri
 	case "list":
 		return t.executeList(ctx, args)
 	case "search":
+		server, _ := args["server"].(string)
 		query, _ := args["query"].(string)
 		tools, err := t.manager.SearchTools(ctx, query)
 		if err != nil {
 			return nil, err
 		}
+		tools = filterMCPToolsByServer(tools, server)
 		return jsonTextResult(tools)
 	case "describe":
 		server, _ := args["server"].(string)
@@ -340,6 +345,20 @@ func ensureContent(content []llm.Content) []llm.Content {
 		return content
 	}
 	return []llm.Content{llm.TextContent{Text: "(no output)"}}
+}
+
+func filterMCPToolsByServer(tools []MCPToolMeta, server string) []MCPToolMeta {
+	server = strings.TrimSpace(server)
+	if server == "" {
+		return tools
+	}
+	out := make([]MCPToolMeta, 0, len(tools))
+	for _, item := range tools {
+		if item.ServerName == server {
+			out = append(out, item)
+		}
+	}
+	return out
 }
 
 func hasToolArguments(v any) bool {

@@ -66,6 +66,9 @@ func (m *interactiveModel) View() string {
 			s.WriteString("\n")
 		}
 	}
+	if m.panel != nil {
+		s.WriteString(m.renderManagementPanel())
+	}
 
 	s.WriteString("\n")
 	if m.active && m.status != "" && m.status != "done" {

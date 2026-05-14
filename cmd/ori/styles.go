@@ -240,6 +240,14 @@ var (
 					Foreground(lipgloss.Color("86")).
 					Bold(true)
 
+	managementEnabledStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("76")).
+				Bold(true)
+
+	managementDisabledStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("203")).
+				Bold(true)
+
 	toolRunningStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("75"))
 

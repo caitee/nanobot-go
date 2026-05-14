@@ -38,8 +38,22 @@ func (m *interactiveModel) handleSlashCommand(input string) (bool, tea.Cmd) {
 	if result == nil {
 		return true, nil
 	}
+	return true, m.applySlashCommandResult(input, result)
+}
+
+func (m *interactiveModel) applySlashCommandResult(input string, result *appcore.CommandResult) tea.Cmd {
+	if result == nil {
+		return nil
+	}
 	if result.PromptReplacement != "" {
-		return true, m.submitPrompt(input, result.PromptReplacement)
+		return m.submitPrompt(input, result.PromptReplacement)
+	}
+	if result.UIRequest != "" {
+		m.openManagementPanel(result.UIRequest)
+		if result.Status != "" {
+			m.status = result.Status
+		}
+		return nil
 	}
 	var cmds []tea.Cmd
 	if result.ResetSession || result.ClearViewport {
@@ -53,9 +67,9 @@ func (m *interactiveModel) handleSlashCommand(input string) (bool, tea.Cmd) {
 		m.status = result.Status
 	}
 	if len(cmds) == 0 {
-		return true, nil
+		return nil
 	}
-	return true, tea.Sequence(cmds...)
+	return tea.Sequence(cmds...)
 }
 
 func (m *interactiveModel) submitPrompt(displayContent, dispatchContent string) tea.Cmd {

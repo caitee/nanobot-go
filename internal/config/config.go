@@ -20,6 +20,7 @@ func Load(configPath string) (*Config, error) {
 		home, err := os.UserHomeDir()
 		if err == nil {
 			v.AddConfigPath(home + "/.ori")
+			configPath = DefaultConfigPath(home)
 		}
 		v.SetConfigName("config")
 		v.SetConfigType("json")
@@ -34,7 +35,7 @@ func Load(configPath string) (*Config, error) {
 			return nil, fmt.Errorf("failed to read config: %w", err)
 		}
 		// Config file not found, use defaults
-		cfg = &Config{}
+		cfg = &Config{SourcePath: configPath}
 		return cfg, nil
 	}
 
@@ -42,6 +43,7 @@ func Load(configPath string) (*Config, error) {
 	if err := v.Unmarshal(cfg); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal config: %w", err)
 	}
+	cfg.SourcePath = configPath
 
 	return cfg, nil
 }
