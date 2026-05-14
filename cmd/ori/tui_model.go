@@ -62,6 +62,12 @@ type interactiveModel struct {
 	cachedViewKey    viewCacheKey
 	cachedViewOutput string
 	cachedTextInput  string
+
+	// Slash-command completion state. The query is tracked so selection resets
+	// as soon as the input changes.
+	slashCompletionQuery       string
+	slashCompletionSelected    int
+	slashCompletionWindowStart int
 }
 
 // viewCacheKey is the tuple we key the View cache on. Equality across calls

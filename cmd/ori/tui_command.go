@@ -12,6 +12,8 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
+const slashCommandSuggestionPageSize = 6
+
 func (m *interactiveModel) handleSlashCommand(input string) (bool, tea.Cmd) {
 	name := slashCommandName(input)
 	switch name {
@@ -107,8 +109,16 @@ func (m *interactiveModel) acceptSlashCommandCompletion() bool {
 	if len(matches) == 0 {
 		return false
 	}
-	m.textInput.SetValue("/" + matches[0].Name + " ")
+	m.syncSlashCompletionSelection(value, len(matches))
+	idx := m.slashCompletionSelected
+	if idx >= len(matches) {
+		idx = 0
+	}
+	m.textInput.SetValue("/" + matches[idx].Name + " ")
 	m.textInput.CursorEnd()
+	m.slashCompletionQuery = ""
+	m.slashCompletionSelected = 0
+	m.slashCompletionWindowStart = 0
 	m.viewVersion++
 	return true
 }
@@ -127,6 +137,70 @@ func (m *interactiveModel) slashCommandCompletions(value string) []appcore.Comma
 		}
 	}
 	return out
+}
+
+func (m *interactiveModel) moveSlashCommandSelection(delta int) bool {
+	value := strings.TrimSpace(m.textInput.Value())
+	matches := m.slashCommandCompletions(value)
+	if len(matches) == 0 {
+		return false
+	}
+	m.syncSlashCompletionSelection(value, len(matches))
+	next := m.slashCompletionSelected + delta
+	if next < 0 {
+		next = 0
+	}
+	if next >= len(matches) {
+		next = len(matches) - 1
+	}
+	if next == m.slashCompletionSelected {
+		return true
+	}
+	m.slashCompletionSelected = next
+	m.ensureSlashCompletionSelectionVisible(len(matches))
+	m.viewVersion++
+	return true
+}
+
+func (m *interactiveModel) syncSlashCompletionSelection(value string, total int) {
+	query := strings.TrimSpace(value)
+	if query != m.slashCompletionQuery {
+		m.slashCompletionQuery = query
+		m.slashCompletionSelected = 0
+		m.slashCompletionWindowStart = 0
+	}
+	if total <= 0 {
+		m.slashCompletionSelected = 0
+		m.slashCompletionWindowStart = 0
+		return
+	}
+	if m.slashCompletionSelected >= total {
+		m.slashCompletionSelected = total - 1
+	}
+	if m.slashCompletionSelected < 0 {
+		m.slashCompletionSelected = 0
+	}
+	m.ensureSlashCompletionSelectionVisible(total)
+}
+
+func (m *interactiveModel) ensureSlashCompletionSelectionVisible(total int) {
+	if total <= 0 {
+		m.slashCompletionWindowStart = 0
+		return
+	}
+	if m.slashCompletionSelected < m.slashCompletionWindowStart {
+		m.slashCompletionWindowStart = m.slashCompletionSelected
+	}
+	if m.slashCompletionSelected >= m.slashCompletionWindowStart+slashCommandSuggestionPageSize {
+		m.slashCompletionWindowStart = m.slashCompletionSelected - slashCommandSuggestionPageSize + 1
+	}
+	maxStart := max(0, total-slashCommandSuggestionPageSize)
+	if m.slashCompletionWindowStart > maxStart {
+		m.slashCompletionWindowStart = maxStart
+	}
+	if m.slashCompletionWindowStart < 0 {
+		m.slashCompletionWindowStart = 0
+	}
 }
 
 func (m *interactiveModel) availableSlashCommands() []appcore.Command {
@@ -160,16 +234,18 @@ func (m *interactiveModel) shouldCompleteSlashCommandOnEnter(value string) bool 
 }
 
 func (m *interactiveModel) renderSlashCommandSuggestions() string {
-	matches := m.slashCommandCompletions(m.textInput.Value())
+	value := m.textInput.Value()
+	matches := m.slashCommandCompletions(value)
 	if len(matches) == 0 {
 		return ""
 	}
-	if len(matches) > 6 {
-		matches = matches[:6]
-	}
+	m.syncSlashCompletionSelection(value, len(matches))
+	start := m.slashCompletionWindowStart
+	end := min(start+slashCommandSuggestionPageSize, len(matches))
+	pageMatches := matches[start:end]
 	width := getTerminalWidth()
-	var lines []string
-	for i, cmd := range matches {
+	lines := []string{completionCountLine(start, end, len(matches), width)}
+	for i, cmd := range pageMatches {
 		name := "/" + cmd.Name
 		if cmd.ArgumentHint != "" {
 			name += " " + cmd.ArgumentHint
@@ -183,12 +259,23 @@ func (m *interactiveModel) renderSlashCommandSuggestions() string {
 			line = truncateCommandSuggestion(line, width-2)
 		}
 		style := toolArgsStyle
-		if i == 0 {
-			style = toolEntryStyle
+		if start+i == m.slashCompletionSelected {
+			style = slashCommandSelectedStyle
 		}
 		lines = append(lines, "  "+style.Render(line))
 	}
 	return strings.Join(lines, "\n") + "\n"
+}
+
+func completionCountLine(start, end, total, width int) string {
+	line := fmt.Sprintf("%d-%d of %d", start+1, end, total)
+	if total > slashCommandSuggestionPageSize {
+		line += " · ↑/↓"
+	}
+	if width > 2 && lipgloss.Width(line) > width-2 {
+		line = truncateCommandSuggestion(line, width-2)
+	}
+	return "  " + toolArgsStyle.Render(line)
 }
 
 func slashCommandName(input string) string {

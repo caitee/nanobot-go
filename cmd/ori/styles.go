@@ -236,6 +236,10 @@ var (
 	toolEntryStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("240"))
 
+	slashCommandSelectedStyle = lipgloss.NewStyle().
+					Foreground(lipgloss.Color("86")).
+					Bold(true)
+
 	toolRunningStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("75"))
 

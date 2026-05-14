@@ -11,6 +11,7 @@ import (
 	"ori/internal/runtime"
 
 	"github.com/charmbracelet/bubbles/textinput"
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
 
@@ -19,6 +20,27 @@ func newTestModel() *interactiveModel {
 	ti.Focus()
 	ti.Prompt = "> "
 	return &interactiveModel{active: true, textInput: ti}
+}
+
+func newCompletionTestDispatcher() *appcore.Dispatcher {
+	d := appcore.NewDispatcher(appcore.DispatcherOptions{})
+	for _, name := range []string{
+		"skill:alpha",
+		"skill:bravo",
+		"skill:charlie",
+		"skill:delta",
+		"skill:echo",
+		"skill:foxtrot",
+		"skill:golf",
+		"skill:hotel",
+	} {
+		d.RegisterSlashCommand(appcore.Command{
+			Name:        name,
+			Description: "Test completion",
+			Scope:       appcore.CommandScopePrompt,
+		})
+	}
+	return d
 }
 
 var ansiEscapeRE = regexp.MustCompile(`\x1b\[[0-9;]*m`)
@@ -337,6 +359,100 @@ func TestHandleEnterCompletesPartialSlashCommandWithoutClearingInput(t *testing.
 	}
 	if got := m.textInput.Value(); got != "/skills " {
 		t.Fatalf("expected partial slash command to complete, got %q", got)
+	}
+}
+
+func TestRenderSlashCommandSuggestionsShowsCountAndFirstPage(t *testing.T) {
+	m := newTestModel()
+	m.dispatcher = newCompletionTestDispatcher()
+	m.textInput.SetValue("/skill:")
+
+	out := plainView(m.renderSlashCommandSuggestions())
+	if !strings.Contains(out, "↑/↓") || strings.Contains(out, "PgUp/PgDn") {
+		t.Fatalf("expected arrow-key pagination hint, got:\n%s", out)
+	}
+	if !strings.Contains(out, "1-6 of 8") {
+		t.Fatalf("expected completion count for first page, got:\n%s", out)
+	}
+	if !strings.Contains(out, "/skill:alpha") || !strings.Contains(out, "/skill:foxtrot") {
+		t.Fatalf("expected first page suggestions, got:\n%s", out)
+	}
+	if strings.Contains(out, "/skill:golf") {
+		t.Fatalf("did not expect second page suggestion on first page, got:\n%s", out)
+	}
+}
+
+func TestRenderSlashCommandSuggestionsHighlightsSelectedRowBrightly(t *testing.T) {
+	if got, want := slashCommandSelectedStyle.GetForeground(), lipgloss.Color("86"); got != want {
+		t.Fatalf("expected selected suggestion foreground %v, got %v", want, got)
+	}
+	if !slashCommandSelectedStyle.GetBold() {
+		t.Fatal("expected selected suggestion to be bold")
+	}
+}
+
+func TestSlashCommandSuggestionArrowKeysMoveSelectionByRow(t *testing.T) {
+	m := newTestModel()
+	m.dispatcher = newCompletionTestDispatcher()
+	m.textInput.SetValue("/skill:")
+
+	m.Update(tea.KeyMsg{Type: tea.KeyDown})
+
+	if !m.acceptSlashCommandCompletion() {
+		t.Fatal("expected slash command completion to be accepted")
+	}
+	if got := m.textInput.Value(); got != "/skill:bravo " {
+		t.Fatalf("expected down arrow to select next row, got %q", got)
+	}
+}
+
+func TestSlashCommandSuggestionScrollsAfterSelectionLeavesWindow(t *testing.T) {
+	m := newTestModel()
+	m.dispatcher = newCompletionTestDispatcher()
+	m.textInput.SetValue("/skill:")
+
+	for range 6 {
+		m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	}
+
+	out := plainView(m.renderSlashCommandSuggestions())
+	if !strings.Contains(out, "2-7 of 8") {
+		t.Fatalf("expected completion window to scroll one row, got:\n%s", out)
+	}
+	if !strings.Contains(out, "/skill:bravo") || !strings.Contains(out, "/skill:golf") {
+		t.Fatalf("expected scrolled suggestions, got:\n%s", out)
+	}
+	if strings.Contains(out, "/skill:alpha") {
+		t.Fatalf("did not expect first suggestion after scroll, got:\n%s", out)
+	}
+
+	if !m.acceptSlashCommandCompletion() {
+		t.Fatal("expected slash command completion to be accepted")
+	}
+	if got := m.textInput.Value(); got != "/skill:golf " {
+		t.Fatalf("expected selected row completion, got %q", got)
+	}
+}
+
+func TestSlashCommandCompletionAcceptsSelectedRow(t *testing.T) {
+	m := newTestModel()
+	m.dispatcher = newCompletionTestDispatcher()
+	m.textInput.SetValue("/skill:")
+
+	for range 7 {
+		m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	}
+	m.Update(tea.KeyMsg{Type: tea.KeyUp})
+
+	out := plainView(m.renderSlashCommandSuggestions())
+	if !strings.Contains(out, "3-8 of 8") {
+		t.Fatalf("expected window to keep selected row visible, got:\n%s", out)
+	}
+	if !m.acceptSlashCommandCompletion() {
+		t.Fatal("expected slash command completion to be accepted")
+	}
+	if got := m.textInput.Value(); got != "/skill:golf " {
+		t.Fatalf("expected selected row completion, got %q", got)
 	}
 }
 

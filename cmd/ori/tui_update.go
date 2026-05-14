@@ -146,6 +146,14 @@ func (m *interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.acceptSlashCommandCompletion() {
 				return m, nil
 			}
+		case tea.KeyUp:
+			if m.moveSlashCommandSelection(-1) {
+				return m, nil
+			}
+		case tea.KeyDown:
+			if m.moveSlashCommandSelection(1) {
+				return m, nil
+			}
 		case tea.KeyEnter:
 			return m.handleEnter()
 		}
