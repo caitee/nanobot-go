@@ -2,11 +2,16 @@ package app_test
 
 import (
 	"context"
+	"encoding/json"
 	"os"
+	"path/filepath"
+	"reflect"
 	"testing"
 
 	"ori/internal/app"
 	"ori/internal/config"
+	"ori/internal/tool"
+	legacytools "ori/internal/tools"
 )
 
 // TestProviderPluginsRegisterDirectlyToLLMRegistry verifies that provider
@@ -107,5 +112,132 @@ func TestProviderPluginsRegisterDirectlyToLLMRegistry(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestMCPPluginRegistersProxyAndCachedDirectTools(t *testing.T) {
+	ctx := context.Background()
+	tmp := t.TempDir()
+	cachePath := filepath.Join(tmp, "mcp-cache.json")
+	serverCfg := legacytools.MCPServerConfig{
+		Name:      "alpha",
+		Command:   "server",
+		Enabled:   true,
+		Lifecycle: legacytools.MCPLifecycleLazy,
+		Env:       map[string]string{},
+		Headers:   map[string]string{},
+	}
+	cache := legacytools.MCPMetadataCache{
+		Version: 1,
+		Servers: map[string]legacytools.MCPServerMetadata{
+			"alpha": {
+				ConfigHash: legacytools.HashMCPServerConfig(serverCfg),
+				Tools: []legacytools.MCPToolMeta{{
+					Name:        "echo",
+					Description: "echo input",
+					InputSchema: map[string]any{"type": "object", "properties": map[string]any{}},
+				}},
+			},
+		},
+	}
+	data, err := json.Marshal(cache)
+	if err != nil {
+		t.Fatalf("Marshal cache: %v", err)
+	}
+	if err := os.WriteFile(cachePath, data, 0o600); err != nil {
+		t.Fatalf("WriteFile cache: %v", err)
+	}
+
+	cfg := &config.Config{
+		Agents: config.AgentDefaults{
+			Workspace: tmp,
+			Provider:  "openai",
+			Model:     "test-model",
+		},
+		Tools: config.ToolsConfig{
+			MCP: map[string]any{
+				"settings": map[string]any{
+					"cachePath":   cachePath,
+					"directTools": true,
+				},
+				"mcpServers": map[string]any{
+					"alpha": map[string]any{
+						"command": "server",
+					},
+				},
+			},
+		},
+	}
+	a, err := app.New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := a.PluginRegistry.InitAll(ctx, a); err != nil {
+		t.Fatalf("InitAll: %v", err)
+	}
+	defer a.PluginRegistry.CloseAll()
+
+	if !a.ToolRegistry.Has("mcp") {
+		t.Fatalf("expected mcp proxy tool to be registered")
+	}
+	if !a.ToolRegistry.Has("mcp_alpha_echo") {
+		t.Fatalf("expected cached direct MCP tool to be registered")
+	}
+}
+
+func TestWebPluginUsesConfiguredSearchConfig(t *testing.T) {
+	ctx := context.Background()
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("USERPROFILE", tmp)
+
+	cfg := &config.Config{
+		Agents: config.AgentDefaults{
+			Workspace: tmp,
+			Provider:  "openai",
+			Model:     "test-model",
+		},
+		Tools: config.ToolsConfig{
+			Web: config.WebConfig{
+				SearchProvider:   "searxng",
+				SearchAPIKey:     "search-secret",
+				SearchBaseURL:    "https://search.example.test",
+				SearchMaxResults: 1,
+			},
+		},
+	}
+	a, err := app.New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := a.PluginRegistry.InitAll(ctx, a); err != nil {
+		t.Fatalf("InitAll: %v", err)
+	}
+	defer a.PluginRegistry.CloseAll()
+
+	webTool, ok := a.ToolRegistry.Get("web")
+	if !ok {
+		t.Fatalf("expected web tool to be registered")
+	}
+	legacy, ok := tool.UnwrapLegacy(webTool)
+	if !ok {
+		t.Fatalf("web tool should wrap a legacy implementation")
+	}
+	searchConfig := reflect.ValueOf(legacy).Elem().FieldByName("searchConfig")
+	if searchConfig.IsNil() {
+		t.Fatalf("expected configured web search config")
+	}
+	cfgValue := searchConfig.Elem()
+	if got := cfgValue.FieldByName("Provider").String(); got != "searxng" {
+		t.Fatalf("Provider = %q; want searxng", got)
+	}
+	if got := cfgValue.FieldByName("APIKey").String(); got != "search-secret" {
+		t.Fatalf("APIKey = %q; want search-secret", got)
+	}
+	if got := cfgValue.FieldByName("BaseURL").String(); got != "https://search.example.test" {
+		t.Fatalf("BaseURL = %q; want https://search.example.test", got)
+	}
+	if got := cfgValue.FieldByName("MaxResults").Int(); got != 1 {
+		t.Fatalf("MaxResults = %d; want 1", got)
 	}
 }

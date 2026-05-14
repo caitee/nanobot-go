@@ -84,6 +84,55 @@ Or manually create `~/.ori/config.json`:
 }
 ```
 
+### MCP Servers
+
+Ori can load MCP server definitions from these files, in order:
+
+- `~/.config/mcp/mcp.json`
+- `~/.ori/mcp.json`
+- `<workspace>/.mcp.json`
+- `<workspace>/.ori/mcp.json`
+
+Later files override earlier files. You can also put the same shape under
+`tools.mcp` in `~/.ori/config.json`.
+
+```json
+{
+  "settings": {
+    "idleTimeout": 10,
+    "directTools": false
+  },
+  "mcpServers": {
+    "chrome-devtools": {
+      "command": "npx",
+      "args": ["-y", "chrome-devtools-mcp@latest"],
+      "lifecycle": "lazy",
+      "directTools": ["take_screenshot"]
+    },
+    "remote": {
+      "url": "http://localhost:3845/mcp",
+      "headers": { "Authorization": "Bearer ${MCP_TOKEN}" },
+      "lifecycle": "keep-alive"
+    }
+  }
+}
+```
+
+The built-in `mcp` tool is the low-token proxy for status, listing, searching,
+describing, connecting, and calling MCP tools/resources/prompts. Servers are
+lazy by default; `eager` and `keep-alive` connect during app startup. Metadata
+is cached in `~/.ori/mcp-cache.json` and invalidated by a server config hash.
+
+Direct MCP tools are optional. Set global `settings.directTools` or per-server
+`directTools` to `true` or a list of remote tool names. Direct tools are built
+from cached metadata, so newly added servers are first available through the
+`mcp` proxy and direct tools appear after metadata has been refreshed.
+
+See [docs/MCP.md](docs/MCP.md) for the full design, configuration, usage, and
+troubleshooting guide. Current MCP support does not include OAuth flows,
+host-specific config import, an `/mcp` management UI, MCP UI/AppBridge, or
+sampling.
+
 ### Usage
 
 After building with `make build`, the `ori` binary will be created in the current directory:

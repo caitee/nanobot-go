@@ -99,8 +99,15 @@ func RegisterDefaults(reg *plugin.Registry) {
 			SpawnHook: hook,
 		}), nil
 	}))
-	reg.Register(newToolPlugin("web", "Web", func(_ context.Context, _ plugin.AppContext) (legacytools.Tool, error) {
-		return legacytools.NewWebTool(), nil
+	reg.Register(newToolPlugin("web", "Web", func(_ context.Context, appCtx plugin.AppContext) (legacytools.Tool, error) {
+		cfg := appCtx.GetConfig().(*config.Config)
+		webCfg := cfg.Tools.Web
+		return legacytools.NewWebToolWithConfig(&legacytools.WebSearchConfig{
+			Provider:   webCfg.SearchProvider,
+			APIKey:     webCfg.SearchAPIKey,
+			BaseURL:    webCfg.SearchBaseURL,
+			MaxResults: webCfg.SearchMaxResults,
+		}), nil
 	}))
 	reg.Register(newToolPlugin("cron", "Cron", func(_ context.Context, appCtx plugin.AppContext) (legacytools.Tool, error) {
 		msgBus := appCtx.GetBus().(bus.MessageBus)
@@ -114,9 +121,7 @@ func RegisterDefaults(reg *plugin.Registry) {
 	reg.Register(newToolPlugin("spawn", "Spawn", func(_ context.Context, _ plugin.AppContext) (legacytools.Tool, error) {
 		return legacytools.NewSpawnTool(nil), nil
 	}))
-	reg.Register(newToolPlugin("mcp", "MCP", func(_ context.Context, _ plugin.AppContext) (legacytools.Tool, error) {
-		return legacytools.NewMCPTool(), nil
-	}))
+	reg.Register(&mcpToolPlugin{})
 }
 
 // channelPlugin is a generic plugin for channels that check a single env var.
@@ -151,6 +156,54 @@ type toolPlugin struct {
 	name    string
 	label   string
 	factory func(context.Context, plugin.AppContext) (legacytools.Tool, error)
+}
+
+// mcpToolPlugin registers the native MCP proxy plus any cached direct MCP
+// tools. The runtime still sees ordinary AgentTool values.
+type mcpToolPlugin struct {
+	manager *legacytools.MCPManager
+}
+
+func (p *mcpToolPlugin) Name() string      { return "tool.mcp" }
+func (p *mcpToolPlugin) Type() plugin.Type { return plugin.TypeTool }
+func (p *mcpToolPlugin) Close() error {
+	if p.manager == nil {
+		return nil
+	}
+	return p.manager.Close()
+}
+func (p *mcpToolPlugin) Init(ctx context.Context, appCtx plugin.AppContext) error {
+	cfg := appCtx.GetConfig().(*config.Config)
+	workspace := cfg.Agents.Workspace
+	if workspace == "" {
+		workspace = "."
+	}
+	mcpCfg, err := legacytools.LoadMCPConfig(legacytools.MCPConfigLoadOptions{
+		Workspace: workspace,
+		Inline:    cfg.Tools.MCP,
+	})
+	if err != nil {
+		return err
+	}
+	cache, err := legacytools.LoadMCPMetadataCache(mcpCfg.Settings.CachePath)
+	if err != nil {
+		return err
+	}
+	p.manager = legacytools.NewMCPManager(legacytools.MCPManagerOptions{
+		Config:    mcpCfg,
+		Cache:     cache,
+		CachePath: mcpCfg.Settings.CachePath,
+	})
+	if err := p.manager.Start(ctx); err != nil {
+		return err
+	}
+
+	reg := appCtx.GetToolRegistry().(tool.Registry)
+	reg.Register(legacytools.NewMCPProxyTool(p.manager))
+	for _, direct := range p.manager.DirectTools() {
+		reg.Register(direct)
+	}
+	return nil
 }
 
 func newToolPlugin(name, label string, factory func(context.Context, plugin.AppContext) (legacytools.Tool, error)) *toolPlugin {

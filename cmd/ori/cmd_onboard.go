@@ -952,6 +952,19 @@ func saveConfig(cfg *config.Config, path string) error {
 	}
 	defer file.Close()
 
+	webSettings := map[string]any{
+		"search_provider": cfg.Tools.Web.SearchProvider,
+	}
+	if cfg.Tools.Web.SearchAPIKey != "" {
+		webSettings["search_api_key"] = cfg.Tools.Web.SearchAPIKey
+	}
+	if cfg.Tools.Web.SearchBaseURL != "" {
+		webSettings["search_base_url"] = cfg.Tools.Web.SearchBaseURL
+	}
+	if cfg.Tools.Web.SearchMaxResults > 0 {
+		webSettings["search_max_results"] = cfg.Tools.Web.SearchMaxResults
+	}
+
 	// Simple JSON output
 	importance := map[string]any{
 		"agents": map[string]any{
@@ -967,9 +980,7 @@ func saveConfig(cfg *config.Config, path string) error {
 			"port": cfg.Gateway.Port,
 		},
 		"tools": map[string]any{
-			"web": map[string]any{
-				"search_provider": cfg.Tools.Web.SearchProvider,
-			},
+			"web": webSettings,
 		},
 		"providers": cfg.Providers,
 	}

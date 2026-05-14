@@ -86,19 +86,12 @@ func (t *WebTool) Execute(ctx context.Context, params map[string]any) (any, erro
 
 func (t *WebTool) executeSearch(ctx context.Context, params map[string]any) (any, error) {
 	query, _ := params["query"].(string)
-	count, _ := params["count"].(int)
 
 	if query == "" {
 		return nil, fmt.Errorf("query is required for search")
 	}
 
-	if count <= 0 {
-		count = 5
-	}
-	if count > 10 {
-		count = 10
-	}
-
+	count := t.searchResultCount(params)
 	provider := "duckduckgo"
 	if t.searchConfig != nil && t.searchConfig.Provider != "" {
 		provider = t.searchConfig.Provider
@@ -126,6 +119,20 @@ func (t *WebTool) executeSearch(ctx context.Context, params map[string]any) (any
 		return fmt.Sprintf("Search error: %v", err), nil
 	}
 	return result, nil
+}
+
+func (t *WebTool) searchResultCount(params map[string]any) int {
+	count, _ := params["count"].(int)
+	if count <= 0 {
+		count = 5
+		if t.searchConfig != nil && t.searchConfig.MaxResults > 0 {
+			count = t.searchConfig.MaxResults
+		}
+	}
+	if count > 10 {
+		count = 10
+	}
+	return count
 }
 
 func (t *WebTool) searchBrave(ctx context.Context, query string, count int) (string, error) {

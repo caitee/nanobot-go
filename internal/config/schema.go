@@ -55,8 +55,10 @@ type ToolsConfig struct {
 
 // WebConfig defines web tool settings
 type WebConfig struct {
-	SearchProvider string `mapstructure:"search_provider"`
-	SearchAPIKey   string `mapstructure:"search_api_key"`
+	SearchProvider   string `mapstructure:"search_provider"`
+	SearchAPIKey     string `mapstructure:"search_api_key"`
+	SearchBaseURL    string `mapstructure:"search_base_url"`
+	SearchMaxResults int    `mapstructure:"search_max_results"`
 }
 
 // ExecConfig defines execution restrictions

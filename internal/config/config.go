@@ -16,10 +16,10 @@ func Load(configPath string) (*Config, error) {
 	if configPath != "" {
 		v.SetConfigFile(configPath)
 	} else {
-		// Look for config in ~/.orb/config.json
+		// Look for config in ~/.ori/config.json.
 		home, err := os.UserHomeDir()
 		if err == nil {
-			v.AddConfigPath(home + "/.orb")
+			v.AddConfigPath(home + "/.ori")
 		}
 		v.SetConfigName("config")
 		v.SetConfigType("json")
