@@ -164,8 +164,9 @@ type mcpToolPlugin struct {
 	manager *legacytools.MCPManager
 }
 
-func (p *mcpToolPlugin) Name() string      { return "tool.mcp" }
-func (p *mcpToolPlugin) Type() plugin.Type { return plugin.TypeTool }
+func (p *mcpToolPlugin) Name() string                     { return "tool.mcp" }
+func (p *mcpToolPlugin) Type() plugin.Type                { return plugin.TypeTool }
+func (p *mcpToolPlugin) Manager() *legacytools.MCPManager { return p.manager }
 func (p *mcpToolPlugin) Close() error {
 	if p.manager == nil {
 		return nil

@@ -128,8 +128,9 @@ from cached metadata, so newly added servers are first available through the
 
 See [docs/MCP.md](docs/MCP.md) for the full design, configuration, usage, and
 troubleshooting guide. Current MCP support does not include OAuth flows,
-host-specific config import, an `/mcp` management UI, MCP UI/AppBridge, or
-sampling.
+host-specific config import, MCP UI/AppBridge, or sampling. In interactive
+mode, `/mcp` opens a TUI panel for enabling/disabling servers and refreshing
+metadata.
 
 ### Usage
 

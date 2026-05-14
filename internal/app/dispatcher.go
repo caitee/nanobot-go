@@ -44,10 +44,14 @@ type Dispatcher struct {
 	toolRegistry tool.Registry
 	streamFn     llm.StreamFn
 	model        llm.Model
+	temperature  float64
+	maxTokens    int
 	commands     map[string]Command
 	skillLoader  *skills.SkillLoader
+	management   *ManagementService
 
 	enableReasoning bool
+	reasoningEffort string
 	reasoningStates sync.Map // sessionKey -> bool
 
 	// running tracks the active agent per session so we can abort/steer.
@@ -90,8 +94,12 @@ type DispatcherOptions struct {
 	ToolRegistry     tool.Registry
 	StreamFn         llm.StreamFn
 	Model            llm.Model
+	Temperature      float64
+	MaxTokens        int
 	EnableReasoning  bool
+	ReasoningEffort  string
 	SkillLoader      *skills.SkillLoader
+	Management       *ManagementService
 	SystemPrompt     string
 	TransformContext runtime.TransformContext
 	Subagents        SubagentSpawner
@@ -113,8 +121,12 @@ func NewDispatcher(opts DispatcherOptions) *Dispatcher {
 		toolRegistry:     opts.ToolRegistry,
 		streamFn:         opts.StreamFn,
 		model:            opts.Model,
+		temperature:      opts.Temperature,
+		maxTokens:        opts.MaxTokens,
 		enableReasoning:  opts.EnableReasoning,
+		reasoningEffort:  opts.ReasoningEffort,
 		skillLoader:      opts.SkillLoader,
+		management:       opts.Management,
 		systemPrompt:     opts.SystemPrompt,
 		transformContext: opts.TransformContext,
 		subagents:        opts.Subagents,
@@ -195,6 +207,8 @@ func (d *Dispatcher) ReasoningEnabled(sessionKey string) bool {
 	if v, ok := d.reasoningStates.Load(sessionKey); ok {
 		return v.(bool)
 	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	return d.enableReasoning
 }
 
@@ -238,7 +252,28 @@ func (d *Dispatcher) fanoutRuntimeEvent(e runtime.Event) {
 }
 
 // Model returns the default model the dispatcher will use.
-func (d *Dispatcher) Model() llm.Model { return d.model }
+func (d *Dispatcher) Model() llm.Model {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.model
+}
+
+// Management returns the app management service, when configured.
+func (d *Dispatcher) Management() *ManagementService { return d.management }
+
+// ApplyRuntimeSettings updates settings used by newly-created agents.
+func (d *Dispatcher) ApplyRuntimeSettings(streamFn llm.StreamFn, model llm.Model, enableReasoning bool, reasoningEffort string, temperature float64, maxTokens int) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if streamFn != nil {
+		d.streamFn = streamFn
+	}
+	d.model = model
+	d.enableReasoning = enableReasoning
+	d.reasoningEffort = reasoningEffort
+	d.temperature = temperature
+	d.maxTokens = maxTokens
+}
 
 // Bus returns the dispatcher's message bus. Used by CLI / channels that need
 // to publish inbound or consume outbound without holding the whole App.
@@ -425,6 +460,7 @@ func (d *Dispatcher) outboundFromCommandResult(inbound bus.InboundMessage, resul
 // payload for channels.
 func (d *Dispatcher) runTurn(parent context.Context, inbound bus.InboundMessage) (*bus.OutboundMessage, error) {
 	sess := d.sessionStore.GetOrCreate(inbound.SessionKey)
+	settings := d.runtimeSettings(inbound.SessionKey)
 
 	// Append the user message to the persistent transcript. We do it here
 	// (instead of inside the agent event listener) so subsequent turns in
@@ -438,11 +474,13 @@ func (d *Dispatcher) runTurn(parent context.Context, inbound bus.InboundMessage)
 
 	a, err := runtime.New(runtime.Options{
 		SystemPrompt:     d.systemPrompt,
-		Model:            d.model,
-		ThinkingLevel:    d.thinkingLevelFor(inbound.SessionKey),
+		Model:            settings.model,
+		ThinkingLevel:    settings.thinkingLevel,
+		Temperature:      settings.temperature,
+		MaxTokens:        settings.maxTokens,
 		Tools:            d.toolRegistry.All(),
 		InitialHistory:   history[:len(history)-1], // exclude the just-appended user msg; it's the prompt
-		StreamFn:         d.streamFn,
+		StreamFn:         settings.streamFn,
 		TransformContext: d.transformContext,
 		SessionID:        inbound.SessionKey,
 	})
@@ -517,9 +555,51 @@ func (d *Dispatcher) runTurn(parent context.Context, inbound bus.InboundMessage)
 // thinkingLevelFor returns the reasoning level string for a session.
 func (d *Dispatcher) thinkingLevelFor(sessionKey string) string {
 	if d.ReasoningEnabled(sessionKey) {
+		d.mu.Lock()
+		effort := d.reasoningEffort
+		d.mu.Unlock()
+		if effort != "" {
+			return effort
+		}
 		return "medium"
 	}
 	return ""
+}
+
+type dispatcherRuntimeSettings struct {
+	streamFn      llm.StreamFn
+	model         llm.Model
+	thinkingLevel string
+	temperature   float64
+	maxTokens     int
+}
+
+func (d *Dispatcher) runtimeSettings(sessionKey string) dispatcherRuntimeSettings {
+	d.mu.Lock()
+	streamFn := d.streamFn
+	model := d.model
+	temperature := d.temperature
+	maxTokens := d.maxTokens
+	reasoningEffort := d.reasoningEffort
+	enableReasoning := d.enableReasoning
+	d.mu.Unlock()
+	if v, ok := d.reasoningStates.Load(sessionKey); ok {
+		enableReasoning = v.(bool)
+	}
+	thinking := ""
+	if enableReasoning {
+		thinking = reasoningEffort
+		if thinking == "" {
+			thinking = "medium"
+		}
+	}
+	return dispatcherRuntimeSettings{
+		streamFn:      streamFn,
+		model:         model,
+		thinkingLevel: thinking,
+		temperature:   temperature,
+		maxTokens:     maxTokens,
+	}
 }
 
 // splitCommand splits "/name arg1 arg2" into ["/name", "arg1 arg2"].

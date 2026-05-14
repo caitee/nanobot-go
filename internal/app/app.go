@@ -32,6 +32,8 @@ type App struct {
 	SkillLoader  *skills.SkillLoader
 	ToolRegistry tool.Registry
 	LLMRegistry  *llm.Registry
+	Management   *ManagementService
+	MCPManager   *legacytools.MCPManager
 
 	// LegacyProviderRegistry is kept through M5 so plugin code registered
 	// under the old API can still add providers; the bridge adapts them
@@ -100,6 +102,7 @@ func New(cfg *config.Config) (*App, error) {
 		ctx:                    ctx,
 		cancel:                 cancel,
 	}
+	a.SkillLoader.SetDisabled(cfg.Skills.Disabled)
 
 	RegisterDefaults(a.PluginRegistry)
 	return a, nil
@@ -112,6 +115,11 @@ func (a *App) Start(ctx context.Context) error {
 
 	if err := a.PluginRegistry.InitAll(ctx, a); err != nil {
 		return fmt.Errorf("failed to initialize plugins: %w", err)
+	}
+	if p, ok := a.PluginRegistry.Get("tool.mcp"); ok {
+		if mcpPlugin, ok := p.(*mcpToolPlugin); ok {
+			a.MCPManager = mcpPlugin.manager
+		}
 	}
 
 	// Bridge every legacy provider into the new llm.Registry.
@@ -170,18 +178,29 @@ func (a *App) Start(ctx context.Context) error {
 
 	// Build the dispatcher last so the subagent spawner is ready.
 	systemPrompt := buildSystemPrompt(workspace, a.SkillLoader)
+	a.Management = NewManagementService(ManagementOptions{
+		Config:       a.Config,
+		SkillLoader:  a.SkillLoader,
+		MCPManager:   a.MCPManager,
+		ToolRegistry: a.ToolRegistry,
+	})
 	a.Dispatcher = NewDispatcher(DispatcherOptions{
 		Bus:              a.Bus,
 		SessionStore:     a.SessionStore,
 		ToolRegistry:     a.ToolRegistry,
 		StreamFn:         streamFn,
 		Model:            model,
+		Temperature:      a.Config.Agents.Temperature,
+		MaxTokens:        a.Config.Agents.MaxTokens,
 		EnableReasoning:  a.Config.Agents.EnableReasoning,
+		ReasoningEffort:  a.Config.Agents.ReasoningEffort,
 		SkillLoader:      a.SkillLoader,
+		Management:       a.Management,
 		SystemPrompt:     systemPrompt,
 		TransformContext: runtime.RuntimeContextTransform(runtime.RuntimeContext{}),
 		Subagents:        a.Subagents,
 	})
+	a.Management.SetHotApply(a.applyHotConfig)
 
 	if err := a.CronService.Start(ctx); err != nil {
 		slog.Error("failed to start cron service", "error", err)
@@ -197,6 +216,42 @@ func (a *App) Start(ctx context.Context) error {
 	}()
 
 	slog.Info("ori application started", "provider", providerName, "model", modelName)
+	return nil
+}
+
+func (a *App) applyHotConfig() error {
+	providerName, err := a.defaultProviderName()
+	if err != nil {
+		return err
+	}
+	if _, err := a.LLMRegistry.Get(providerName); err != nil {
+		return fmt.Errorf("provider not found: %s", providerName)
+	}
+	modelName := a.Config.Agents.Model
+	if modelName == "" {
+		modelName = "gpt-4"
+	}
+	model := llm.Model{
+		ID:        modelName,
+		Name:      modelName,
+		Provider:  providerName,
+		Reasoning: a.Config.Agents.EnableReasoning,
+	}
+	if a.Dispatcher != nil {
+		workspace := a.Config.Agents.Workspace
+		if workspace == "" {
+			workspace = "."
+		}
+		a.Dispatcher.ApplyRuntimeSettings(
+			a.LLMRegistry.StreamFnFor(providerName),
+			model,
+			a.Config.Agents.EnableReasoning,
+			a.Config.Agents.ReasoningEffort,
+			a.Config.Agents.Temperature,
+			a.Config.Agents.MaxTokens,
+		)
+		a.Dispatcher.SetSystemPrompt(buildSystemPrompt(workspace, a.SkillLoader))
+	}
 	return nil
 }
 

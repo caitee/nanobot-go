@@ -28,6 +28,9 @@ func FormatSkillList(items []*Skill) string {
 		if !skill.Available {
 			status = "unavailable"
 		}
+		if !skill.Enabled {
+			status = "disabled"
+		}
 		parts := []string{
 			fmt.Sprintf("/skill:%s", skill.Name),
 			fmt.Sprintf("[%s]", firstNonEmpty(skill.Source, "unknown")),

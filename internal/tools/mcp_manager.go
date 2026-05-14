@@ -178,6 +178,31 @@ func (m *MCPManager) Status() []MCPServerStatus {
 	return out
 }
 
+// SetServerEnabled updates one server's enabled flag. Disabling closes any
+// active session immediately; callers handle persistence separately.
+func (m *MCPManager) SetServerEnabled(ctx context.Context, name string, enabled bool) error {
+	_ = ctx
+	m.mu.Lock()
+	server, ok := m.config.Servers[name]
+	if !ok {
+		m.mu.Unlock()
+		return fmt.Errorf("MCP server not found: %s", name)
+	}
+	server.Enabled = enabled
+	server.EnabledSet = true
+	m.config.Servers[name] = server
+	state := m.sessions[name]
+	if enabled || state == nil || state.session == nil {
+		m.mu.Unlock()
+		return nil
+	}
+	session := state.session
+	state.session = nil
+	state.lastUsed = time.Time{}
+	m.mu.Unlock()
+	return session.Close()
+}
+
 // ConnectServer opens a session and refreshes metadata.
 func (m *MCPManager) ConnectServer(ctx context.Context, name string) error {
 	session, cfg, err := m.ensureSession(ctx, name)

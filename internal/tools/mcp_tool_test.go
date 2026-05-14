@@ -36,6 +36,18 @@ func TestMCPProxyParametersSupportNewAndLegacyActions(t *testing.T) {
 	if !containsEnum(server["enum"].([]any), "alpha") {
 		t.Fatalf("server enum missing configured server: %#v", server)
 	}
+	description := proxy.Description()
+	if !strings.Contains(description, "action=search only searches MCP tool metadata") {
+		t.Fatalf("description should disambiguate search action: %q", description)
+	}
+	query := props["query"].(map[string]any)
+	if !strings.Contains(query["description"].(string), "Metadata search text") {
+		t.Fatalf("query description should disambiguate metadata search: %#v", query)
+	}
+	arguments := props["arguments"].(map[string]any)
+	if !strings.Contains(arguments["description"].(string), "Put remote tool inputs here") {
+		t.Fatalf("arguments description should show remote tool input usage: %#v", arguments)
+	}
 }
 
 func TestMCPProxyLegacyToolActionCallsManager(t *testing.T) {
@@ -85,7 +97,7 @@ func TestMCPProxyCallAcceptsJSONArgumentsFromURI(t *testing.T) {
 		ClientFactory: factory,
 		Config: &MCPConfig{
 			Servers: map[string]MCPServerConfig{
-				"MiniMax": {Name: "MiniMax", Command: "server"},
+				"search-server": {Name: "search-server", Command: "server"},
 			},
 		},
 	})
@@ -94,15 +106,53 @@ func TestMCPProxyCallAcceptsJSONArgumentsFromURI(t *testing.T) {
 
 	_, err := reg.Execute(context.Background(), "mcp", "call-1", map[string]any{
 		"action": "call",
-		"server": "MiniMax",
+		"server": "search-server",
 		"tool":   "web_search",
-		"uri":    `{"query":"百合竹怎么养护"}`,
+		"uri":    `{"query":"plant care"}`,
 	}, nil)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	if factory.lastCallArgs["query"] != "百合竹怎么养护" {
+	if factory.lastCallArgs["query"] != "plant care" {
 		t.Fatalf("query argument = %#v; want forwarded query", factory.lastCallArgs)
+	}
+}
+
+func TestMCPProxySearchFiltersByServer(t *testing.T) {
+	alpha := MCPServerConfig{Name: "alpha", Command: "server"}
+	beta := MCPServerConfig{Name: "beta", Command: "server"}
+	manager := NewMCPManager(MCPManagerOptions{
+		Config: &MCPConfig{Servers: map[string]MCPServerConfig{
+			"alpha": alpha,
+			"beta":  beta,
+		}},
+		Cache: &MCPMetadataCache{Servers: map[string]MCPServerMetadata{
+			"alpha": {
+				ConfigHash: HashMCPServerConfig(alpha),
+				Tools:      []MCPToolMeta{{Name: "web_search", Description: "search web"}},
+			},
+			"beta": {
+				ConfigHash: HashMCPServerConfig(beta),
+				Tools:      []MCPToolMeta{{Name: "web_search", Description: "search web"}},
+			},
+		}},
+	})
+	proxy := NewMCPProxyTool(manager)
+
+	res, err := proxy.Execute(context.Background(), "search-1", map[string]any{
+		"action": "search",
+		"server": "beta",
+		"query":  "web_search",
+	}, nil)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	tools, ok := res.Details.([]MCPToolMeta)
+	if !ok {
+		t.Fatalf("details type = %T", res.Details)
+	}
+	if len(tools) != 1 || tools[0].ServerName != "beta" {
+		t.Fatalf("filtered tools = %#v; want only beta", tools)
 	}
 }
 
@@ -215,6 +265,45 @@ func TestMCPManagerBacksOffFailedConnections(t *testing.T) {
 	}
 	if factory.connectCalls != 1 {
 		t.Fatalf("connect calls = %d; want 1", factory.connectCalls)
+	}
+}
+
+func TestMCPManagerSetServerEnabledClosesSessionAndBlocksCalls(t *testing.T) {
+	factory := &fakeMCPClientFactory{
+		tools:      []MCPToolMeta{{Name: "echo", InputSchema: map[string]any{"type": "object"}}},
+		callResult: MCPCallResult{Content: []llm.Content{llm.TextContent{Text: "ok"}}},
+	}
+	manager := NewMCPManager(MCPManagerOptions{
+		ClientFactory: factory,
+		Config: &MCPConfig{Servers: map[string]MCPServerConfig{
+			"alpha": {Name: "alpha", Command: "server", Enabled: true},
+		}},
+	})
+
+	if err := manager.ConnectServer(context.Background(), "alpha"); err != nil {
+		t.Fatalf("ConnectServer: %v", err)
+	}
+	if err := manager.SetServerEnabled(context.Background(), "alpha", false); err != nil {
+		t.Fatalf("SetServerEnabled false: %v", err)
+	}
+	status := manager.Status()
+	if len(status) != 1 || status[0].Enabled || status[0].Connected {
+		t.Fatalf("expected disabled disconnected status, got %#v", status)
+	}
+	_, err := manager.CallTool(context.Background(), "alpha", "echo", map[string]any{})
+	if err == nil || !strings.Contains(err.Error(), "disabled") {
+		t.Fatalf("disabled server call error = %v; want disabled", err)
+	}
+
+	if err := manager.SetServerEnabled(context.Background(), "alpha", true); err != nil {
+		t.Fatalf("SetServerEnabled true: %v", err)
+	}
+	if err := manager.ConnectServer(context.Background(), "alpha"); err != nil {
+		t.Fatalf("ConnectServer after enable: %v", err)
+	}
+	status = manager.Status()
+	if len(status) != 1 || !status[0].Enabled || !status[0].Connected {
+		t.Fatalf("expected re-enabled connected status, got %#v", status)
 	}
 }
 

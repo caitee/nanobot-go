@@ -2,12 +2,14 @@ package config
 
 // Config is the root config structure
 type Config struct {
-	Agents    AgentDefaults   `mapstructure:"agents"`
-	Channels  ChannelsConfig  `mapstructure:"channels"`
-	Providers ProvidersConfig `mapstructure:"providers"`
-	Gateway   GatewayConfig   `mapstructure:"gateway"`
-	Tools     ToolsConfig     `mapstructure:"tools"`
-	Plugins   PluginsConfig   `mapstructure:"plugins"`
+	SourcePath string          `mapstructure:"-"`
+	Agents     AgentDefaults   `mapstructure:"agents"`
+	Channels   ChannelsConfig  `mapstructure:"channels"`
+	Providers  ProvidersConfig `mapstructure:"providers"`
+	Gateway    GatewayConfig   `mapstructure:"gateway"`
+	Tools      ToolsConfig     `mapstructure:"tools"`
+	Plugins    PluginsConfig   `mapstructure:"plugins"`
+	Skills     SkillsConfig    `mapstructure:"skills"`
 }
 
 // AgentDefaults defines default agent settings
@@ -78,4 +80,9 @@ type PluginsConfig struct {
 	Providers []string `mapstructure:"providers"`
 	Channels  []string `mapstructure:"channels"`
 	Tools     []string `mapstructure:"tools"`
+}
+
+// SkillsConfig controls model-facing skill visibility.
+type SkillsConfig struct {
+	Disabled []string `mapstructure:"disabled"`
 }

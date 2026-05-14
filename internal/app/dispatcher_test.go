@@ -123,6 +123,32 @@ func TestDispatcherHelpIncludesRegisteredCommandMetadata(t *testing.T) {
 	}
 }
 
+func TestDispatcherManagementCommandsReturnUIRequestsAndFallbackText(t *testing.T) {
+	d, _, _ := newTestDispatcher(t, "hello")
+
+	for _, tt := range []struct {
+		input string
+		want  string
+	}{
+		{input: "/mcp", want: app.UIRequestMCP},
+		{input: "/skills", want: app.UIRequestSkills},
+		{input: "/config", want: app.UIRequestConfig},
+	} {
+		result, handled := d.ExecuteCommand(context.Background(), tt.input, bus.InboundMessage{
+			Channel: "cli", SenderID: "u", ChatID: "test", SessionKey: "cli:test",
+		})
+		if !handled {
+			t.Fatalf("expected %s to be handled", tt.input)
+		}
+		if result == nil || result.UIRequest != tt.want {
+			t.Fatalf("%s UIRequest = %+v; want %q", tt.input, result, tt.want)
+		}
+		if result.Text == "" {
+			t.Fatalf("%s should include fallback text", tt.input)
+		}
+	}
+}
+
 func TestDispatcherSkillCommandExpandsIntoPrompt(t *testing.T) {
 	dir, err := os.MkdirTemp("", "ori-skill-command-*")
 	if err != nil {

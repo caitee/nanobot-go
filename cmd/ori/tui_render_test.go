@@ -349,6 +349,22 @@ func TestSlashCommandCompletionAcceptsFirstMatch(t *testing.T) {
 	}
 }
 
+func TestManagementPanelOpensFromUIRequest(t *testing.T) {
+	m := newTestModel()
+	result := &appcore.CommandResult{UIRequest: appcore.UIRequestMCP, Text: "fallback"}
+
+	if cmd := m.applySlashCommandResult("/mcp", result); cmd != nil {
+		t.Fatalf("expected panel open to avoid print command")
+	}
+	out := plainView(m.View())
+	if !strings.Contains(out, "MCP servers") {
+		t.Fatalf("expected MCP management panel, got:\n%s", out)
+	}
+	if strings.Contains(out, "fallback") {
+		t.Fatalf("TUI panel should not print fallback text in view, got:\n%s", out)
+	}
+}
+
 func TestHandleEnterCompletesPartialSlashCommandWithoutClearingInput(t *testing.T) {
 	m := newTestModel()
 	m.textInput.SetValue("/sk")

@@ -68,6 +68,8 @@ type interactiveModel struct {
 	slashCompletionQuery       string
 	slashCompletionSelected    int
 	slashCompletionWindowStart int
+
+	panel *managementPanel
 }
 
 // viewCacheKey is the tuple we key the View cache on. Equality across calls

@@ -184,6 +184,38 @@ description: "Workspace skill"
 	}
 }
 
+func TestSkillLoaderDisabledSkillsAreHiddenFromModelFacingLists(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "skill-disabled-test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+	t.Setenv("HOME", filepath.Join(tmpDir, "home"))
+
+	skillsDir := filepath.Join(tmpDir, "skills")
+	writeSkillFile(t, filepath.Join(skillsDir, "demo", "SKILL.md"), `---
+name: demo
+description: "Demo skill"
+---
+
+# Demo Skill
+`)
+
+	loader := NewSkillLoader(skillsDir, filepath.Join(tmpDir, "no-builtins"))
+	loader.SetDisabled([]string{"demo"})
+
+	if got := loader.ListSkillNames(false); len(got) != 0 {
+		t.Fatalf("disabled skill should be hidden from model-facing list, got %v", got)
+	}
+	all := loader.ListAllSkills(false)
+	if len(all) != 1 || all[0].Name != "demo" || all[0].Enabled {
+		t.Fatalf("expected disabled skill in management list, got %+v", all)
+	}
+	if expanded, ok := ExpandSkillCommand(loader, "/skill:demo inspect"); ok || expanded == "" {
+		t.Fatalf("disabled skill should not expand, ok=%v expanded=%q", ok, expanded)
+	}
+}
+
 func TestSkillLoaderDiscoversGenericAgentSkillDirsOnly(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "skill-discovery-test")
 	if err != nil {

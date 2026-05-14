@@ -58,7 +58,9 @@ func RegisterDefaultCommands(d *Dispatcher) {
 	d.RegisterSlashCommand(Command{Name: "status", Description: "Show bot status", Scope: CommandScopeApp, Handler: handleStatus})
 	d.RegisterSlashCommand(Command{Name: "clear", Description: "Clear the current conversation", Scope: CommandScopeApp, Handler: handleNew})
 	d.RegisterSlashCommand(Command{Name: "new", Description: "Start a new conversation", Scope: CommandScopeApp, Handler: handleNew})
-	d.RegisterSlashCommand(Command{Name: "skills", Description: "List available skills", Scope: CommandScopeApp, Handler: handleSkills})
+	d.RegisterSlashCommand(Command{Name: "mcp", Description: "Manage MCP servers", Scope: CommandScopeApp, Handler: handleMCP})
+	d.RegisterSlashCommand(Command{Name: "skills", Description: "Manage skills", Scope: CommandScopeApp, Handler: handleSkills})
+	d.RegisterSlashCommand(Command{Name: "config", Description: "Manage common settings", Scope: CommandScopeApp, Handler: handleConfig})
 	d.RegisterSlashCommand(Command{Name: "reasoning", Description: "Toggle thinking mode", ArgumentHint: "on|off", Scope: CommandScopeApp, Handler: handleReasoning})
 	d.RegisterSlashCommand(Command{Name: "quit", Aliases: []string{"exit"}, Description: "Quit interactive mode", Scope: CommandScopeTUI, Handler: handleTUIOnly})
 }
@@ -121,10 +123,29 @@ func handleNew(ctx context.Context, d *Dispatcher, args string, inbound bus.Inbo
 }
 
 func handleSkills(ctx context.Context, d *Dispatcher, args string, inbound bus.InboundMessage) (*CommandResult, error) {
-	if d.skillLoader == nil {
-		return &CommandResult{Text: "No skills found."}, nil
+	if d.management != nil {
+		return &CommandResult{Text: d.management.FormatSkillStatus(), UIRequest: UIRequestSkills}, nil
 	}
-	return &CommandResult{Text: skills.FormatSkillList(d.skillLoader.ListSkills(false))}, nil
+	if d.skillLoader == nil {
+		return &CommandResult{Text: "No skills found.", UIRequest: UIRequestSkills}, nil
+	}
+	return &CommandResult{Text: skills.FormatSkillList(d.skillLoader.ListSkills(false)), UIRequest: UIRequestSkills}, nil
+}
+
+func handleMCP(ctx context.Context, d *Dispatcher, args string, inbound bus.InboundMessage) (*CommandResult, error) {
+	text := "No MCP servers configured."
+	if d.management != nil {
+		text = d.management.FormatMCPStatus()
+	}
+	return &CommandResult{Text: text, UIRequest: UIRequestMCP}, nil
+}
+
+func handleConfig(ctx context.Context, d *Dispatcher, args string, inbound bus.InboundMessage) (*CommandResult, error) {
+	text := "No configurable fields available."
+	if d.management != nil {
+		text = d.management.FormatConfigStatus()
+	}
+	return &CommandResult{Text: text, UIRequest: UIRequestConfig}, nil
 }
 
 func handleTUIOnly(ctx context.Context, d *Dispatcher, args string, inbound bus.InboundMessage) (*CommandResult, error) {

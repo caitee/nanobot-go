@@ -16,6 +16,8 @@ import (
 type loopConfig struct {
 	model            llm.Model
 	thinkingLevel    string
+	temperature      float64
+	maxTokens        int
 	sessionID        string
 	tools            []tool.AgentTool
 	toolIndex        map[string]tool.AgentTool
@@ -222,9 +224,11 @@ func runSingleTurn(
 	// 3. Run the stream and consume events. The stream function itself must
 	//    not throw; failures come back as terminal StreamEventError.
 	streamOpts := llm.StreamOptions{
-		Reasoning: cfg.thinkingLevel,
-		SessionID: cfg.sessionID,
-		APIKey:    apiKey,
+		Reasoning:   cfg.thinkingLevel,
+		SessionID:   cfg.sessionID,
+		APIKey:      apiKey,
+		Temperature: cfg.temperature,
+		MaxTokens:   cfg.maxTokens,
 	}
 	llmCtx := llm.Context{
 		SystemPrompt: "",

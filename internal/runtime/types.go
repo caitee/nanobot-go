@@ -42,6 +42,8 @@ type Options struct {
 	SystemPrompt   string
 	Model          llm.Model
 	ThinkingLevel  string
+	Temperature    float64
+	MaxTokens      int
 	Tools          []tool.AgentTool
 	InitialHistory []AgentMessage
 

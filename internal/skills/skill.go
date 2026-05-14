@@ -29,6 +29,7 @@ type Skill struct {
 	Path                   string        `json:"path,omitempty"`
 	Source                 string        `json:"source,omitempty"` // "workspace", "project", "user", or "builtin"
 	Available              bool          `json:"available,omitempty"`
+	Enabled                bool          `json:"enabled"`
 	MissingDeps            []string      `json:"missing_deps,omitempty"`
 	Warnings               []string      `json:"warnings,omitempty"`
 }
@@ -85,6 +86,7 @@ func ParseSkillContent(content string, path string) (*Skill, error) {
 	skill := &Skill{
 		Path:    path,
 		Content: content,
+		Enabled: true,
 	}
 
 	// Parse frontmatter

@@ -31,6 +31,8 @@ type Agent struct {
 	afterToolCall    AfterToolCall
 	toolExecution    tool.ExecutionMode
 	sessionID        string
+	temperature      float64
+	maxTokens        int
 
 	activeCancel context.CancelFunc
 	activeDone   chan struct{}
@@ -69,6 +71,8 @@ func New(opts Options) (*Agent, error) {
 		afterToolCall:    opts.AfterToolCall,
 		toolExecution:    opts.ToolExecution,
 		sessionID:        opts.SessionID,
+		temperature:      opts.Temperature,
+		maxTokens:        opts.MaxTokens,
 	}
 	return a, nil
 }
@@ -236,6 +240,8 @@ func (a *Agent) run(
 	cfg := loopConfig{
 		model:            a.state.Model(),
 		thinkingLevel:    a.state.ThinkingLevel(),
+		temperature:      a.temperature,
+		maxTokens:        a.maxTokens,
 		sessionID:        a.sessionID,
 		tools:            tools,
 		toolIndex:        toolIndex,
