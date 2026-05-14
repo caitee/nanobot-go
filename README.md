@@ -88,13 +88,11 @@ Or manually create `~/.ori/config.json`:
 
 Ori can load MCP server definitions from these files, in order:
 
-- `~/.config/mcp/mcp.json`
 - `~/.ori/mcp.json`
-- `<workspace>/.mcp.json`
 - `<workspace>/.ori/mcp.json`
 
-Later files override earlier files. You can also put the same shape under
-`tools.mcp` in `~/.ori/config.json`.
+The workspace file overrides the user file. You can also put the same shape
+under `tools.mcp` in `~/.ori/config.json`; that inline config is applied last.
 
 ```json
 {

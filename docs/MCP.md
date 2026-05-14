@@ -92,15 +92,12 @@ MCP 返回值会转换成 Ori 的 `llm.Content`：
 
 ## 配置加载
 
-Ori 会按以下顺序加载 MCP 配置，后者覆盖前者：
+Ori 默认只加载两个 MCP 配置文件，后者覆盖前者：
 
-1. `~/.config/mcp/mcp.json`
-2. `~/.ori/mcp.json`
-3. `<workspace>/.mcp.json`
-4. `<workspace>/.ori/mcp.json`
-5. `~/.ori/config.json` 中的 `tools.mcp`
+1. `~/.ori/mcp.json`
+2. `<workspace>/.ori/mcp.json`
 
-Ori 不读取 `~/.orb`。用户级配置推荐放在 `~/.ori/mcp.json`，项目共享配置推荐放在 `<workspace>/.ori/mcp.json` 或 `<workspace>/.mcp.json`。
+如果 `~/.ori/config.json` 中写了 `tools.mcp`，它会作为内联配置最后应用。用户级配置推荐放在 `~/.ori/mcp.json`，项目共享配置推荐放在 `<workspace>/.ori/mcp.json`。
 
 路径和环境变量会展开：
 
@@ -353,7 +350,7 @@ mcp_minimax_web_search
 
 ### No MCP servers configured
 
-检查配置路径是否正确。Ori 只读取 `~/.ori`、`~/.config/mcp` 和 workspace 下的 MCP 配置，不读取 `~/.orb`。
+检查配置路径是否正确。Ori 只读取 `~/.ori/mcp.json`、`<workspace>/.ori/mcp.json`，以及 `~/.ori/config.json` 中的 `tools.mcp`。
 
 ### stdio server 启动失败
 

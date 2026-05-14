@@ -30,17 +30,17 @@ func TestLoadDefaultsToOriConfigDirectory(t *testing.T) {
 	}
 }
 
-func TestLoadIgnoresHistoricalOrbConfigDirectory(t *testing.T) {
+func TestLoadIgnoresNonOriConfigDirectory(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 
-	orbDir := filepath.Join(home, ".orb")
-	if err := os.MkdirAll(orbDir, 0o755); err != nil {
+	otherDir := filepath.Join(home, ".not-ori")
+	if err := os.MkdirAll(otherDir, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(orbDir, "config.json"), []byte(`{
-		"agents": {"model": "from-orb", "provider": "openai"}
+	if err := os.WriteFile(filepath.Join(otherDir, "config.json"), []byte(`{
+		"agents": {"model": "from-other", "provider": "openai"}
 	}`), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
@@ -49,8 +49,8 @@ func TestLoadIgnoresHistoricalOrbConfigDirectory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if cfg.Agents.Model == "from-orb" {
-		t.Fatalf("loaded config from ignored .orb directory")
+	if cfg.Agents.Model == "from-other" {
+		t.Fatalf("loaded config from non-.ori directory")
 	}
 }
 

@@ -35,7 +35,7 @@ func TestLoadMCPConfigMergesSourcesAndExpandsValues(t *testing.T) {
 		}
 	}`)
 
-	workspaceFile := filepath.Join(workspace, ".mcp.json")
+	workspaceFile := filepath.Join(workspace, ".ori", "mcp.json")
 	t.Setenv("MCP_ROOT", filepath.Join(workspace, "root"))
 	writeTestFile(t, workspaceFile, `{
 		"settings": {"idleTimeout": 12, "directTools": true},
@@ -98,9 +98,7 @@ func TestMCPDefaultConfigPathsUseOriDirectory(t *testing.T) {
 
 	paths := DefaultMCPConfigPaths(home, workspace)
 	want := []string{
-		filepath.Join(home, ".config", "mcp", "mcp.json"),
 		filepath.Join(home, ".ori", "mcp.json"),
-		filepath.Join(workspace, ".mcp.json"),
 		filepath.Join(workspace, ".ori", "mcp.json"),
 	}
 	if len(paths) != len(want) {

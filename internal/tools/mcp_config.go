@@ -92,12 +92,10 @@ type MCPConfigLoadOptions struct {
 // DefaultMCPConfigPaths returns MCP config files from lowest to highest priority.
 func DefaultMCPConfigPaths(homeDir, workspace string) []string {
 	paths := []string{
-		filepath.Join(homeDir, ".config", "mcp", "mcp.json"),
 		filepath.Join(homeDir, ".ori", "mcp.json"),
 	}
 	if workspace != "" {
 		paths = append(paths,
-			filepath.Join(workspace, ".mcp.json"),
 			filepath.Join(workspace, ".ori", "mcp.json"),
 		)
 	}
