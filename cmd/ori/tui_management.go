@@ -260,13 +260,11 @@ func (m *interactiveModel) renderManagementPanel() string {
 		if lipgloss.Width(line) > width-4 {
 			line = truncateCommandSuggestion(line, width-4)
 		}
-		style := toolArgsStyle
-		prefix := "  "
 		if start+i == m.panel.selected {
-			style = slashCommandSelectedStyle
-			prefix = "> "
+			lines = append(lines, slashCommandSelectedStyle.Render("> ")+line)
+			continue
 		}
-		lines = append(lines, prefix+style.Render(line))
+		lines = append(lines, "  "+line)
 	}
 	if total == 0 {
 		lines = append(lines, "  "+toolArgsStyle.Render("(none)"))
@@ -313,18 +311,22 @@ func (m *interactiveModel) managementPanelRows() []string {
 		servers := m.managementMCPServers()
 		rows := make([]string, 0, len(servers))
 		for _, item := range servers {
-			enabled := "disabled"
+			enabled := managementDisabledStyle.Render("disabled")
 			if item.Enabled {
-				enabled = "enabled"
+				enabled = managementEnabledStyle.Render("enabled")
 			}
 			state := "disconnected"
 			if item.Connected {
 				state = "connected"
 			}
-			row := fmt.Sprintf("%s  %s  %s  lifecycle=%s  tools=%d resources=%d prompts=%d",
-				item.Name, enabled, state, item.Lifecycle, item.Tools, item.Resources, item.Prompts)
+			row := fmt.Sprintf("%s  %s  %s  %s  %s",
+				slashCommandSelectedStyle.Render(item.Name),
+				enabled,
+				toolArgsStyle.Render(state),
+				toolArgsStyle.Render("lifecycle="+item.Lifecycle),
+				toolArgsStyle.Render(fmt.Sprintf("tools=%d resources=%d prompts=%d", item.Tools, item.Resources, item.Prompts)))
 			if item.LastError != "" {
-				row += "  error=" + item.LastError
+				row += "  " + toolErrorStyle.Render("error="+item.LastError)
 			}
 			rows = append(rows, row)
 		}
@@ -333,16 +335,21 @@ func (m *interactiveModel) managementPanelRows() []string {
 		items := m.managementSkills()
 		rows := make([]string, 0, len(items))
 		for _, item := range items {
-			enabled := "disabled"
+			enabled := managementDisabledStyle.Render("disabled")
 			if item.Enabled {
-				enabled = "enabled"
+				enabled = managementEnabledStyle.Render("enabled")
 			}
 			available := "available"
 			if !item.Available {
 				available = "unavailable"
 			}
 			desc := strings.Join(strings.Fields(item.Description), " ")
-			rows = append(rows, fmt.Sprintf("%s  %s  %s  [%s]  %s", item.Name, enabled, available, item.Source, desc))
+			rows = append(rows, fmt.Sprintf("%s  %s  %s  %s  %s",
+				slashCommandSelectedStyle.Render(item.Name),
+				enabled,
+				toolArgsStyle.Render(available),
+				toolArgsStyle.Render("["+item.Source+"]"),
+				toolArgsStyle.Render(desc)))
 		}
 		return rows
 	case appcore.UIRequestConfig:

@@ -1,14 +1,18 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
 	"time"
 
 	appcore "ori/internal/app"
+	"ori/internal/config"
 	"ori/internal/llm"
 	"ori/internal/runtime"
+	"ori/internal/skills"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -362,6 +366,47 @@ func TestManagementPanelOpensFromUIRequest(t *testing.T) {
 	}
 	if strings.Contains(out, "fallback") {
 		t.Fatalf("TUI panel should not print fallback text in view, got:\n%s", out)
+	}
+}
+
+func TestManagementPanelKeepsDisabledStatusColorWhenSelected(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", filepath.Join(tmp, "home"))
+	skillsDir := filepath.Join(tmp, "skills")
+	writeTUITestSkill(t, filepath.Join(skillsDir, "demo", "SKILL.md"), `---
+name: demo
+description: "Demo skill"
+---
+
+# Demo
+`)
+	loader := skills.NewSkillLoader(skillsDir, filepath.Join(tmp, "no-builtins"))
+	loader.SetDisabled([]string{"demo"})
+	mgmt := appcore.NewManagementService(appcore.ManagementOptions{
+		Config:      &config.Config{Skills: config.SkillsConfig{Disabled: []string{"demo"}}},
+		SkillLoader: loader,
+	})
+	m := newTestModel()
+	m.dispatcher = appcore.NewDispatcher(appcore.DispatcherOptions{Management: mgmt})
+	m.openManagementPanel(appcore.UIRequestSkills)
+
+	out := m.renderManagementPanel()
+	wantDisabled := managementDisabledStyle.Render("disabled")
+	if !strings.Contains(out, wantDisabled) {
+		t.Fatalf("expected selected row to preserve disabled status color %q, got:\n%s", wantDisabled, out)
+	}
+	if got, want := managementEnabledStyle.GetForeground(), managementDisabledStyle.GetForeground(); got == want {
+		t.Fatalf("enabled and disabled styles should use different foregrounds, both got %v", got)
+	}
+}
+
+func writeTUITestSkill(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
 	}
 }
 
