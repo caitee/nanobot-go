@@ -17,11 +17,13 @@ const (
 type assistantStatus int
 
 const (
-	assistantStatusThinking assistantStatus = iota
+	assistantStatusWaiting assistantStatus = iota
+	assistantStatusThinking
 	assistantStatusResponding
 	assistantStatusRunningTools
 	assistantStatusDone
 	assistantStatusError
+	assistantStatusCancelled
 )
 
 type segmentKind int
@@ -44,10 +46,9 @@ const (
 type finalSource int
 
 const (
-	finalSourceUnknown finalSource = iota
-	finalSourceStream
-	finalSourceAgentEnd
-	finalSourceOutbound
+	finalSourceNone finalSource = iota
+	finalSourceRuntime
+	finalSourceFallback
 )
 
 type systemLevel int
@@ -61,9 +62,9 @@ const (
 type focusArea int
 
 const (
-	focusAreaInput focusArea = iota
-	focusAreaTranscript
-	focusAreaManagement
+	focusInput focusArea = iota
+	focusTranscript
+	focusOverlay
 )
 
 type transcript struct {
@@ -85,7 +86,7 @@ type block struct {
 
 type userBlock struct {
 	id        string
-	text      string
+	content   string
 	createdAt time.Time
 }
 
@@ -126,8 +127,8 @@ type toolCallSegment struct {
 	partial    string
 	result     string
 	durationMs int64
-	startTime  time.Time
-	endTime    time.Time
+	startedAt  time.Time
+	endedAt    time.Time
 	lastUpdate time.Time
 	expanded   bool
 	orphan     bool
@@ -136,7 +137,9 @@ type toolCallSegment struct {
 type commandBlock struct {
 	id        string
 	command   string
-	output    string
+	text      string
+	markdown  string
+	status    string
 	createdAt time.Time
 }
 
@@ -150,11 +153,11 @@ type systemBlock struct {
 func (tr *transcript) clear() {
 	tr.blocks = nil
 	tr.activeAssistantID = ""
-	tr.focus = focusAreaInput
+	tr.focus = focusInput
 }
 
 func (tr *transcript) appendUserBlock(id, text string, createdAt time.Time) *userBlock {
-	user := &userBlock{id: id, text: text, createdAt: createdAt}
+	user := &userBlock{id: id, content: text, createdAt: createdAt}
 	tr.blocks = append(tr.blocks, block{
 		kind:      blockKindUser,
 		id:        id,
@@ -167,7 +170,7 @@ func (tr *transcript) appendUserBlock(id, text string, createdAt time.Time) *use
 func (tr *transcript) appendAssistantBlock(id string, createdAt time.Time) *assistantBlock {
 	assistant := &assistantBlock{
 		id:        id,
-		status:    assistantStatusThinking,
+		status:    assistantStatusWaiting,
 		createdAt: createdAt,
 	}
 	tr.blocks = append(tr.blocks, block{
@@ -180,11 +183,13 @@ func (tr *transcript) appendAssistantBlock(id string, createdAt time.Time) *assi
 	return assistant
 }
 
-func (tr *transcript) appendCommandBlock(id, command, output string, createdAt time.Time) *commandBlock {
+func (tr *transcript) appendCommandBlock(id, command string, text, markdown, status string, createdAt time.Time) *commandBlock {
 	commandBlock := &commandBlock{
 		id:        id,
 		command:   command,
-		output:    output,
+		text:      text,
+		markdown:  markdown,
+		status:    status,
 		createdAt: createdAt,
 	}
 	tr.blocks = append(tr.blocks, block{
@@ -302,6 +307,7 @@ func (a *assistantBlock) applyFinalTextSegment(text string, ts time.Time) bool {
 		suffix, ok := strings.CutPrefix(text, prefixBeforeLast)
 		if !ok {
 			suffix = text
+			a.clearTextBeforeSegment(lastText, ts)
 		}
 		a.segments[lastText].text.text = suffix
 		a.segments[lastText].updatedAt = ts
@@ -328,12 +334,21 @@ func (a *assistantBlock) textBeforeSegment(segmentIndex int) string {
 	return builder.String()
 }
 
+func (a *assistantBlock) clearTextBeforeSegment(segmentIndex int, ts time.Time) {
+	for i := 0; i < segmentIndex; i++ {
+		if a.segments[i].kind == segmentKindText && a.segments[i].text != nil {
+			a.segments[i].text.text = ""
+			a.segments[i].updatedAt = ts
+		}
+	}
+}
+
 func (a *assistantBlock) upsertToolStart(id, name string, args map[string]any, startedAt time.Time) *toolCallSegment {
 	if tool := a.findTool(id, name); tool != nil {
 		tool.name = firstNonEmpty(name, tool.name)
 		tool.args = cloneToolArgs(args)
 		tool.status = toolStatusRunning
-		tool.startTime = startedAt
+		tool.startedAt = startedAt
 		tool.lastUpdate = startedAt
 		tool.orphan = false
 		a.status = assistantStatusRunningTools
@@ -344,7 +359,7 @@ func (a *assistantBlock) upsertToolStart(id, name string, args map[string]any, s
 		name:       name,
 		args:       cloneToolArgs(args),
 		status:     toolStatusRunning,
-		startTime:  startedAt,
+		startedAt:  startedAt,
 		lastUpdate: startedAt,
 	}
 	a.segments = append(a.segments, assistantSegment{
@@ -374,13 +389,14 @@ func (a *assistantBlock) updateTool(id, name, partial string, updatedAt time.Tim
 }
 
 func (a *assistantBlock) finishTool(id, name, result string, isError bool, endedAt time.Time) *toolCallSegment {
+	wasTerminal := isTerminalAssistantStatus(a.status)
 	tool := a.findTool(id, name)
 	if tool == nil {
 		tool = &toolCallSegment{
 			id:        id,
 			name:      name,
 			status:    toolStatusRunning,
-			startTime: endedAt,
+			startedAt: endedAt,
 			orphan:    true,
 		}
 		a.segments = append(a.segments, assistantSegment{
@@ -392,20 +408,29 @@ func (a *assistantBlock) finishTool(id, name, result string, isError bool, ended
 	}
 	tool.name = firstNonEmpty(name, tool.name)
 	tool.result = result
-	tool.endTime = endedAt
+	tool.endedAt = endedAt
 	tool.lastUpdate = endedAt
 	if isError {
 		tool.status = toolStatusError
 	} else {
 		tool.status = toolStatusDone
 	}
-	if !tool.startTime.IsZero() {
-		tool.durationMs = endedAt.Sub(tool.startTime).Milliseconds()
+	if !tool.startedAt.IsZero() {
+		tool.durationMs = endedAt.Sub(tool.startedAt).Milliseconds()
 	}
-	if !a.hasRunningTool() {
+	if !wasTerminal && !a.hasRunningTool() {
 		a.status = assistantStatusThinking
 	}
 	return tool
+}
+
+func isTerminalAssistantStatus(status assistantStatus) bool {
+	switch status {
+	case assistantStatusDone, assistantStatusError, assistantStatusCancelled:
+		return true
+	default:
+		return false
+	}
 }
 
 func (a *assistantBlock) findTool(id, name string) *toolCallSegment {
