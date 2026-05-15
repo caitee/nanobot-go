@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -218,4 +219,71 @@ func transcriptStatusString(status assistantStatus) string {
 	default:
 		return ""
 	}
+}
+
+func transcriptFromSessionMessages(messages []appcore.SessionMessageView, ts time.Time) transcript {
+	var tr transcript
+	nextID := 0
+	newID := func(prefix string) string {
+		nextID++
+		return fmt.Sprintf("%s-%d", prefix, nextID)
+	}
+	var currentAssistant *assistantBlock
+
+	for _, msg := range messages {
+		switch msg.Role {
+		case "user":
+			tr.appendUserBlock(newID("user"), msg.Content, ts)
+			currentAssistant = nil
+		case "assistant":
+			currentAssistant = tr.appendAssistantBlock(newID("assistant"), ts)
+			if msg.Reasoning != "" {
+				currentAssistant.appendReasoningDelta(msg.Reasoning, ts)
+			}
+			for _, call := range msg.ToolCalls {
+				currentAssistant.upsertToolStart(call.ID, call.Name, sessionToolCallArgs(call), ts)
+			}
+			if msg.Content != "" {
+				currentAssistant.setFinalText(finalSourceRuntime, msg.Content, ts)
+			}
+			markSessionAssistantDone(currentAssistant, ts)
+		case "tool", "tool_result", "toolResult":
+			if currentAssistant == nil {
+				currentAssistant = tr.appendAssistantBlock(newID("assistant"), ts)
+			}
+			currentAssistant.finishTool(msg.ToolCallID, msg.Name, msg.Content, false, ts)
+			markSessionAssistantDone(currentAssistant, ts)
+		default:
+			message := msg.Content
+			if msg.Role != "" {
+				message = msg.Role + ": " + message
+			}
+			tr.appendSystemBlock(newID("system"), systemLevelInfo, message, ts)
+			currentAssistant = nil
+		}
+	}
+	tr.activeAssistantID = ""
+	return tr
+}
+
+func sessionToolCallArgs(call appcore.SessionToolCallView) map[string]any {
+	if len(call.ArgumentsMap) > 0 {
+		return call.ArgumentsMap
+	}
+	if call.Arguments == "" {
+		return nil
+	}
+	var args map[string]any
+	if err := json.Unmarshal([]byte(call.Arguments), &args); err != nil {
+		return map[string]any{"arguments": call.Arguments}
+	}
+	return args
+}
+
+func markSessionAssistantDone(asst *assistantBlock, ts time.Time) {
+	if asst == nil {
+		return
+	}
+	asst.status = assistantStatusDone
+	asst.completedAt = ts
 }

@@ -829,8 +829,71 @@ func TestSessionsPanelRendersSessionRows(t *testing.T) {
 	}
 }
 
+func TestTranscriptFromSessionMessagesBuildsBlocks(t *testing.T) {
+	messages := []appcore.SessionMessageView{
+		{Role: "user", Content: "hello"},
+		{Role: "assistant", Content: "answer", Reasoning: "thinking", ToolCalls: []appcore.SessionToolCallView{
+			{ID: "tool-1", Name: "shell", ArgumentsMap: map[string]any{"cmd": "date"}},
+		}},
+		{Role: "tool", ToolCallID: "tool-1", Name: "shell", Content: "tool result"},
+	}
+
+	tr := transcriptFromSessionMessages(messages, time.Unix(1, 0))
+
+	if len(tr.blocks) != 2 {
+		t.Fatalf("blocks = %d, want user + assistant", len(tr.blocks))
+	}
+	if tr.activeAssistantID != "" {
+		t.Fatalf("activeAssistantID = %q, want empty", tr.activeAssistantID)
+	}
+	asst := tr.blocks[1].assistant
+	if asst == nil || asst.status != assistantStatusDone {
+		t.Fatalf("assistant block missing or unfinished: %+v", tr.blocks[1])
+	}
+	out := plainView(transcriptRenderer{}.renderTranscript(tr, renderContext{width: 80}))
+	for _, want := range []string{"hello", "thinking", "answer", "shell", "tool result"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("session transcript missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestResumeSelectedSessionLoadsTranscript(t *testing.T) {
+	m := newSessionPanelTestModel(t)
+	m.initTranscriptViewport(80, 10)
+	m.openManagementPanel(appcore.UIRequestSessions)
+	for i, item := range m.managementSessions() {
+		if item.Key == "cli:target" {
+			m.panel.selected = i
+			break
+		}
+	}
+
+	cmd := m.resumeSelectedSession()
+
+	if cmd != nil {
+		t.Fatalf("resume returned print command")
+	}
+	if len(m.transcript.blocks) == 0 {
+		t.Fatalf("resume did not load transcript blocks")
+	}
+	if m.panel != nil {
+		t.Fatalf("expected panel to close after resume")
+	}
+	if m.focus != focusInput {
+		t.Fatalf("focus = %v, want input", m.focus)
+	}
+	out := plainView(m.transcriptViewportText)
+	for _, want := range []string{"target prompt", "target answer", "resumed cli:target"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("resume viewport missing %q:\n%s", want, out)
+		}
+	}
+}
+
 func TestResumeSelectedSessionSwitchesContextAndClearsVisibleState(t *testing.T) {
 	m := newSessionPanelTestModel(t)
+	m.initTranscriptViewport(80, 10)
 	m.openManagementPanel(appcore.UIRequestSessions)
 	for i, item := range m.managementSessions() {
 		if item.Key == "cli:target" {
@@ -845,6 +908,7 @@ func TestResumeSelectedSessionSwitchesContextAndClearsVisibleState(t *testing.T)
 	m.displayedText = "displayed"
 	m.typewriterQueue = []rune("queued")
 	m.flushedText = "flushed"
+	m.responseReceived = true
 	oldUnsubCalled := false
 	m.unsubRuntime = func() { oldUnsubCalled = true }
 
@@ -865,12 +929,24 @@ func TestResumeSelectedSessionSwitchesContextAndClearsVisibleState(t *testing.T)
 	if m.panel != nil {
 		t.Fatalf("expected panel to close after resume")
 	}
-	if m.active || m.waiting || m.currentRound != nil || m.streamText != "" || m.displayedText != "" || len(m.typewriterQueue) != 0 || m.flushedText != "" {
-		t.Fatalf("expected resume to clear visible state, got active=%v waiting=%v round=%+v stream=%q displayed=%q queued=%q flushed=%q",
-			m.active, m.waiting, m.currentRound, m.streamText, m.displayedText, string(m.typewriterQueue), m.flushedText)
+	if m.focus != focusInput {
+		t.Fatalf("expected focus input after resume, got %v", m.focus)
 	}
-	if cmd == nil {
-		t.Fatal("expected resume to return a command for clearing and printing summary")
+	if m.active || m.waiting || m.responseReceived || m.currentRound != nil || m.streamText != "" || m.displayedText != "" || len(m.typewriterQueue) != 0 || m.flushedText != "" {
+		t.Fatalf("expected resume to clear visible state, got active=%v waiting=%v responseReceived=%v round=%+v stream=%q displayed=%q queued=%q flushed=%q",
+			m.active, m.waiting, m.responseReceived, m.currentRound, m.streamText, m.displayedText, string(m.typewriterQueue), m.flushedText)
+	}
+	if m.status != "ready" {
+		t.Fatalf("status = %q, want ready", m.status)
+	}
+	if cmd != nil {
+		t.Fatal("expected resume to return nil after loading transcript")
+	}
+	out := plainView(m.transcriptViewportText)
+	for _, want := range []string{"target prompt", "target answer", "resumed cli:target"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("resume transcript missing %q:\n%s", want, out)
+		}
 	}
 }
 

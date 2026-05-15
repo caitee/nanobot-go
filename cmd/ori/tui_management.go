@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	appcore "ori/internal/app"
 
@@ -454,18 +455,34 @@ func (m *interactiveModel) resumeSelectedSession() tea.Cmd {
 	if item.Key == "" {
 		return nil
 	}
+	messages := m.managementSessionMessages(item.Key)
 	if m.dispatcher != nil && m.sessionKey != "" && m.sessionKey != item.Key {
 		m.dispatcher.AbortSession(m.sessionKey)
 	}
+	now := time.Now()
+	m.transcript = transcriptFromSessionMessages(messages, now)
+	if m.nextTranscriptID < len(m.transcript.blocks) {
+		m.nextTranscriptID = len(m.transcript.blocks)
+	}
+	m.transcript.appendSystemBlock(m.nextBlockID("system"), systemLevelInfo, "resumed "+item.Key, now)
 	m.sessionKey = item.Key
 	m.chatID = chatIDForSessionKey(item.Key)
 	m.subscribeRuntimeEvents(item.Key)
-	m.applyClearCommandResult()
 	m.panel = nil
+	m.focus = focusInput
+	m.active = false
+	m.waiting = false
+	m.responseReceived = false
+	m.currentRound = nil
+	m.streamText = ""
+	m.displayedText = ""
+	m.typewriterQueue = nil
+	m.flushedText = ""
+	m.spinnerIdx = 0
 	m.status = "ready"
+	m.refreshTranscriptViewport()
 	m.viewVersion++
-	messages := m.managementSessionMessages(item.Key)
-	return tea.Sequence(clearTerminalHistory(), m.printAbove(renderSessionResumeOutput(item.Key, item, messages)))
+	return nil
 }
 
 func chatIDForSessionKey(sessionKey string) string {
