@@ -45,6 +45,9 @@ type interactiveModel struct {
 	flushedText     string         // cumulative stream text already flushed to View above (for dedup on finalize)
 	status          string         // current agent status
 
+	transcript       transcript
+	nextTranscriptID int
+
 	// Live-render cache for displayedText. renderLiveContent runs glamour,
 	// which is linear in the input size and gets called on every frame (every
 	// spinner tick, every typewriter tick). We memoise by exact string match:
