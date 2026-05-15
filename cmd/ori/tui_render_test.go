@@ -87,7 +87,7 @@ func TestSubmitPromptAppendsTranscriptBlocksWithoutPrintAbove(t *testing.T) {
 	}
 }
 
-func TestHandleRuntimeEventUsesTranscriptInsteadOfCurrentRound(t *testing.T) {
+func TestHandleRuntimeEventUsesTranscript(t *testing.T) {
 	m := &interactiveModel{renderer: transcriptRenderer{}, focus: focusInput}
 	m.initTranscriptViewport(80, 10)
 	m.beginPromptForTranscript("hello")
@@ -102,10 +102,6 @@ func TestHandleRuntimeEventUsesTranscriptInsteadOfCurrentRound(t *testing.T) {
 
 	if cmd != nil {
 		t.Fatalf("runtime text delta returned print command")
-	}
-	if m.currentRound != nil || m.displayedText != "" || len(m.typewriterQueue) != 0 || m.flushedText != "" {
-		t.Fatalf("old live state was mutated: currentRound=%+v displayed=%q queue=%d flushed=%q",
-			m.currentRound, m.displayedText, len(m.typewriterQueue), m.flushedText)
 	}
 	asst := m.transcript.activeAssistant()
 	if asst == nil || len(asst.segments) != 1 || asst.segments[0].text.text != "answer" {
@@ -166,19 +162,22 @@ func TestView_RendersLiveToolCall(t *testing.T) {
 	}
 }
 
-func TestViewCacheInvalidatesWhenDisplayedTextChanges(t *testing.T) {
-	m := newTestModel()
-	m.displayedText = "first response"
+func TestViewCacheInvalidatesWhenTranscriptViewportChanges(t *testing.T) {
+	m := &interactiveModel{}
+	m.initTranscriptViewport(80, 10)
+	m.transcript.appendSystemBlock(m.nextBlockID("system"), systemLevelInfo, "first response", time.Unix(1, 0))
+	m.refreshTranscriptViewport()
 
 	view := plainView(m.View())
 	if !strings.Contains(view, "first response") {
 		t.Fatalf("expected initial View to show first response; got:\n%s", view)
 	}
 
-	m.displayedText = "second response"
+	m.transcript.appendSystemBlock(m.nextBlockID("system"), systemLevelInfo, "second response", time.Unix(2, 0))
+	m.refreshTranscriptViewport()
 	view = plainView(m.View())
-	if strings.Contains(view, "first response") || !strings.Contains(view, "second response") {
-		t.Fatalf("expected View cache to refresh after displayed text changed; got:\n%s", view)
+	if !strings.Contains(view, "second response") {
+		t.Fatalf("expected View cache to refresh after transcript viewport changed; got:\n%s", view)
 	}
 }
 
@@ -428,119 +427,17 @@ func TestManagementPanelEditEscKeepsOverlayFocus(t *testing.T) {
 	}
 }
 
-func TestCloseOpenMarkdownCompletesDanglingLinkDestination(t *testing.T) {
-	got := closeOpenMarkdown("see [docs](https://example.com")
-	if got != "see [docs](https://example.com)" {
-		t.Fatalf("expected dangling link destination to be closed, got %q", got)
-	}
-}
-
-func TestFormatFinalMessageSkipsAlreadyFlushedStreamPrefix(t *testing.T) {
-	m := newTestModel()
-	m.flushedText = "already printed"
-
-	out := plainView(m.formatFinalMessage("already printed\n\nnew tail", ""))
-	if strings.Contains(out, "already printed") {
-		t.Fatalf("expected final output to omit already flushed prefix; got:\n%s", out)
-	}
-	if !strings.Contains(out, "new tail") {
-		t.Fatalf("expected final output to include unflushed tail; got:\n%s", out)
-	}
-}
-
-func TestMaybeFlushStreamWindowRecordsFlushedPrefix(t *testing.T) {
-	t.Setenv("COLUMNS", "40")
-	t.Setenv("LINES", "20")
-
-	m := newTestModel()
-	m.displayedText = strings.Join([]string{
-		"already printed",
-		"",
-		"also printed",
-		"",
-		"tail line 1",
-		"tail line 2",
-		"tail line 3",
-		"tail line 4",
-		"tail line 5",
-		"tail line 6",
-		"tail line 7",
-		"tail line 8",
-		"tail line 9",
-		"tail line 10",
-		"tail line 11",
-		"tail line 12",
-		"tail line 13",
-		"tail line 14",
-		"tail line 15",
-		"tail line 16",
-	}, "\n")
-
-	cmd := m.maybeFlushStreamWindow()
-	if cmd == nil {
-		t.Fatal("expected stream window flush command")
-	}
-	if !strings.Contains(m.flushedText, "already printed") || !strings.Contains(m.flushedText, "also printed") {
-		t.Fatalf("expected flushedText to record flushed prefix, got %q", m.flushedText)
-	}
-	if strings.Contains(m.displayedText, "already printed") {
-		t.Fatalf("expected displayedText to keep only unflushed tail, got %q", m.displayedText)
-	}
-}
-
-func TestMaybeFlushStreamWindowSkipsWhenCurrentRoundIsUnflushed(t *testing.T) {
-	t.Setenv("COLUMNS", "40")
-	t.Setenv("LINES", "20")
-
-	m := newTestModel()
-	m.currentRound = &thinkingRound{reasoning: "internal reasoning"}
-	m.displayedText = strings.Join([]string{
-		"answer prefix",
-		"",
-		"answer middle",
-		"",
-		"tail line 1",
-		"tail line 2",
-		"tail line 3",
-		"tail line 4",
-		"tail line 5",
-		"tail line 6",
-		"tail line 7",
-		"tail line 8",
-		"tail line 9",
-		"tail line 10",
-		"tail line 11",
-		"tail line 12",
-		"tail line 13",
-		"tail line 14",
-		"tail line 15",
-		"tail line 16",
-	}, "\n")
-
-	if cmd := m.maybeFlushStreamWindow(); cmd != nil {
-		t.Fatal("expected no stream-window flush while current round is still unflushed")
-	}
-	if m.flushedText != "" {
-		t.Fatalf("expected no flushed text while current round is unflushed, got %q", m.flushedText)
-	}
-}
-
-func TestRenderRoundToolDetailLinesFitTerminalWidth(t *testing.T) {
+func TestTranscriptRendererToolDetailLinesFitTerminalWidth(t *testing.T) {
 	t.Setenv("COLUMNS", "80")
 
-	m := newTestModel()
-	entry := toolCallEntry{
-		name:   "web",
-		args:   strings.Repeat("argument ", 20),
-		status: "done",
-		result: strings.Repeat("result ", 20),
-	}
-	entry.displayArgs.set(entry.args)
-	entry.displayResult.set(entry.result)
+	var tr transcript
+	asst := tr.appendAssistantBlock("assistant-1", time.Unix(1, 0))
+	asst.upsertToolStart("call-1", "web", map[string]any{"query": strings.Repeat("argument ", 20)}, time.Unix(1, 0))
+	asst.finishTool("call-1", "web", strings.Repeat("result ", 20), false, time.Unix(2, 0))
 
-	out := plainView(m.renderRound(thinkingRound{toolCalls: []toolCallEntry{entry}}, true))
+	out := plainView((transcriptRenderer{}).renderTranscript(tr, renderContext{width: 80}))
 	for _, line := range strings.Split(out, "\n") {
-		if strings.Contains(line, "Args:") || strings.Contains(line, "Result:") {
+		if strings.Contains(line, "query") || strings.Contains(line, "Result") {
 			if width := lipgloss.Width(line); width > 80 {
 				t.Fatalf("expected tool detail line to fit terminal width, got width %d for line %q", width, line)
 			}
@@ -661,18 +558,12 @@ func TestAgentEnd_FinalizesTranscriptWithToolCallsFromSameTurn(t *testing.T) {
 func TestInteractiveModelClearCommandResetsVisibleState(t *testing.T) {
 	m := newTestModel()
 	m.waiting = true
-	m.currentRound = &thinkingRound{reasoning: "thinking"}
-	m.streamText = "stream"
-	m.displayedText = "displayed"
-	m.typewriterQueue = []rune("queued")
-	m.flushedText = "flushed"
 	m.status = "thinking"
 
 	m.applyClearCommandResult()
 
-	if m.active || m.waiting || m.currentRound != nil || m.streamText != "" || m.displayedText != "" || len(m.typewriterQueue) != 0 || m.flushedText != "" {
-		t.Fatalf("expected clear command to reset visible state, got active=%v waiting=%v round=%+v stream=%q displayed=%q queued=%q flushed=%q",
-			m.active, m.waiting, m.currentRound, m.streamText, m.displayedText, string(m.typewriterQueue), m.flushedText)
+	if m.active || m.waiting {
+		t.Fatalf("expected clear command to reset active state, got active=%v waiting=%v", m.active, m.waiting)
 	}
 	if m.status != "ready" {
 		t.Fatalf("expected ready status, got %q", m.status)
@@ -742,11 +633,6 @@ func TestClearCommandClearsTranscriptAndAddsSystemBlock(t *testing.T) {
 	m.active = true
 	m.waiting = true
 	m.responseReceived = true
-	m.currentRound = &thinkingRound{reasoning: "thinking"}
-	m.streamText = "stream"
-	m.displayedText = "displayed"
-	m.typewriterQueue = []rune("queued")
-	m.flushedText = "flushed"
 	m.spinnerIdx = 3
 	m.status = "thinking"
 
@@ -765,9 +651,9 @@ func TestClearCommandClearsTranscriptAndAddsSystemBlock(t *testing.T) {
 	if got := m.transcript.blocks[0].system.message; got != "New session started." {
 		t.Fatalf("system message = %q, want New session started.", got)
 	}
-	if m.active || m.waiting || m.responseReceived || m.currentRound != nil || m.streamText != "" || m.displayedText != "" || len(m.typewriterQueue) != 0 || m.flushedText != "" {
-		t.Fatalf("clear did not reset visible state: active=%v waiting=%v responseReceived=%v round=%+v stream=%q displayed=%q queue=%q flushed=%q",
-			m.active, m.waiting, m.responseReceived, m.currentRound, m.streamText, m.displayedText, string(m.typewriterQueue), m.flushedText)
+	if m.active || m.waiting || m.responseReceived {
+		t.Fatalf("clear did not reset active state: active=%v waiting=%v responseReceived=%v",
+			m.active, m.waiting, m.responseReceived)
 	}
 	if m.spinnerIdx != 0 {
 		t.Fatalf("spinnerIdx = %d, want 0", m.spinnerIdx)
@@ -946,11 +832,6 @@ func TestResumeSelectedSessionSwitchesContextAndClearsVisibleState(t *testing.T)
 	}
 	m.active = true
 	m.waiting = true
-	m.currentRound = &thinkingRound{reasoning: "thinking"}
-	m.streamText = "stream"
-	m.displayedText = "displayed"
-	m.typewriterQueue = []rune("queued")
-	m.flushedText = "flushed"
 	m.responseReceived = true
 	oldUnsubCalled := false
 	m.unsubRuntime = func() { oldUnsubCalled = true }
@@ -975,9 +856,9 @@ func TestResumeSelectedSessionSwitchesContextAndClearsVisibleState(t *testing.T)
 	if m.focus != focusInput {
 		t.Fatalf("expected focus input after resume, got %v", m.focus)
 	}
-	if m.active || m.waiting || m.responseReceived || m.currentRound != nil || m.streamText != "" || m.displayedText != "" || len(m.typewriterQueue) != 0 || m.flushedText != "" {
-		t.Fatalf("expected resume to clear visible state, got active=%v waiting=%v responseReceived=%v round=%+v stream=%q displayed=%q queued=%q flushed=%q",
-			m.active, m.waiting, m.responseReceived, m.currentRound, m.streamText, m.displayedText, string(m.typewriterQueue), m.flushedText)
+	if m.active || m.waiting || m.responseReceived {
+		t.Fatalf("expected resume to clear active state, got active=%v waiting=%v responseReceived=%v",
+			m.active, m.waiting, m.responseReceived)
 	}
 	if m.status != "ready" {
 		t.Fatalf("status = %q, want ready", m.status)
@@ -1018,52 +899,6 @@ func TestResumeSelectedSessionThenNewPromptUsesUniqueBlockIDs(t *testing.T) {
 			t.Fatalf("duplicate transcript block id %q in blocks: %+v", block.id, m.transcript.blocks)
 		}
 		seen[block.id] = true
-	}
-}
-
-func TestRenderSessionResumeOutputIncludesSummary(t *testing.T) {
-	out := plainView(renderSessionResumeOutput("cli:target", appcore.SessionView{
-		Key:                "cli:target",
-		UpdatedAt:          "2026-05-15 09:02:00",
-		MessageCount:       3,
-		LastMessagePreview: "latest user prompt",
-	}, []appcore.SessionMessageView{
-		{Role: "user", Content: "hello ori"},
-		{Role: "assistant", Reasoning: "tool thinking", ToolCalls: []appcore.SessionToolCallView{{
-			ID:        "call_1",
-			Name:      "read_file",
-			Arguments: `{"path":"demo.md"}`,
-		}}},
-		{Role: "tool", Name: "read_file", ToolCallID: "call_1", Content: "file contents"},
-		{Role: "assistant", Reasoning: "final thinking", Content: "hello back"},
-		{Role: "user", Content: "next prompt"},
-		{Role: "assistant", Content: "next answer"},
-	}))
-
-	if !strings.Contains(out, "Resumed session: cli:target") ||
-		!strings.Contains(out, "Messages: 3") ||
-		!strings.Contains(out, "latest user prompt") ||
-		!strings.Contains(out, "thinking · 1 lines summarized") ||
-		!strings.Contains(out, "tool thinking") ||
-		!strings.Contains(out, "final thinking") ||
-		!strings.Contains(out, "hello ori") ||
-		!strings.Contains(out, "hello back") ||
-		!strings.Contains(out, "✓ read_file") ||
-		!strings.Contains(out, "Result") ||
-		!strings.Contains(out, "file contents") {
-		t.Fatalf("expected resume summary, got:\n%s", out)
-	}
-	if strings.Contains(out, `{"type":"thinking"`) || strings.Contains(out, `"thinking":"`) {
-		t.Fatalf("expected structured thinking blocks to render without raw JSON, got:\n%s", out)
-	}
-	if strings.Contains(out, "\nuser\nhello ori") || strings.Contains(out, "\ntool: read_file") {
-		t.Fatalf("expected replay to use live TUI rendering blocks instead of plain role labels, got:\n%s", out)
-	}
-	if got := strings.Count(out, "✦ ori"); got != 2 {
-		t.Fatalf("expected one assistant header per user turn, got %d:\n%s", got, out)
-	}
-	if !regexp.MustCompile(`hello back[^\n]*\n\nnext prompt`).MatchString(out) {
-		t.Fatalf("expected a blank line between assistant output and next user prompt, got:\n%s", out)
 	}
 }
 
@@ -1257,38 +1092,6 @@ func TestSlashCommandCompletionAcceptsSelectedRow(t *testing.T) {
 	}
 }
 
-func TestRenderCommandResultBlockIncludesCommandAndResult(t *testing.T) {
-	out := plainView(renderCommandResultBlock("/status", &appcore.CommandResult{
-		Text: "ori v0.2.0-go\nStatus: running",
-	}))
-
-	if !strings.Contains(out, "/status") {
-		t.Fatalf("expected command block to include command, got:\n%s", out)
-	}
-	if !strings.Contains(out, "ori v0.2.0-go") || !strings.Contains(out, "Status: running") {
-		t.Fatalf("expected command block to include result, got:\n%s", out)
-	}
-	if !regexp.MustCompile(`(?m)^─{8,}$`).MatchString(out) {
-		t.Fatalf("expected separator line between command and result, got:\n%s", out)
-	}
-}
-
-func TestRenderResetCommandOutputIncludesBannerBeforeCommand(t *testing.T) {
-	out := plainView(renderResetCommandOutput("BANNER", "/clear", &appcore.CommandResult{
-		Text: "New session started.",
-	}))
-
-	bannerIdx := strings.Index(out, "BANNER")
-	commandIdx := strings.Index(out, "/clear")
-	resultIdx := strings.Index(out, "New session started.")
-	if bannerIdx < 0 || commandIdx < 0 || resultIdx < 0 {
-		t.Fatalf("expected banner, command, and result in reset output, got:\n%s", out)
-	}
-	if !(bannerIdx < commandIdx && commandIdx < resultIdx) {
-		t.Fatalf("expected banner before command before result, got:\n%s", out)
-	}
-}
-
 func TestAgentEnd_FinalizesTranscriptWithToolCallsFromPreviousTurn(t *testing.T) {
 	m := newTestModel()
 	calledPrintAbove := false
@@ -1439,7 +1242,7 @@ func TestHandleRuntimeEvent_ToolEndKeepsUsingToolsWhileOthersRun(t *testing.T) {
 	}
 }
 
-func TestRenderReasoningBlockSummarizesAcrossLiveCompletedAndFinal(t *testing.T) {
+func TestTranscriptRendererReasoningBlockSummarizesLiveAndCompleted(t *testing.T) {
 	reasoning := strings.Join([]string{
 		"line 1 hidden",
 		"line 2 hidden",
@@ -1450,12 +1253,10 @@ func TestRenderReasoningBlockSummarizesAcrossLiveCompletedAndFinal(t *testing.T)
 		"line 7 visible",
 	}, "\n")
 
-	m := newTestModel()
-	live := plainView(m.renderRound(thinkingRound{reasoning: reasoning}, true))
-	completed := plainView(m.renderCompletedRound(thinkingRound{reasoning: reasoning}))
-	final := plainView(formatAssistantMessage([]thinkingRound{{reasoning: reasoning}}, "", reasoning))
+	live := plainView(renderReasoningBlockForWidth(reasoning, reasoningModeLive, 80))
+	completed := plainView(renderReasoningBlockForWidth(reasoning, reasoningModeCompleted, 80))
 
-	for name, out := range map[string]string{"live": live, "completed": completed, "final": final} {
+	for name, out := range map[string]string{"live": live, "completed": completed} {
 		if !strings.Contains(out, "thinking · 7 lines summarized") {
 			t.Fatalf("%s reasoning should include summary header, got:\n%s", name, out)
 		}
@@ -1466,8 +1267,8 @@ func TestRenderReasoningBlockSummarizesAcrossLiveCompletedAndFinal(t *testing.T)
 	if !strings.Contains(live, "line 4 visible in live only") {
 		t.Fatalf("live reasoning should show last five lines, got:\n%s", live)
 	}
-	if strings.Contains(completed, "line 4 visible in live only") || strings.Contains(final, "line 4 visible in live only") {
-		t.Fatalf("completed/final reasoning should show only last three lines, completed:\n%s\nfinal:\n%s", completed, final)
+	if strings.Contains(completed, "line 4 visible in live only") {
+		t.Fatalf("completed reasoning should show only last three lines, got:\n%s", completed)
 	}
 }
 
@@ -1501,14 +1302,11 @@ func TestRenderToolCallUsesStableMultilineArguments(t *testing.T) {
 func TestRenderToolArgumentLinesFitNarrowTerminal(t *testing.T) {
 	t.Setenv("COLUMNS", "32")
 
-	m := newTestModel()
-	entry := toolCallEntry{
-		name:    "shell",
-		status:  "running",
-		argsMap: map[string]any{"extremely_long_argument_key": strings.Repeat("value ", 20)},
-	}
+	var tr transcript
+	asst := tr.appendAssistantBlock("assistant-1", time.Unix(1, 0))
+	asst.upsertToolStart("call-1", "shell", map[string]any{"extremely_long_argument_key": strings.Repeat("value ", 20)}, time.Unix(1, 0))
 
-	out := plainView(m.renderRound(thinkingRound{toolCalls: []toolCallEntry{entry}}, true))
+	out := plainView((transcriptRenderer{}).renderTranscript(tr, renderContext{width: 32, active: true, now: time.Unix(2, 0)}))
 	for _, line := range strings.Split(out, "\n") {
 		if strings.Contains(line, "extremely") || strings.Contains(line, "...") {
 			if width := lipgloss.Width(line); width > 32 {
@@ -1519,22 +1317,19 @@ func TestRenderToolArgumentLinesFitNarrowTerminal(t *testing.T) {
 }
 
 func TestRenderToolResultShowsPreviewAndHiddenLineCount(t *testing.T) {
-	m := newTestModel()
-	entry := toolCallEntry{
-		name:   "read_file",
-		status: "done",
-		result: strings.Join([]string{
-			"line 1",
-			"line 2",
-			"line 3",
-			"line 4",
-			"line 5 hidden",
-			"line 6 hidden",
-		}, "\n"),
-	}
-	entry.displayResult.set(entry.result)
+	var tr transcript
+	asst := tr.appendAssistantBlock("assistant-1", time.Unix(1, 0))
+	asst.upsertToolStart("call-1", "read_file", nil, time.Unix(1, 0))
+	asst.finishTool("call-1", "read_file", strings.Join([]string{
+		"line 1",
+		"line 2",
+		"line 3",
+		"line 4",
+		"line 5 hidden",
+		"line 6 hidden",
+	}, "\n"), false, time.Unix(2, 0))
 
-	out := plainView(m.renderRound(thinkingRound{toolCalls: []toolCallEntry{entry}}, false))
+	out := plainView((transcriptRenderer{}).renderTranscript(tr, renderContext{width: 80}))
 	for _, want := range []string{"line 1", "line 2", "line 3", "line 4", "... 2 more lines"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("expected result preview to include %q, got:\n%s", want, out)

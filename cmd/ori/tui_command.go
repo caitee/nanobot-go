@@ -83,26 +83,15 @@ func (m *interactiveModel) submitPrompt(displayContent, dispatchContent string) 
 func (m *interactiveModel) beginPromptForTranscript(displayContent string) {
 	m.beginTranscriptPrompt(displayContent, time.Now())
 	m.spinnerIdx = 0
-	m.currentRound = nil
-	m.streamText = ""
-	m.displayedText = ""
-	m.typewriterQueue = nil
-	m.flushedText = ""
 	m.refreshTranscriptViewport()
 	m.viewVersion++
 }
 
 func (m *interactiveModel) applyClearCommandResult() {
-	m.clearActiveState()
 	m.active = false
 	m.waiting = false
 	m.responseReceived = false
 	m.spinnerIdx = 0
-	m.currentRound = nil
-	m.streamText = ""
-	m.displayedText = ""
-	m.typewriterQueue = nil
-	m.flushedText = ""
 	m.status = "ready"
 	m.viewVersion++
 }
@@ -292,62 +281,6 @@ func slashCommandName(input string) string {
 		input = input[:idx]
 	}
 	return strings.ToLower(input)
-}
-
-func commandResultOutput(result *appcore.CommandResult) string {
-	if result == nil {
-		return ""
-	}
-	if result.Markdown != "" {
-		return renderMarkdown(result.Markdown)
-	}
-	if result.Text != "" {
-		return result.Text
-	}
-	return ""
-}
-
-func renderCommandResultBlock(command string, result *appcore.CommandResult) string {
-	output := commandResultOutput(result)
-	if output == "" {
-		return ""
-	}
-	var b strings.Builder
-	if command != "" {
-		padded := command + strings.Repeat(" ", max(0, getTerminalWidth()-lipgloss.Width(command)))
-		b.WriteString("\n")
-		b.WriteString(userMessageStyle.Render(padded))
-		b.WriteString("\n")
-		b.WriteString(borderStyle.Render(strings.Repeat("─", getTerminalWidth())))
-		b.WriteString("\n")
-	}
-	b.WriteString(output)
-	return strings.TrimRight(b.String(), "\n")
-}
-
-func renderedCommandOutput(banner, command string, result *appcore.CommandResult) string {
-	if result != nil && (result.ResetSession || result.ClearViewport) {
-		return renderResetCommandOutput(banner, command, result)
-	}
-	return renderCommandResultBlock(command, result)
-}
-
-func renderResetCommandOutput(banner, command string, result *appcore.CommandResult) string {
-	block := renderCommandResultBlock(command, result)
-	if banner == "" {
-		return block
-	}
-	if block == "" {
-		return strings.TrimRight(banner, "\n")
-	}
-	return strings.TrimRight(banner, "\n") + "\n" + block
-}
-
-func clearTerminalHistory() tea.Cmd {
-	return func() tea.Msg {
-		fmt.Print("\x1b[2J\x1b[H\x1b[3J")
-		return nil
-	}
 }
 
 func truncateCommandSuggestion(s string, maxWidth int) string {

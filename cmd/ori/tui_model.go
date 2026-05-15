@@ -2,7 +2,6 @@ package main
 
 import (
 	"sync"
-	"time"
 
 	appcore "ori/internal/app"
 	"ori/internal/bus"
@@ -38,13 +37,8 @@ type interactiveModel struct {
 	outboundCh    <-chan bus.OutboundMessage
 	unsubRuntime  func()
 
-	active          bool
-	currentRound    *thinkingRound // round in progress; completed rounds are flushed to View above on TurnStart
-	streamText      string         // full text received from stream
-	displayedText   string         // text currently displayed (typewriter)
-	typewriterQueue []rune         // queue of runes waiting to be displayed
-	flushedText     string         // cumulative stream text already flushed to View above (for dedup on finalize)
-	status          string         // current agent status
+	active bool
+	status string // current agent status
 
 	transcript       transcript
 	nextTranscriptID int
@@ -55,18 +49,9 @@ type interactiveModel struct {
 	hasNewTranscriptOutput bool
 	transcriptViewportText string
 
-	// Live-render cache for displayedText. renderLiveContent runs glamour,
-	// which is linear in the input size and gets called on every frame (every
-	// spinner tick, every typewriter tick). We memoise by exact string match:
-	// if displayedText hasn't changed since the last render, return the same
-	// output. Terminal-width changes invalidate the cache.
-	lastRenderedText   string
-	lastRenderedOutput string
-	lastRenderedWidth  int
-
 	// View-level cache. viewVersion is bumped by any Update branch that
 	// changes visible state; View() also keys on cheap direct render inputs
-	// such as spinner frame, terminal width, live text, and input output.
+	// such as spinner frame, terminal width, viewport, and input output.
 	// Returning the cached string lets bubbletea's own diff detect no-ops.
 	viewVersion      uint64
 	cachedViewKey    viewCacheKey
@@ -85,52 +70,26 @@ type interactiveModel struct {
 // viewCacheKey is the tuple we key the View cache on. Equality across calls
 // means nothing affecting the output has changed.
 type viewCacheKey struct {
-	version            uint64
-	spinnerIdx         int
-	width              int
-	textInput          string
-	active             bool
-	waiting            bool
-	quitting           bool
-	status             string
-	displayedText      string
-	typewriterQueueLen int
-	viewportContent    string
-	viewportWidth      int
-	viewportHeight     int
-	viewportYOffset    int
-	focus              focusArea
-	hasNewOutput       bool
-}
-
-// thinkingRound represents one round of thinking + tool calls.
-type thinkingRound struct {
-	reasoning string
-	toolCalls []toolCallEntry
-}
-
-type toolCallEntry struct {
-	id             string
-	name           string
-	args           string
-	argsMap        map[string]any
-	status         string // "pending" | "running" | "done" | "error"
-	partial        string
-	result         string
-	durationMs     int64
-	startTime      time.Time
-	lastUpdate     time.Time
-	expanded       bool
-	displayArgs    truncatedField // cached truncation of args for render
-	displayPartial truncatedField
-	displayResult  truncatedField // cached truncation of result for render
+	version         uint64
+	spinnerIdx      int
+	width           int
+	textInput       string
+	active          bool
+	waiting         bool
+	quitting        bool
+	status          string
+	viewportContent string
+	viewportWidth   int
+	viewportHeight  int
+	viewportYOffset int
+	focus           focusArea
+	hasNewOutput    bool
 }
 
 // Messages flowing through tea.Update. Runtime events and outbound messages
-// are pushed by a background pump goroutine via program.Send; the typewriter
-// and spinner tickers fire on their own cadence as pure tea.Cmd chains.
+// are pushed by a background pump goroutine via program.Send; the spinner
+// ticker fires on its own cadence as a pure tea.Cmd chain.
 type spinnerTickMsg struct{}
-type typewriterTickMsg struct{}
 
 type runtimeEventMsg struct {
 	ev runtime.Event
@@ -232,7 +191,7 @@ func (m *interactiveModel) pump() {
 
 // Init starts all background tickers.
 func (m *interactiveModel) Init() tea.Cmd {
-	return tea.Batch(textinput.Blink, m.tickSpinner(), m.tickTypewriter())
+	return tea.Batch(textinput.Blink, m.tickSpinner())
 }
 
 // shutdown releases the runtime subscription. Called on quit.
