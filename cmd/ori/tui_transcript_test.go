@@ -260,16 +260,25 @@ func TestAssistantFinalTextConflictClearsStaleTextSegments(t *testing.T) {
 }
 
 func TestAssistantFinishToolKeepsTerminalStatus(t *testing.T) {
-	asst := &assistantBlock{status: assistantStatusDone}
-	start := time.Unix(8, 0)
-	end := start.Add(time.Second)
+	tests := []assistantStatus{
+		assistantStatusDone,
+		assistantStatusError,
+		assistantStatusCancelled,
+	}
+	for _, status := range tests {
+		t.Run("terminal", func(t *testing.T) {
+			asst := &assistantBlock{status: status}
+			start := time.Unix(8, 0)
+			end := start.Add(time.Second)
 
-	asst.upsertToolStart("call-1", "shell", nil, start)
-	asst.status = assistantStatusDone
-	asst.finishTool("call-1", "shell", "done", false, end)
+			asst.upsertToolStart("call-1", "shell", nil, start)
+			asst.status = status
+			asst.finishTool("call-1", "shell", "done", false, end)
 
-	if asst.status != assistantStatusDone {
-		t.Fatalf("assistant status = %v, want done", asst.status)
+			if asst.status != status {
+				t.Fatalf("assistant status = %v, want %v", asst.status, status)
+			}
+		})
 	}
 }
 
@@ -299,6 +308,10 @@ func TestAssistantLateMutationsKeepTerminalStatus(t *testing.T) {
 			asst.updateTool("call-1", "shell", "running", start)
 			if asst.status != status {
 				t.Fatalf("after tool update status = %v, want %v", asst.status, status)
+			}
+			asst.finishTool("call-1", "shell", "done", false, start)
+			if asst.status != status {
+				t.Fatalf("after tool end status = %v, want %v", asst.status, status)
 			}
 		})
 	}
