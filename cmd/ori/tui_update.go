@@ -121,7 +121,6 @@ func (m *interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.WindowSizeMsg:
 		m.resizeTranscriptViewport(msg.Width, transcriptViewportHeightFor(msg.Height))
-		m.viewVersion++
 		return m, nil
 
 	case tea.KeyMsg:

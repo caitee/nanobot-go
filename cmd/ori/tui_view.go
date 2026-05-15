@@ -143,7 +143,7 @@ func (m *interactiveModel) initTranscriptViewport(width, height int) {
 	}
 }
 
-func (m *interactiveModel) resizeTranscriptViewport(width, height int) {
+func (m *interactiveModel) resizeTranscriptViewport(width, height int) bool {
 	if width <= 0 {
 		width = getTerminalWidth()
 	}
@@ -155,24 +155,34 @@ func (m *interactiveModel) resizeTranscriptViewport(width, height int) {
 	}
 	if m.viewport.Width <= 0 || m.viewport.Height <= 0 {
 		m.initTranscriptViewport(width, height)
-		return
+		m.transcriptViewportText = m.renderTranscriptViewportContent()
+		m.viewport.SetContent(m.transcriptViewportText)
+		m.viewport.GotoBottom()
+		m.clearNewTranscriptOutput()
+		m.viewVersion++
+		return true
 	}
 	wasAtBottom := m.viewport.AtBottom()
+	widthChanged := m.viewport.Width != width
 	if m.viewport.Width == width && m.viewport.Height == height {
-		return
+		return false
 	}
 	m.viewport.Width = width
 	m.viewport.Height = height
+	if widthChanged {
+		m.transcriptViewportText = m.renderTranscriptViewportContent()
+	}
 	m.viewport.SetContent(m.transcriptViewportText)
 	m.viewVersion++
 	if wasAtBottom {
 		m.viewport.GotoBottom()
 		m.clearNewTranscriptOutput()
-		return
+		return true
 	}
 	if m.viewport.AtBottom() {
 		m.clearNewTranscriptOutput()
 	}
+	return true
 }
 
 func (m *interactiveModel) refreshTranscriptViewport() {
@@ -181,12 +191,7 @@ func (m *interactiveModel) refreshTranscriptViewport() {
 	}
 	wasAtBottom := m.viewport.AtBottom()
 	wasEmpty := strings.TrimSpace(m.transcriptViewportText) == ""
-	content := m.renderer.renderTranscript(m.transcript, renderContext{
-		width:  m.viewport.Width,
-		focus:  m.focus,
-		active: m.active,
-		now:    time.Now(),
-	})
+	content := m.renderTranscriptViewportContent()
 	contentChanged := content != m.transcriptViewportText
 	if contentChanged {
 		m.transcriptViewportText = content
@@ -205,6 +210,15 @@ func (m *interactiveModel) refreshTranscriptViewport() {
 	if contentChanged {
 		m.markNewTranscriptOutput()
 	}
+}
+
+func (m *interactiveModel) renderTranscriptViewportContent() string {
+	return m.renderer.renderTranscript(m.transcript, renderContext{
+		width:  m.viewport.Width,
+		focus:  m.focus,
+		active: m.active,
+		now:    time.Now(),
+	})
 }
 
 func (m *interactiveModel) markNewTranscriptOutput() {

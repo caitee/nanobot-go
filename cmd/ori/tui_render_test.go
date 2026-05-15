@@ -207,6 +207,39 @@ func TestTranscriptViewportResizePreservesTailFollow(t *testing.T) {
 	}
 }
 
+func TestTranscriptViewportWidthResizeReflowsWithoutNewOutput(t *testing.T) {
+	m := &interactiveModel{}
+	m.initTranscriptViewport(24, 8)
+	m.transcript.appendUserBlock(m.nextBlockID("user"), "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda", time.Unix(1, 0))
+	m.transcript.appendSystemBlock(m.nextBlockID("system"), systemLevelInfo, "latest tail", time.Unix(2, 0))
+	m.refreshTranscriptViewport()
+	if !m.viewport.AtBottom() {
+		t.Fatalf("expected initial viewport at bottom")
+	}
+	narrowContent := plainView(m.transcriptViewportText)
+	narrowView := plainView(m.viewport.View())
+
+	m.resizeTranscriptViewport(70, 8)
+
+	wideContent := plainView(m.transcriptViewportText)
+	wideView := plainView(m.viewport.View())
+	if wideContent == narrowContent {
+		t.Fatalf("expected width resize to reflow transcript content; narrow:\n%s\nwide:\n%s", narrowContent, wideContent)
+	}
+	if wideView == narrowView {
+		t.Fatalf("expected visible viewport to change after width resize; narrow:\n%s\nwide:\n%s", narrowView, wideView)
+	}
+	if !m.viewport.AtBottom() {
+		t.Fatalf("expected width resize to preserve bottom-follow, offset=%d", m.viewport.YOffset)
+	}
+	if !strings.Contains(wideView, "latest tail") {
+		t.Fatalf("expected latest line to remain visible after width resize, got:\n%s", wideView)
+	}
+	if m.hasNewTranscriptOutput {
+		t.Fatal("width reflow should not mark transcript output as new")
+	}
+}
+
 func TestTranscriptViewportViewDoesNotRefreshContent(t *testing.T) {
 	m := &interactiveModel{}
 	m.initTranscriptViewport(40, 5)
