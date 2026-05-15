@@ -51,11 +51,13 @@ type MCPMetadataCache struct {
 
 // MCPServerMetadata is metadata for one configured server.
 type MCPServerMetadata struct {
-	ConfigHash string            `json:"configHash"`
-	UpdatedAt  time.Time         `json:"updatedAt"`
-	Tools      []MCPToolMeta     `json:"tools,omitempty"`
-	Resources  []MCPResourceMeta `json:"resources,omitempty"`
-	Prompts    []MCPPromptMeta   `json:"prompts,omitempty"`
+	ConfigHash   string            `json:"configHash"`
+	UpdatedAt    time.Time         `json:"updatedAt"`
+	DisplayName  string            `json:"displayName,omitempty"`
+	Instructions string            `json:"instructions,omitempty"`
+	Tools        []MCPToolMeta     `json:"tools,omitempty"`
+	Resources    []MCPResourceMeta `json:"resources,omitempty"`
+	Prompts      []MCPPromptMeta   `json:"prompts,omitempty"`
 }
 
 // LoadMCPMetadataCache loads a metadata cache, returning an empty cache when absent.
@@ -108,6 +110,8 @@ func HashMCPServerConfig(cfg MCPServerConfig) string {
 		Env          map[string]string `json:"env,omitempty"`
 		URL          string            `json:"url,omitempty"`
 		Headers      map[string]string `json:"headers,omitempty"`
+		Description  string            `json:"description,omitempty"`
+		Instructions string            `json:"instructions,omitempty"`
 		Timeout      int               `json:"timeout,omitempty"`
 		EnabledTools []string          `json:"enabledTools,omitempty"`
 		ExcludeTools []string          `json:"excludeTools,omitempty"`
@@ -119,6 +123,8 @@ func HashMCPServerConfig(cfg MCPServerConfig) string {
 		Env:          cfg.Env,
 		URL:          cfg.URL,
 		Headers:      cfg.Headers,
+		Description:  cfg.Description,
+		Instructions: cfg.Instructions,
 		Timeout:      cfg.Timeout,
 		EnabledTools: cfg.EnabledTools,
 		ExcludeTools: cfg.ExcludeTools,

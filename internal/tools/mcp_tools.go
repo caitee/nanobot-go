@@ -18,8 +18,178 @@ func NewMCPProxyTool(manager *MCPManager) tool.AgentTool {
 	return &mcpProxyTool{manager: manager}
 }
 
+// NewMCPSearchTool creates a task-oriented MCP metadata search tool.
+func NewMCPSearchTool(manager *MCPManager) tool.AgentTool {
+	return &mcpSearchTool{manager: manager}
+}
+
+// NewMCPDescribeTool creates a task-oriented MCP tool schema lookup tool.
+func NewMCPDescribeTool(manager *MCPManager) tool.AgentTool {
+	return &mcpDescribeTool{manager: manager}
+}
+
+// NewMCPCallTool creates a task-oriented MCP remote tool invocation wrapper.
+func NewMCPCallTool(manager *MCPManager) tool.AgentTool {
+	return &mcpCallTool{manager: manager}
+}
+
 type mcpProxyTool struct {
 	manager *MCPManager
+}
+
+type mcpSearchTool struct {
+	manager *MCPManager
+}
+
+func (t *mcpSearchTool) Name() string  { return "mcp_search" }
+func (t *mcpSearchTool) Label() string { return "MCP Search" }
+func (t *mcpSearchTool) Description() string {
+	return "Search configured MCP server and tool metadata by task text. Use this to discover which MCP server/tool can help before calling mcp_describe or mcp_call."
+}
+func (t *mcpSearchTool) Parameters() map[string]any {
+	props := map[string]any{
+		"query": map[string]any{
+			"type":        "string",
+			"description": "Task, capability, server, or tool text to search for.",
+		},
+		"server": map[string]any{
+			"type":        "string",
+			"description": "Optional MCP server name to restrict results.",
+		},
+	}
+	addMCPServerEnum(props, t.manager)
+	return map[string]any{
+		"type":       "object",
+		"properties": props,
+		"required":   []any{"query"},
+	}
+}
+func (t *mcpSearchTool) ExecutionMode() tool.ExecutionMode { return tool.ExecutionDefault }
+func (t *mcpSearchTool) PrepareArguments(raw map[string]any) (map[string]any, error) {
+	return raw, nil
+}
+func (t *mcpSearchTool) Execute(ctx context.Context, callID string, args map[string]any, update tool.UpdateFn) (*tool.Result, error) {
+	_ = callID
+	_ = update
+	query, _ := args["query"].(string)
+	server, _ := args["server"].(string)
+	tools, err := t.manager.SearchTools(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	return jsonTextResult(filterMCPToolsByServer(tools, server))
+}
+
+type mcpDescribeTool struct {
+	manager *MCPManager
+}
+
+func (t *mcpDescribeTool) Name() string  { return "mcp_describe" }
+func (t *mcpDescribeTool) Label() string { return "MCP Describe" }
+func (t *mcpDescribeTool) Description() string {
+	return "Describe one remote MCP tool, including its description and input schema. Use this before mcp_call when argument shape is unclear."
+}
+func (t *mcpDescribeTool) Parameters() map[string]any {
+	props := map[string]any{
+		"server": map[string]any{
+			"type":        "string",
+			"description": "MCP server name.",
+		},
+		"tool": map[string]any{
+			"type":        "string",
+			"description": "Remote MCP tool name.",
+		},
+	}
+	addMCPServerEnum(props, t.manager)
+	return map[string]any{
+		"type":       "object",
+		"properties": props,
+		"required":   []any{"server", "tool"},
+	}
+}
+func (t *mcpDescribeTool) ExecutionMode() tool.ExecutionMode { return tool.ExecutionDefault }
+func (t *mcpDescribeTool) PrepareArguments(raw map[string]any) (map[string]any, error) {
+	return raw, nil
+}
+func (t *mcpDescribeTool) Execute(ctx context.Context, callID string, args map[string]any, update tool.UpdateFn) (*tool.Result, error) {
+	_ = callID
+	_ = update
+	server, _ := args["server"].(string)
+	name, _ := args["tool"].(string)
+	meta, err := t.manager.DescribeTool(ctx, server, name)
+	if err != nil {
+		return nil, err
+	}
+	return jsonTextResult(meta)
+}
+
+type mcpCallTool struct {
+	manager *MCPManager
+}
+
+func (t *mcpCallTool) Name() string  { return "mcp_call" }
+func (t *mcpCallTool) Label() string { return "MCP Call" }
+func (t *mcpCallTool) Description() string {
+	return "Call one remote MCP tool by server and tool name. Put the remote tool input object in arguments."
+}
+func (t *mcpCallTool) Parameters() map[string]any {
+	props := map[string]any{
+		"server": map[string]any{
+			"type":        "string",
+			"description": "MCP server name.",
+		},
+		"tool": map[string]any{
+			"type":        "string",
+			"description": "Remote MCP tool name.",
+		},
+		"arguments": map[string]any{
+			"type":        "object",
+			"description": "Arguments for the remote MCP tool.",
+		},
+	}
+	addMCPServerEnum(props, t.manager)
+	return map[string]any{
+		"type":       "object",
+		"properties": props,
+		"required":   []any{"server", "tool", "arguments"},
+	}
+}
+func (t *mcpCallTool) ExecutionMode() tool.ExecutionMode { return tool.ExecutionDefault }
+func (t *mcpCallTool) PrepareArguments(raw map[string]any) (map[string]any, error) {
+	prepared := make(map[string]any, len(raw))
+	for k, v := range raw {
+		prepared[k] = v
+	}
+	if parsed, ok := parseObjectArgument(prepared["arguments"]); ok {
+		prepared["arguments"] = parsed
+	}
+	return prepared, nil
+}
+func (t *mcpCallTool) Execute(ctx context.Context, callID string, args map[string]any, update tool.UpdateFn) (*tool.Result, error) {
+	_ = callID
+	_ = update
+	server, _ := args["server"].(string)
+	name, _ := args["tool"].(string)
+	arguments, _ := args["arguments"].(map[string]any)
+	result, err := t.manager.CallTool(ctx, server, name, arguments)
+	if err != nil {
+		return nil, err
+	}
+	return &tool.Result{Content: ensureContent(result.Content), Details: result.Details}, nil
+}
+
+func addMCPServerEnum(props map[string]any, manager *MCPManager) {
+	serverProp, ok := props["server"].(map[string]any)
+	if !ok || manager == nil {
+		return
+	}
+	var servers []any
+	for _, server := range manager.serverList() {
+		servers = append(servers, server.Name)
+	}
+	if len(servers) > 0 {
+		serverProp["enum"] = servers
+	}
 }
 
 func (t *mcpProxyTool) Name() string  { return "mcp" }
@@ -240,14 +410,34 @@ func (t *mcpProxyTool) executePrompts(ctx context.Context, args map[string]any) 
 }
 
 type mcpDirectTool struct {
-	manager    *MCPManager
-	name       string
-	serverName string
-	meta       MCPToolMeta
+	manager       *MCPManager
+	name          string
+	serverName    string
+	serverPurpose string
+	meta          MCPToolMeta
 }
 
 func newMCPDirectTool(manager *MCPManager, name, serverName string, meta MCPToolMeta) tool.AgentTool {
-	return &mcpDirectTool{manager: manager, name: name, serverName: serverName, meta: meta}
+	return newMCPDirectToolWithPurpose(manager, name, serverName, meta, "")
+}
+
+func newMCPDirectToolWithPurpose(
+	manager *MCPManager, name, serverName string, meta MCPToolMeta, serverPurpose string,
+) tool.AgentTool {
+	return &mcpDirectTool{
+		manager:       manager,
+		name:          name,
+		serverName:    serverName,
+		serverPurpose: shortMCPPurpose(serverPurpose),
+		meta:          meta,
+	}
+}
+
+// IsMCPDirectTool reports whether t is a direct wrapper for one remote MCP
+// tool. Hosts use it to refresh only generated MCP tools.
+func IsMCPDirectTool(t tool.AgentTool) bool {
+	_, ok := t.(*mcpDirectTool)
+	return ok
 }
 
 func (t *mcpDirectTool) Name() string  { return t.name }
@@ -256,6 +446,9 @@ func (t *mcpDirectTool) Description() string {
 	desc := strings.TrimSpace(t.meta.Description)
 	if desc == "" {
 		desc = "MCP tool"
+	}
+	if t.serverPurpose != "" {
+		return fmt.Sprintf("%s (MCP server: %s; server purpose: %s; tool: %s)", desc, t.serverName, t.serverPurpose, t.meta.Name)
 	}
 	return fmt.Sprintf("%s (MCP server: %s, tool: %s)", desc, t.serverName, t.meta.Name)
 }
@@ -323,6 +516,24 @@ func shortHash(s string) string {
 	h := fnv.New32a()
 	_, _ = h.Write([]byte(s))
 	return fmt.Sprintf("%08x", h.Sum32())
+}
+
+func mcpServerPurpose(server MCPServerConfig, meta MCPServerMetadata) string {
+	for _, item := range []string{server.Description, server.Instructions, meta.Instructions} {
+		if trimmed := strings.TrimSpace(item); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
+func shortMCPPurpose(value string) string {
+	value = strings.Join(strings.Fields(value), " ")
+	const maxPurpose = 140
+	if len(value) <= maxPurpose {
+		return value
+	}
+	return strings.TrimSpace(value[:maxPurpose-3]) + "..."
 }
 
 func textResult(text string, details any) *tool.Result {

@@ -195,15 +195,19 @@ func (p *mcpToolPlugin) Init(ctx context.Context, appCtx plugin.AppContext) erro
 		Cache:     cache,
 		CachePath: mcpCfg.Settings.CachePath,
 	})
+	reg := appCtx.GetToolRegistry().(tool.Registry)
+	p.manager.SetMetadataChangeHook(func() {
+		refreshMCPDirectTools(reg, p.manager)
+	})
 	if err := p.manager.Start(ctx); err != nil {
 		return err
 	}
 
-	reg := appCtx.GetToolRegistry().(tool.Registry)
 	reg.Register(legacytools.NewMCPProxyTool(p.manager))
-	for _, direct := range p.manager.DirectTools() {
-		reg.Register(direct)
-	}
+	reg.Register(legacytools.NewMCPSearchTool(p.manager))
+	reg.Register(legacytools.NewMCPDescribeTool(p.manager))
+	reg.Register(legacytools.NewMCPCallTool(p.manager))
+	refreshMCPDirectTools(reg, p.manager)
 	return nil
 }
 

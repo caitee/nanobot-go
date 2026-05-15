@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"ori/internal/config"
+	"ori/internal/llm"
 	"ori/internal/skills"
 	"ori/internal/tool"
 	legacytools "ori/internal/tools"
@@ -125,6 +126,9 @@ func TestManagementToggleMCPServerRefreshesDirectTools(t *testing.T) {
 	})
 	reg := tool.NewRegistry()
 	reg.Register(legacytools.NewMCPProxyTool(manager))
+	reg.Register(legacytools.NewMCPSearchTool(manager))
+	reg.Register(legacytools.NewMCPDescribeTool(manager))
+	reg.Register(legacytools.NewMCPCallTool(manager))
 	for _, direct := range manager.DirectTools() {
 		reg.Register(direct)
 	}
@@ -144,11 +148,54 @@ func TestManagementToggleMCPServerRefreshesDirectTools(t *testing.T) {
 	if reg.Has("mcp_alpha_echo") {
 		t.Fatalf("direct MCP tool should be removed after disabling server")
 	}
+	for _, name := range []string{"mcp_search", "mcp_describe", "mcp_call"} {
+		if !reg.Has(name) {
+			t.Fatalf("semantic MCP tool %q should not be removed during direct refresh", name)
+		}
+	}
 	var raw map[string]any
 	readManagementJSON(t, mcpPath, &raw)
 	alpha := raw["mcpServers"].(map[string]any)["alpha"].(map[string]any)
 	if alpha["enabled"] != false {
 		t.Fatalf("persisted enabled = %#v; want false", alpha["enabled"])
+	}
+}
+
+func TestMCPSearchRefreshesDirectToolsThroughManagementHook(t *testing.T) {
+	server := legacytools.MCPServerConfig{Name: "alpha", Command: "server", Enabled: true}
+	factory := &managementMCPFactory{
+		tools: []legacytools.MCPToolMeta{{
+			Name:        "echo",
+			Description: "echo input",
+			InputSchema: map[string]any{"type": "object"},
+		}},
+	}
+	manager := legacytools.NewMCPManager(legacytools.MCPManagerOptions{
+		ClientFactory: factory,
+		Config: &legacytools.MCPConfig{
+			Settings: legacytools.MCPSettings{DirectTools: legacytools.DirectToolSelector{All: true}},
+			Servers:  map[string]legacytools.MCPServerConfig{"alpha": server},
+		},
+	})
+	reg := tool.NewRegistry()
+	reg.Register(legacytools.NewMCPProxyTool(manager))
+	reg.Register(legacytools.NewMCPSearchTool(manager))
+	if reg.Has("mcp_alpha_echo") {
+		t.Fatalf("direct MCP tool should not exist before metadata refresh")
+	}
+	_ = NewManagementService(ManagementOptions{
+		Config:       &config.Config{},
+		MCPManager:   manager,
+		ToolRegistry: reg,
+	})
+
+	if _, err := reg.Execute(context.Background(), "mcp_search", "search-1", map[string]any{
+		"query": "echo",
+	}, nil); err != nil {
+		t.Fatalf("mcp_search: %v", err)
+	}
+	if !reg.Has("mcp_alpha_echo") {
+		t.Fatalf("direct MCP tool should be registered after mcp_search refreshes metadata")
 	}
 }
 
@@ -162,6 +209,48 @@ description: "Demo skill"
 # Demo
 `)
 }
+
+type managementMCPFactory struct {
+	tools []legacytools.MCPToolMeta
+}
+
+func (f *managementMCPFactory) Connect(ctx context.Context, cfg legacytools.MCPServerConfig) (legacytools.MCPClientSession, error) {
+	return &managementMCPSession{factory: f}, nil
+}
+
+type managementMCPSession struct {
+	factory *managementMCPFactory
+}
+
+func (s *managementMCPSession) ListTools(ctx context.Context) ([]legacytools.MCPToolMeta, error) {
+	return s.factory.tools, nil
+}
+
+func (s *managementMCPSession) CallTool(ctx context.Context, name string, args map[string]any) (legacytools.MCPCallResult, error) {
+	return legacytools.MCPCallResult{Content: []llm.Content{llm.TextContent{Text: "ok"}}}, nil
+}
+
+func (s *managementMCPSession) ListResources(ctx context.Context) ([]legacytools.MCPResourceMeta, error) {
+	return nil, nil
+}
+
+func (s *managementMCPSession) ReadResource(ctx context.Context, uri string) (legacytools.MCPCallResult, error) {
+	return legacytools.MCPCallResult{}, nil
+}
+
+func (s *managementMCPSession) ListPrompts(ctx context.Context) ([]legacytools.MCPPromptMeta, error) {
+	return nil, nil
+}
+
+func (s *managementMCPSession) GetPrompt(ctx context.Context, name string, args map[string]any) (legacytools.MCPCallResult, error) {
+	return legacytools.MCPCallResult{}, nil
+}
+
+func (s *managementMCPSession) ServerInstructions() string { return "" }
+
+func (s *managementMCPSession) ServerDisplayName() string { return "" }
+
+func (s *managementMCPSession) Close() error { return nil }
 
 func writeManagementTestFile(t *testing.T, path, content string) {
 	t.Helper()

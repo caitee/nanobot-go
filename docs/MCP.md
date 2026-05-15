@@ -25,7 +25,7 @@ cmd/ori, cmd/gateway
 
 ## 设计逻辑
 
-### Proxy Tool
+### Proxy Tool 与语义化工具
 
 `mcp` 是默认暴露给模型的统一入口，适合发现和调用 MCP 能力。它支持：
 
@@ -37,7 +37,13 @@ cmd/ori, cmd/gateway
 - `call`: 调用某个 MCP tool。
 - `tools`, `resources`, `prompts`: 兼容旧 action 形态。
 
-默认建议先 `search` 或 `describe`，再 `call`，这样模型不需要一次性把所有远端工具 schema 放进上下文。
+同时，Ori 也注册三个更明确的 MCP 工具，帮助模型理解每一步的意图：
+
+- `mcp_search`: 按任务文本搜索 MCP server/tool 元数据，不执行远端工具。
+- `mcp_describe`: 查看某个远端 MCP tool 的描述和输入 schema。
+- `mcp_call`: 调用某个远端 MCP tool，远端入参放在 `arguments` 对象里。
+
+默认建议先 `mcp_search` 或 `mcp_describe`，再 `mcp_call`。旧的 `mcp` proxy 会继续保留，方便兼容已有会话和旧 action 形态。
 
 ### Direct Tools
 
@@ -55,7 +61,9 @@ mcp_chrome_devtools_take_screenshot
 - 工具名最长 64 字符。
 - 冲突或过长时追加 hash 后缀。
 
-direct tools 依赖缓存。新 server 第一次接入时，先通过 `mcp` proxy 调 `connect`、`list` 或 `search` 刷新缓存；重启 Ori 后，符合 `directTools` 规则的 direct tools 才会在默认工具列表中出现。
+direct tools 依赖缓存。新 server 第一次接入时，先通过 `mcp` proxy 调 `connect`、`list`、`search`，或通过 `mcp_search` 刷新缓存；符合 `directTools` 规则的 direct tools 会热刷新到后续模型可见工具列表中，不需要重启 Ori。
+
+每轮对话开始前，Ori 还会基于当前用户输入，从已缓存 MCP 元数据里动态挑选最多 8 个相关 direct wrappers 注入本轮工具列表。这个动态预选不受 `directTools` allowlist 限制，但只使用已启用 server、有效缓存、`enabledTools`/`excludeTools` 过滤后的工具。它用于补充长尾工具，不会把所有 MCP schema 全量塞进上下文。
 
 ### `/mcp` TUI 管理
 
@@ -78,6 +86,8 @@ direct tools 依赖缓存。新 server 第一次接入时，先通过 `mcp` prox
 - idle timeout 后关闭非 keep-alive session。
 - 失败后进入 backoff，默认 60 秒。
 - 刷新 tool/resource/prompt 元数据缓存。
+- 缓存远端 server instructions，并合并 host 配置里的 server 描述。
+- 维护元数据刷新 hook，让模型可见的 direct tools 能热更新。
 - 关闭应用时关闭 MCP sessions 并保存缓存。
 
 ### Transport
@@ -122,7 +132,7 @@ Ori 默认只加载两个 MCP 配置文件，后者覆盖前者：
 ~/.ori/mcp-cache.json
 ```
 
-缓存只保存 tool/resource/prompt 元数据和 server config hash，不保存明文 env/header secret。hash 会随影响连接和工具暴露的配置变化而变化，从而触发缓存失效。
+缓存只保存 tool/resource/prompt 元数据、远端 server instructions、展示名和 server config hash，不保存明文 env/header secret。hash 会随影响连接、搜索语义和工具暴露的配置变化而变化，从而触发缓存失效。
 
 ## 配置字段
 
@@ -144,6 +154,8 @@ Ori 默认只加载两个 MCP 配置文件，后者覆盖前者：
 | `env` | object | 注入 stdio 子进程的环境变量。 |
 | `url` | string | HTTP/SSE MCP endpoint。 |
 | `headers` | object | HTTP/SSE 请求头。 |
+| `description` | string | host 侧写给模型看的 server 能力摘要，会进入搜索索引和 direct tool 描述。 |
+| `instructions` | string | host 侧写给模型看的使用建议；如果设置，会优先于远端 server instructions。 |
 | `transport` | string | 显式 transport。 |
 | `timeout` | number | 秒。HTTP transport 请求超时；也是未设置 `toolTimeout` 时的默认 tool 调用超时。 |
 | `toolTimeout` | number | 秒。单次 tool/resource/prompt 调用超时，优先于 `timeout`。 |

@@ -30,6 +30,7 @@ import (
 	"ori/internal/session"
 	"ori/internal/skills"
 	"ori/internal/tool"
+	legacytools "ori/internal/tools"
 )
 
 // Dispatcher is the glue between bus-driven inputs and a runtime.Agent.
@@ -49,6 +50,7 @@ type Dispatcher struct {
 	commands     map[string]Command
 	skillLoader  *skills.SkillLoader
 	management   *ManagementService
+	mcpManager   *legacytools.MCPManager
 
 	enableReasoning bool
 	reasoningEffort string
@@ -100,6 +102,7 @@ type DispatcherOptions struct {
 	ReasoningEffort  string
 	SkillLoader      *skills.SkillLoader
 	Management       *ManagementService
+	MCPManager       *legacytools.MCPManager
 	SystemPrompt     string
 	TransformContext runtime.TransformContext
 	Subagents        SubagentSpawner
@@ -127,6 +130,7 @@ func NewDispatcher(opts DispatcherOptions) *Dispatcher {
 		reasoningEffort:  opts.ReasoningEffort,
 		skillLoader:      opts.SkillLoader,
 		management:       opts.Management,
+		mcpManager:       opts.MCPManager,
 		systemPrompt:     opts.SystemPrompt,
 		transformContext: opts.TransformContext,
 		subagents:        opts.Subagents,
@@ -478,7 +482,7 @@ func (d *Dispatcher) runTurn(parent context.Context, inbound bus.InboundMessage)
 		ThinkingLevel:    settings.thinkingLevel,
 		Temperature:      settings.temperature,
 		MaxTokens:        settings.maxTokens,
-		Tools:            d.toolRegistry.All(),
+		Tools:            d.toolsForTurn(inbound.Content),
 		InitialHistory:   history[:len(history)-1], // exclude the just-appended user msg; it's the prompt
 		StreamFn:         settings.streamFn,
 		TransformContext: d.transformContext,
@@ -550,6 +554,35 @@ func (d *Dispatcher) runTurn(parent context.Context, inbound bus.InboundMessage)
 			bus.OutboundMetadataAgentEventFinal: true,
 		},
 	}, nil
+}
+
+func (d *Dispatcher) toolsForTurn(userText string) []tool.AgentTool {
+	base := d.toolRegistry.All()
+	if d.mcpManager == nil {
+		return base
+	}
+	const dynamicMCPToolLimit = 8
+	dynamic := d.mcpManager.RelevantDirectTools(userText, dynamicMCPToolLimit)
+	if len(dynamic) == 0 {
+		return base
+	}
+	out := make([]tool.AgentTool, 0, len(base)+len(dynamic))
+	seen := map[string]bool{}
+	for _, item := range base {
+		if item == nil {
+			continue
+		}
+		seen[item.Name()] = true
+		out = append(out, item)
+	}
+	for _, item := range dynamic {
+		if item == nil || seen[item.Name()] {
+			continue
+		}
+		seen[item.Name()] = true
+		out = append(out, item)
+	}
+	return out
 }
 
 // thinkingLevelFor returns the reasoning level string for a session.

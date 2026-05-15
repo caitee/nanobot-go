@@ -94,7 +94,7 @@ func NewManagementService(opts ManagementOptions) *ManagementService {
 	if mcpPath == "" && home != "" {
 		mcpPath = config.DefaultMCPConfigPath(home)
 	}
-	return &ManagementService{
+	s := &ManagementService{
 		cfg:          cfg,
 		configPath:   configPath,
 		mcpPath:      mcpPath,
@@ -103,6 +103,10 @@ func NewManagementService(opts ManagementOptions) *ManagementService {
 		toolRegistry: opts.ToolRegistry,
 		hotApply:     opts.HotApply,
 	}
+	if s.mcpManager != nil && s.toolRegistry != nil {
+		s.mcpManager.SetMetadataChangeHook(s.refreshMCPDirectTools)
+	}
+	return s
 }
 
 // SetHotApply installs the callback used after runtime-affecting saves.
@@ -202,16 +206,20 @@ func (s *ManagementService) RefreshMCPServer(ctx context.Context, name string) (
 }
 
 func (s *ManagementService) refreshMCPDirectTools() {
-	if s.toolRegistry == nil || s.mcpManager == nil {
+	refreshMCPDirectTools(s.toolRegistry, s.mcpManager)
+}
+
+func refreshMCPDirectTools(reg tool.Registry, manager *legacytools.MCPManager) {
+	if reg == nil || manager == nil {
 		return
 	}
-	for _, t := range s.toolRegistry.All() {
-		if strings.HasPrefix(t.Name(), "mcp_") {
-			s.toolRegistry.Unregister(t.Name())
+	for _, t := range reg.All() {
+		if legacytools.IsMCPDirectTool(t) {
+			reg.Unregister(t.Name())
 		}
 	}
-	for _, t := range s.mcpManager.DirectTools() {
-		s.toolRegistry.Register(t)
+	for _, t := range manager.DirectTools() {
+		reg.Register(t)
 	}
 }
 

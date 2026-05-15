@@ -71,6 +71,8 @@ type MCPServerConfig struct {
 	Env          map[string]string
 	URL          string
 	Headers      map[string]string
+	Description  string
+	Instructions string
 	Timeout      int
 	EnabledTools []string
 	ExcludeTools []string
@@ -306,6 +308,16 @@ func applyMCPServer(server *MCPServerConfig, raw json.RawMessage, home string) e
 			return fmt.Errorf("headers: %w", err)
 		}
 		server.Headers = mergeStringMap(server.Headers, headers)
+	}
+	if raw, ok := fields["description"]; ok {
+		if err := json.Unmarshal(raw, &server.Description); err != nil {
+			return fmt.Errorf("description: %w", err)
+		}
+	}
+	if raw, ok := fields["instructions"]; ok {
+		if err := json.Unmarshal(raw, &server.Instructions); err != nil {
+			return fmt.Errorf("instructions: %w", err)
+		}
 	}
 	if raw, ok := fields["timeout"]; ok {
 		if err := json.Unmarshal(raw, &server.Timeout); err != nil {

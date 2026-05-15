@@ -196,6 +196,7 @@ func (a *App) Start(ctx context.Context) error {
 		ReasoningEffort:  a.Config.Agents.ReasoningEffort,
 		SkillLoader:      a.SkillLoader,
 		Management:       a.Management,
+		MCPManager:       a.MCPManager,
 		SystemPrompt:     systemPrompt,
 		TransformContext: runtime.RuntimeContextTransform(runtime.RuntimeContext{}),
 		Subagents:        a.Subagents,

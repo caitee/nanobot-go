@@ -30,6 +30,8 @@ type MCPClientSession interface {
 	ReadResource(ctx context.Context, uri string) (MCPCallResult, error)
 	ListPrompts(ctx context.Context) ([]MCPPromptMeta, error)
 	GetPrompt(ctx context.Context, name string, args map[string]any) (MCPCallResult, error)
+	ServerInstructions() string
+	ServerDisplayName() string
 	Close() error
 }
 
@@ -153,6 +155,24 @@ func (rt headerRoundTripper) RoundTrip(req *http.Request) (*http.Response, error
 
 type sdkMCPClientSession struct {
 	session *sdkmcp.ClientSession
+}
+
+func (s *sdkMCPClientSession) ServerInstructions() string {
+	if s == nil || s.session == nil || s.session.InitializeResult() == nil {
+		return ""
+	}
+	return s.session.InitializeResult().Instructions
+}
+
+func (s *sdkMCPClientSession) ServerDisplayName() string {
+	if s == nil || s.session == nil || s.session.InitializeResult() == nil {
+		return ""
+	}
+	info := s.session.InitializeResult().ServerInfo
+	if info == nil {
+		return ""
+	}
+	return info.Name
 }
 
 func (s *sdkMCPClientSession) ListTools(ctx context.Context) ([]MCPToolMeta, error) {

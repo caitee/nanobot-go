@@ -118,6 +118,86 @@ func TestMCPProxyCallAcceptsJSONArgumentsFromURI(t *testing.T) {
 	}
 }
 
+func TestMCPSemanticToolsSearchDescribeAndCall(t *testing.T) {
+	factory := &fakeMCPClientFactory{
+		tools: []MCPToolMeta{
+			{
+				Name:        "web_search",
+				Description: "Search the public web",
+				InputSchema: map[string]any{
+					"type":       "object",
+					"properties": map[string]any{"query": map[string]any{"type": "string"}},
+				},
+			},
+		},
+		callResult: MCPCallResult{
+			Content: []llm.Content{llm.TextContent{Text: "search result"}},
+		},
+	}
+	server := MCPServerConfig{
+		Name:        "search",
+		Command:     "server",
+		Description: "Web and documentation search",
+	}
+	manager := NewMCPManager(MCPManagerOptions{
+		ClientFactory: factory,
+		Config: &MCPConfig{Servers: map[string]MCPServerConfig{
+			"search": server,
+		}},
+	})
+	reg := tool.NewRegistry()
+	reg.Register(NewMCPSearchTool(manager))
+	reg.Register(NewMCPDescribeTool(manager))
+	reg.Register(NewMCPCallTool(manager))
+
+	searchRes, err := reg.Execute(context.Background(), "mcp_search", "search-1", map[string]any{
+		"query": "documentation",
+	}, nil)
+	if err != nil {
+		t.Fatalf("mcp_search: %v", err)
+	}
+	searchTools, ok := searchRes.Details.([]MCPToolMeta)
+	if !ok {
+		t.Fatalf("search details type = %T", searchRes.Details)
+	}
+	if len(searchTools) != 1 || searchTools[0].ServerName != "search" || searchTools[0].Name != "web_search" {
+		t.Fatalf("search results = %#v; want search/web_search", searchTools)
+	}
+	if !strings.Contains(searchToolDescription(reg, "mcp_search"), "Search configured MCP server and tool metadata") {
+		t.Fatalf("mcp_search description should be task-oriented")
+	}
+
+	describeRes, err := reg.Execute(context.Background(), "mcp_describe", "describe-1", map[string]any{
+		"server": "search",
+		"tool":   "web_search",
+	}, nil)
+	if err != nil {
+		t.Fatalf("mcp_describe: %v", err)
+	}
+	meta, ok := describeRes.Details.(MCPToolMeta)
+	if !ok {
+		t.Fatalf("describe details type = %T", describeRes.Details)
+	}
+	if meta.InputSchema["type"] != "object" {
+		t.Fatalf("describe schema = %#v", meta.InputSchema)
+	}
+
+	callRes, err := reg.Execute(context.Background(), "mcp_call", "call-1", map[string]any{
+		"server":    "search",
+		"tool":      "web_search",
+		"arguments": map[string]any{"query": "ori"},
+	}, nil)
+	if err != nil {
+		t.Fatalf("mcp_call: %v", err)
+	}
+	if textContent(t, callRes) != "search result" {
+		t.Fatalf("call result = %q", textContent(t, callRes))
+	}
+	if factory.lastCallArgs["query"] != "ori" {
+		t.Fatalf("call args = %#v; want query forwarded", factory.lastCallArgs)
+	}
+}
+
 func TestMCPProxySearchFiltersByServer(t *testing.T) {
 	alpha := MCPServerConfig{Name: "alpha", Command: "server"}
 	beta := MCPServerConfig{Name: "beta", Command: "server"}
@@ -156,12 +236,93 @@ func TestMCPProxySearchFiltersByServer(t *testing.T) {
 	}
 }
 
+func TestMCPManagerSearchUsesServerCatalog(t *testing.T) {
+	server := MCPServerConfig{
+		Name:         "browser",
+		Command:      "server",
+		Description:  "Browser automation and page inspection",
+		Instructions: "Use for screenshots, DOM inspection, and navigation.",
+	}
+	manager := NewMCPManager(MCPManagerOptions{
+		Config: &MCPConfig{Servers: map[string]MCPServerConfig{
+			"browser": server,
+		}},
+		Cache: &MCPMetadataCache{Servers: map[string]MCPServerMetadata{
+			"browser": {
+				ConfigHash:   HashMCPServerConfig(server),
+				Instructions: "Remote guidance should be indexed when host instructions are absent.",
+				Tools: []MCPToolMeta{{
+					Name:        "capture",
+					Description: "Capture the current page",
+					InputSchema: map[string]any{"type": "object"},
+				}},
+			},
+		}},
+	})
+
+	tools, err := manager.SearchTools(context.Background(), "screenshot")
+	if err != nil {
+		t.Fatalf("SearchTools: %v", err)
+	}
+	if len(tools) != 1 || tools[0].ServerName != "browser" || tools[0].Name != "capture" {
+		t.Fatalf("search results = %#v; want browser/capture", tools)
+	}
+
+	catalog := manager.ServerCatalog()
+	if len(catalog) != 1 {
+		t.Fatalf("catalog length = %d; want 1", len(catalog))
+	}
+	if catalog[0].Description != server.Description {
+		t.Fatalf("catalog description = %q", catalog[0].Description)
+	}
+	if catalog[0].Instructions != server.Instructions {
+		t.Fatalf("catalog instructions should prefer configured instructions: %q", catalog[0].Instructions)
+	}
+}
+
+func TestMCPManagerCachesRemoteInstructions(t *testing.T) {
+	factory := &fakeMCPClientFactory{
+		instructions: "Use for repository issues and pull requests.",
+		tools:        []MCPToolMeta{{Name: "list_issues", InputSchema: map[string]any{"type": "object"}}},
+	}
+	server := MCPServerConfig{Name: "github", Command: "server"}
+	manager := NewMCPManager(MCPManagerOptions{
+		ClientFactory: factory,
+		Config: &MCPConfig{Servers: map[string]MCPServerConfig{
+			"github": server,
+		}},
+	})
+
+	if err := manager.ConnectServer(context.Background(), "github"); err != nil {
+		t.Fatalf("ConnectServer: %v", err)
+	}
+	catalog := manager.ServerCatalog()
+	if len(catalog) != 1 {
+		t.Fatalf("catalog length = %d; want 1", len(catalog))
+	}
+	if catalog[0].Instructions != factory.instructions {
+		t.Fatalf("remote instructions = %q; want %q", catalog[0].Instructions, factory.instructions)
+	}
+}
+
+func searchToolDescription(reg tool.Registry, name string) string {
+	t, ok := reg.Get(name)
+	if !ok {
+		return ""
+	}
+	return t.Description()
+}
+
 func TestMCPDirectToolsUseCachedMetadataAndStableNames(t *testing.T) {
 	cfg := &MCPConfig{
 		Settings: MCPSettings{DirectTools: DirectToolSelector{All: true}},
 		Servers: map[string]MCPServerConfig{
-			"chrome-devtools": {Name: "chrome-devtools", DirectTools: DirectToolSelector{Names: []string{"take_screenshot"}}},
-			"skip":            {Name: "skip", ExcludeTools: []string{"hidden"}},
+			"chrome-devtools": {
+				Name:        "chrome-devtools",
+				Description: "Browser automation and page inspection",
+				DirectTools: DirectToolSelector{Names: []string{"take_screenshot"}},
+			},
+			"skip": {Name: "skip", ExcludeTools: []string{"hidden"}},
 		},
 	}
 	manager := NewMCPManager(MCPManagerOptions{
@@ -192,6 +353,9 @@ func TestMCPDirectToolsUseCachedMetadataAndStableNames(t *testing.T) {
 	}
 	if !strings.Contains(direct[0].Description(), "chrome-devtools") {
 		t.Fatalf("description should name server: %q", direct[0].Description())
+	}
+	if !strings.Contains(direct[0].Description(), "server purpose: Browser automation and page inspection") {
+		t.Fatalf("description should include server purpose: %q", direct[0].Description())
 	}
 }
 
@@ -336,6 +500,7 @@ type fakeMCPClientFactory struct {
 	connectErr   error
 	connectCalls int
 	lastCallArgs map[string]any
+	instructions string
 }
 
 func (f *fakeMCPClientFactory) Connect(ctx context.Context, cfg MCPServerConfig) (MCPClientSession, error) {
@@ -353,6 +518,12 @@ type fakeMCPClientSession struct {
 
 func (s *fakeMCPClientSession) ListTools(ctx context.Context) ([]MCPToolMeta, error) {
 	return s.factory.tools, nil
+}
+func (s *fakeMCPClientSession) ServerInstructions() string {
+	return s.factory.instructions
+}
+func (s *fakeMCPClientSession) ServerDisplayName() string {
+	return ""
 }
 func (s *fakeMCPClientSession) CallTool(ctx context.Context, name string, args map[string]any) (MCPCallResult, error) {
 	s.factory.lastCallArgs = args

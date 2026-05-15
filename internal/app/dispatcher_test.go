@@ -16,6 +16,7 @@ import (
 	"ori/internal/session"
 	"ori/internal/skills"
 	"ori/internal/tool"
+	legacytools "ori/internal/tools"
 )
 
 // fakeStream returns a scripted stream that replies with fixed text.
@@ -74,6 +75,79 @@ func TestDispatcherProcessDirectReturnsOutbound(t *testing.T) {
 	}
 }
 
+func TestDispatcherInjectsRelevantMCPDirectTools(t *testing.T) {
+	dir, err := os.MkdirTemp("", "ori-mcp-dynamic-tools-*")
+	if err != nil {
+		t.Fatalf("tempdir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	store, err := session.NewFileSessionStore(filepath.Join(dir, "sessions"))
+	if err != nil {
+		t.Fatalf("session store: %v", err)
+	}
+
+	browser := legacytools.MCPServerConfig{
+		Name:        "browser",
+		Command:     "server",
+		Description: "Browser automation and screenshots",
+	}
+	notes := legacytools.MCPServerConfig{
+		Name:        "notes",
+		Command:     "server",
+		Description: "Personal notes",
+	}
+	manager := legacytools.NewMCPManager(legacytools.MCPManagerOptions{
+		Config: &legacytools.MCPConfig{Servers: map[string]legacytools.MCPServerConfig{
+			"browser": browser,
+			"notes":   notes,
+		}},
+		Cache: &legacytools.MCPMetadataCache{Servers: map[string]legacytools.MCPServerMetadata{
+			"browser": {
+				ConfigHash: legacytools.HashMCPServerConfig(browser),
+				Tools: []legacytools.MCPToolMeta{{
+					Name:        "take_screenshot",
+					Description: "Capture a screenshot of the current browser page",
+					InputSchema: map[string]any{"type": "object"},
+				}},
+			},
+			"notes": {
+				ConfigHash: legacytools.HashMCPServerConfig(notes),
+				Tools: []legacytools.MCPToolMeta{{
+					Name:        "create_note",
+					Description: "Create a note",
+					InputSchema: map[string]any{"type": "object"},
+				}},
+			},
+		}},
+	})
+
+	var toolNames []string
+	stream := func(ctx context.Context, model llm.Model, c llm.Context, opts llm.StreamOptions) llm.EventStream {
+		for _, item := range c.Tools {
+			toolNames = append(toolNames, item.Name)
+		}
+		return fakeStreamFn("done")(ctx, model, c, opts)
+	}
+	d := app.NewDispatcher(app.DispatcherOptions{
+		Bus:          bus.New(10),
+		SessionStore: store,
+		ToolRegistry: tool.NewRegistry(),
+		StreamFn:     stream,
+		Model:        llm.Model{ID: "test-model", Provider: "fake", API: "openai"},
+		MCPManager:   manager,
+	})
+
+	if _, err := d.ProcessDirect(context.Background(), "take a browser screenshot", "cli:k", "cli", "k"); err != nil {
+		t.Fatalf("ProcessDirect: %v", err)
+	}
+	if !hasToolName(toolNames, "mcp_browser_take_screenshot") {
+		t.Fatalf("expected relevant browser MCP tool, got %v", toolNames)
+	}
+	if hasToolName(toolNames, "mcp_notes_create_note") {
+		t.Fatalf("unexpected unrelated notes MCP tool, got %v", toolNames)
+	}
+}
+
 func TestDispatcherListsDefaultSlashCommands(t *testing.T) {
 	d, _, _ := newTestDispatcher(t, "hello")
 
@@ -88,6 +162,15 @@ func TestDispatcherListsDefaultSlashCommands(t *testing.T) {
 			t.Fatalf("expected default command %q in command list: %+v", name, commands)
 		}
 	}
+}
+
+func hasToolName(names []string, want string) bool {
+	for _, name := range names {
+		if name == want {
+			return true
+		}
+	}
+	return false
 }
 
 func TestDispatcherExecuteCommandHandlesAliasesAndResetSession(t *testing.T) {

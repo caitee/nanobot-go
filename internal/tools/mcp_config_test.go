@@ -111,6 +111,47 @@ func TestMCPDefaultConfigPathsUseOriDirectory(t *testing.T) {
 	}
 }
 
+func TestMCPServerDescriptionInstructionsAreParsedAndInvalidateCache(t *testing.T) {
+	home := t.TempDir()
+	path := filepath.Join(t.TempDir(), "mcp.json")
+	writeTestFile(t, path, `{
+		"mcpServers": {
+			"browser": {
+				"command": "mcp-browser",
+				"description": "Browser automation and page inspection",
+				"instructions": "Use this server when a task needs screenshots or DOM inspection."
+			}
+		}
+	}`)
+
+	cfg, err := LoadMCPConfig(MCPConfigLoadOptions{
+		Paths:   []string{path},
+		HomeDir: home,
+	})
+	if err != nil {
+		t.Fatalf("LoadMCPConfig: %v", err)
+	}
+
+	server := cfg.Servers["browser"]
+	if server.Description != "Browser automation and page inspection" {
+		t.Fatalf("description = %q", server.Description)
+	}
+	if server.Instructions != "Use this server when a task needs screenshots or DOM inspection." {
+		t.Fatalf("instructions = %q", server.Instructions)
+	}
+
+	changed := server
+	changed.Description = "Different purpose"
+	if HashMCPServerConfig(server) == HashMCPServerConfig(changed) {
+		t.Fatalf("description should participate in metadata cache invalidation")
+	}
+	changed = server
+	changed.Instructions = "Different usage guidance"
+	if HashMCPServerConfig(server) == HashMCPServerConfig(changed) {
+		t.Fatalf("instructions should participate in metadata cache invalidation")
+	}
+}
+
 func TestMCPMetadataCacheDoesNotPersistSecrets(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "cache.json")
 	cfg := MCPServerConfig{

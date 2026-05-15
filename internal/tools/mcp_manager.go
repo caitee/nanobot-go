@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"ori/internal/llm"
 	"ori/internal/tool"
@@ -32,6 +33,7 @@ type MCPManager struct {
 	clientFactory MCPClientFactory
 	now           func() time.Time
 	sessions      map[string]*mcpSessionState
+	metadataHook  func()
 }
 
 type mcpSessionState struct {
@@ -51,6 +53,19 @@ type MCPServerStatus struct {
 	Resources int    `json:"resources"`
 	Prompts   int    `json:"prompts"`
 	LastError string `json:"lastError,omitempty"`
+}
+
+// MCPServerCatalogItem describes a configured MCP server for model-facing
+// discovery without exposing transport secrets.
+type MCPServerCatalogItem struct {
+	Name         string `json:"name"`
+	DisplayName  string `json:"displayName,omitempty"`
+	Enabled      bool   `json:"enabled"`
+	Description  string `json:"description,omitempty"`
+	Instructions string `json:"instructions,omitempty"`
+	Tools        int    `json:"tools"`
+	Resources    int    `json:"resources"`
+	Prompts      int    `json:"prompts"`
 }
 
 // NewMCPManager creates a manager.
@@ -153,6 +168,14 @@ func (m *MCPManager) Config() *MCPConfig {
 	return m.config
 }
 
+// SetMetadataChangeHook installs a callback invoked after metadata refreshes
+// successfully. Hosts use it to update model-visible MCP direct tools.
+func (m *MCPManager) SetMetadataChangeHook(hook func()) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.metadataHook = hook
+}
+
 // Status returns status for all configured servers.
 func (m *MCPManager) Status() []MCPServerStatus {
 	m.mu.Lock()
@@ -174,6 +197,38 @@ func (m *MCPManager) Status() []MCPServerStatus {
 			status.LastError = state.lastError
 		}
 		out = append(out, status)
+	}
+	return out
+}
+
+// ServerCatalog returns model-facing server summaries and cached metadata
+// counts. Configured instructions override remote server instructions.
+func (m *MCPManager) ServerCatalog() []MCPServerCatalogItem {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]MCPServerCatalogItem, 0, len(m.config.Servers))
+	for _, server := range m.serverListLocked() {
+		meta, hasMeta := m.cache.Servers[server.Name]
+		validMeta := hasMeta && meta.ConfigHash == HashMCPServerConfig(server)
+		item := MCPServerCatalogItem{
+			Name:         server.Name,
+			DisplayName:  server.Name,
+			Enabled:      server.Enabled,
+			Description:  strings.TrimSpace(server.Description),
+			Instructions: strings.TrimSpace(server.Instructions),
+		}
+		if validMeta {
+			if meta.DisplayName != "" {
+				item.DisplayName = meta.DisplayName
+			}
+			if item.Instructions == "" {
+				item.Instructions = strings.TrimSpace(meta.Instructions)
+			}
+			item.Tools = len(meta.Tools)
+			item.Resources = len(meta.Resources)
+			item.Prompts = len(meta.Prompts)
+		}
+		out = append(out, item)
 	}
 	return out
 }
@@ -217,8 +272,15 @@ func (m *MCPManager) ConnectServer(ctx context.Context, name string) error {
 	m.cache.Servers[name] = meta
 	cache := m.cache
 	cachePath := m.cachePath
+	hook := m.metadataHook
 	m.mu.Unlock()
-	return cache.Save(cachePath)
+	if err := cache.Save(cachePath); err != nil {
+		return err
+	}
+	if hook != nil {
+		hook()
+	}
+	return nil
 }
 
 // ListTools returns tools for one server or all servers.
@@ -293,16 +355,38 @@ func (m *MCPManager) SearchTools(ctx context.Context, query string) ([]MCPToolMe
 	if err != nil {
 		return nil, err
 	}
-	query = strings.ToLower(strings.TrimSpace(query))
-	if query == "" {
+	terms := mcpQueryTerms(query)
+	if len(terms) == 0 {
 		return tools, nil
 	}
-	out := make([]MCPToolMeta, 0, len(tools))
+	catalog := map[string]MCPServerCatalogItem{}
+	for _, item := range m.ServerCatalog() {
+		catalog[item.Name] = item
+	}
+	type scoredTool struct {
+		tool  MCPToolMeta
+		score int
+	}
+	scored := make([]scoredTool, 0, len(tools))
 	for _, tool := range tools {
-		haystack := strings.ToLower(tool.ServerName + " " + tool.Name + " " + tool.Description)
-		if strings.Contains(haystack, query) {
-			out = append(out, tool)
+		server := catalog[tool.ServerName]
+		score := mcpRelevanceScore(terms, mcpToolSearchText(tool, server))
+		if score > 0 {
+			scored = append(scored, scoredTool{tool: tool, score: score})
 		}
+	}
+	sort.SliceStable(scored, func(i, j int) bool {
+		if scored[i].score != scored[j].score {
+			return scored[i].score > scored[j].score
+		}
+		if scored[i].tool.ServerName == scored[j].tool.ServerName {
+			return scored[i].tool.Name < scored[j].tool.Name
+		}
+		return scored[i].tool.ServerName < scored[j].tool.ServerName
+	})
+	out := make([]MCPToolMeta, 0, len(scored))
+	for _, item := range scored {
+		out = append(out, item.tool)
 	}
 	return out, nil
 }
@@ -400,8 +484,86 @@ func (m *MCPManager) DirectTools() []tool.AgentTool {
 			}
 			name := stableMCPDirectToolName(server.Name, remoteTool.Name, used)
 			used[name] = true
-			out = append(out, newMCPDirectTool(m, name, server.Name, remoteTool))
+			out = append(out, newMCPDirectToolWithPurpose(m, name, server.Name, remoteTool, mcpServerPurpose(server, meta)))
 		}
+	}
+	return out
+}
+
+// RelevantDirectTools builds direct wrappers for cached MCP tools relevant to
+// the current user request. It is intentionally independent from directTools
+// configuration so long-tail tools can be offered per turn without loading all
+// schemas upfront.
+func (m *MCPManager) RelevantDirectTools(query string, limit int) []tool.AgentTool {
+	terms := mcpQueryTerms(query)
+	if len(terms) == 0 || limit == 0 {
+		return nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	type candidate struct {
+		server  MCPServerConfig
+		meta    MCPServerMetadata
+		tool    MCPToolMeta
+		score   int
+		sortKey string
+	}
+	candidates := make([]candidate, 0)
+	for _, server := range m.serverListLocked() {
+		if !server.Enabled {
+			continue
+		}
+		meta, ok := m.cache.Servers[server.Name]
+		if !ok || meta.ConfigHash != HashMCPServerConfig(server) {
+			continue
+		}
+		catalog := MCPServerCatalogItem{
+			Name:         server.Name,
+			DisplayName:  server.Name,
+			Description:  strings.TrimSpace(server.Description),
+			Instructions: strings.TrimSpace(server.Instructions),
+		}
+		if meta.DisplayName != "" {
+			catalog.DisplayName = meta.DisplayName
+		}
+		if catalog.Instructions == "" {
+			catalog.Instructions = strings.TrimSpace(meta.Instructions)
+		}
+		for _, remoteTool := range meta.Tools {
+			if excluded(remoteTool.Name, server.ExcludeTools) {
+				continue
+			}
+			remoteTool.ServerName = server.Name
+			score := mcpRelevanceScore(terms, mcpToolSearchText(remoteTool, catalog))
+			if score == 0 {
+				continue
+			}
+			candidates = append(candidates, candidate{
+				server:  server,
+				meta:    meta,
+				tool:    remoteTool,
+				score:   score,
+				sortKey: server.Name + "/" + remoteTool.Name,
+			})
+		}
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		if candidates[i].score != candidates[j].score {
+			return candidates[i].score > candidates[j].score
+		}
+		return candidates[i].sortKey < candidates[j].sortKey
+	})
+	if limit > 0 && len(candidates) > limit {
+		candidates = candidates[:limit]
+	}
+	used := map[string]bool{}
+	out := make([]tool.AgentTool, 0, len(candidates))
+	for _, item := range candidates {
+		name := stableMCPDirectToolName(item.server.Name, item.tool.Name, used)
+		used[name] = true
+		out = append(out, newMCPDirectToolWithPurpose(
+			m, name, item.server.Name, item.tool, mcpServerPurpose(item.server, item.meta),
+		))
 	}
 	return out
 }
@@ -512,10 +674,65 @@ func (m *MCPManager) serverListLocked() []MCPServerConfig {
 	return out
 }
 
+func mcpToolSearchText(tool MCPToolMeta, server MCPServerCatalogItem) string {
+	return strings.ToLower(strings.Join([]string{
+		tool.ServerName,
+		server.DisplayName,
+		server.Description,
+		server.Instructions,
+		tool.Name,
+		tool.Description,
+	}, " "))
+}
+
+func mcpRelevanceScore(terms []string, text string) int {
+	score := 0
+	for _, term := range terms {
+		if term != "" && strings.Contains(text, term) {
+			score++
+		}
+	}
+	return score
+}
+
+func mcpQueryTerms(query string) []string {
+	query = strings.ToLower(query)
+	raw := strings.FieldsFunc(query, func(r rune) bool {
+		return !(r == '_' || r == '-' || r == '.' || unicode.IsLetter(r) || unicode.IsDigit(r))
+	})
+	seen := map[string]bool{}
+	terms := make([]string, 0, len(raw))
+	for _, term := range raw {
+		term = strings.Trim(term, "_-.")
+		if len(term) < 3 || mcpSearchStopWords[term] || seen[term] {
+			continue
+		}
+		seen[term] = true
+		terms = append(terms, term)
+	}
+	return terms
+}
+
+var mcpSearchStopWords = map[string]bool{
+	"and":    true,
+	"for":    true,
+	"need":   true,
+	"needs":  true,
+	"please": true,
+	"take":   true,
+	"task":   true,
+	"the":    true,
+	"tool":   true,
+	"use":    true,
+	"with":   true,
+}
+
 func collectMCPMetadata(ctx context.Context, session MCPClientSession, server MCPServerConfig) (MCPServerMetadata, error) {
 	meta := MCPServerMetadata{
-		ConfigHash: HashMCPServerConfig(server),
-		UpdatedAt:  time.Now(),
+		ConfigHash:   HashMCPServerConfig(server),
+		UpdatedAt:    time.Now(),
+		DisplayName:  strings.TrimSpace(session.ServerDisplayName()),
+		Instructions: strings.TrimSpace(session.ServerInstructions()),
 	}
 	tools, err := session.ListTools(ctx)
 	if err != nil {
