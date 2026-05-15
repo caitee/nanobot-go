@@ -143,13 +143,42 @@ func TestAssistantFinalTextPreservesToolOrdering(t *testing.T) {
 	if got := asst.segments[0].text.text; got != "first " {
 		t.Fatalf("first text segment = %q, want first ", got)
 	}
-	if got := asst.segments[2].text.text; got != "first second final" {
-		t.Fatalf("last text segment = %q, want final text", got)
+	if got := asst.segments[2].text.text; got != "second final" {
+		t.Fatalf("last text segment = %q, want final suffix", got)
 	}
 	if got := asst.segments[2].updatedAt; !got.Equal(finalAt) {
 		t.Fatalf("last text updatedAt = %v, want %v", got, finalAt)
 	}
 	if got := asst.finalText; got != "first second final" {
 		t.Fatalf("finalText = %q, want final text", got)
+	}
+	if got := asst.streamedText(); got != "first second final" {
+		t.Fatalf("streamedText = %q, want final text", got)
+	}
+}
+
+func TestAssistantCreatesOrphanToolWhenMismatchedIDUsesSameName(t *testing.T) {
+	asst := &assistantBlock{status: assistantStatusThinking}
+	start := time.Unix(6, 0)
+	end := start.Add(250 * time.Millisecond)
+
+	asst.upsertToolStart("call-1", "shell", map[string]any{"cmd": "date"}, start)
+	asst.finishTool("call-2", "shell", "late result", false, end)
+
+	if len(asst.segments) != 2 {
+		t.Fatalf("segments = %d, want 2", len(asst.segments))
+	}
+	for i := range asst.segments {
+		if asst.segments[i].kind != segmentKindTool {
+			t.Fatalf("segments[%d].kind = %v, want tool", i, asst.segments[i].kind)
+		}
+	}
+	first := asst.segments[0].tool
+	if first == nil || first.id != "call-1" || first.status != toolStatusRunning || first.result != "" {
+		t.Fatalf("first tool was overwritten: %+v", first)
+	}
+	second := asst.segments[1].tool
+	if second == nil || second.id != "call-2" || !second.orphan || second.status != toolStatusDone || second.result != "late result" {
+		t.Fatalf("mismatched-id orphan not created: %+v", second)
 	}
 }

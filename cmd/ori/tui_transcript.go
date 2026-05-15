@@ -283,11 +283,14 @@ func (a *assistantBlock) setFinalText(source finalSource, final string, ts time.
 	a.finalSource = source
 	a.status = assistantStatusDone
 	a.completedAt = ts
-	a.applyFinalTextSegment(merged, ts)
+	if !a.applyFinalTextSegment(merged, ts) {
+		a.finalConflict = true
+		conflict = true
+	}
 	return conflict
 }
 
-func (a *assistantBlock) applyFinalTextSegment(text string, ts time.Time) {
+func (a *assistantBlock) applyFinalTextSegment(text string, ts time.Time) bool {
 	lastText := -1
 	for i := range a.segments {
 		if a.segments[i].kind == segmentKindText && a.segments[i].text != nil {
@@ -295,9 +298,14 @@ func (a *assistantBlock) applyFinalTextSegment(text string, ts time.Time) {
 		}
 	}
 	if lastText >= 0 {
-		a.segments[lastText].text.text = text
+		prefixBeforeLast := a.textBeforeSegment(lastText)
+		suffix, ok := strings.CutPrefix(text, prefixBeforeLast)
+		if !ok {
+			suffix = text
+		}
+		a.segments[lastText].text.text = suffix
 		a.segments[lastText].updatedAt = ts
-		return
+		return ok
 	}
 	if text != "" {
 		a.segments = append(a.segments, assistantSegment{
@@ -307,6 +315,17 @@ func (a *assistantBlock) applyFinalTextSegment(text string, ts time.Time) {
 			text:      &textSegment{text: text},
 		})
 	}
+	return true
+}
+
+func (a *assistantBlock) textBeforeSegment(segmentIndex int) string {
+	var builder strings.Builder
+	for i := 0; i < segmentIndex; i++ {
+		if a.segments[i].kind == segmentKindText && a.segments[i].text != nil {
+			builder.WriteString(a.segments[i].text.text)
+		}
+	}
+	return builder.String()
 }
 
 func (a *assistantBlock) upsertToolStart(id, name string, args map[string]any, startedAt time.Time) *toolCallSegment {
@@ -397,6 +416,7 @@ func (a *assistantBlock) findTool(id, name string) *toolCallSegment {
 				return tool
 			}
 		}
+		return nil
 	}
 	if name != "" {
 		for i := range a.segments {
