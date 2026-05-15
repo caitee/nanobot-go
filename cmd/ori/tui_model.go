@@ -9,6 +9,7 @@ import (
 	"ori/internal/runtime"
 
 	"github.com/charmbracelet/bubbles/textinput"
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -47,6 +48,12 @@ type interactiveModel struct {
 
 	transcript       transcript
 	nextTranscriptID int
+
+	viewport               viewport.Model
+	renderer               transcriptRenderer
+	focus                  focusArea
+	hasNewTranscriptOutput bool
+	transcriptViewportText string
 
 	// Live-render cache for displayedText. renderLiveContent runs glamour,
 	// which is linear in the input size and gets called on every frame (every
@@ -88,6 +95,12 @@ type viewCacheKey struct {
 	status             string
 	displayedText      string
 	typewriterQueueLen int
+	viewportContent    string
+	viewportWidth      int
+	viewportHeight     int
+	viewportYOffset    int
+	focus              focusArea
+	hasNewOutput       bool
 }
 
 // thinkingRound represents one round of thinking + tool calls.
@@ -137,6 +150,7 @@ func newInteractiveModel(dispatcher *appcore.Dispatcher, messageBus bus.MessageB
 	ti.Placeholder = "Type a message..."
 	ti.Focus()
 	ti.Prompt = "> "
+	vp := viewport.New(getTerminalWidth(), transcriptViewportHeight())
 
 	// Buffered so the runtime emission path doesn't stall on our select loop
 	// during bursty streams.
@@ -150,6 +164,9 @@ func newInteractiveModel(dispatcher *appcore.Dispatcher, messageBus bus.MessageB
 		done:          make(chan struct{}),
 		runtimeEvents: eventCh,
 		outboundCh:    messageBus.ConsumeOutbound(),
+		viewport:      vp,
+		renderer:      transcriptRenderer{},
+		focus:         focusInput,
 	}
 	m.subscribeRuntimeEvents(sessionKey)
 	return m

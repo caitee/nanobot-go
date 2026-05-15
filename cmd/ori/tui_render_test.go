@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -90,6 +91,44 @@ func TestViewCacheInvalidatesWhenDisplayedTextChanges(t *testing.T) {
 	view = plainView(m.View())
 	if strings.Contains(view, "first response") || !strings.Contains(view, "second response") {
 		t.Fatalf("expected View cache to refresh after displayed text changed; got:\n%s", view)
+	}
+}
+
+func TestRefreshTranscriptViewportFollowsTailAtBottom(t *testing.T) {
+	m := &interactiveModel{}
+	m.initTranscriptViewport(40, 5)
+	for i := 0; i < 12; i++ {
+		m.transcript.appendSystemBlock(m.nextBlockID("system"), systemLevelInfo, fmt.Sprintf("line %02d", i), time.Unix(int64(i), 0))
+	}
+
+	m.refreshTranscriptViewport()
+
+	if !m.viewport.AtBottom() {
+		t.Fatalf("expected viewport to follow tail")
+	}
+	if !strings.Contains(plainView(m.viewport.View()), "line 11") {
+		t.Fatalf("viewport did not include latest line:\n%s", plainView(m.viewport.View()))
+	}
+}
+
+func TestRefreshTranscriptViewportPreservesScrollWhenAwayFromBottom(t *testing.T) {
+	m := &interactiveModel{}
+	m.initTranscriptViewport(40, 5)
+	for i := 0; i < 12; i++ {
+		m.transcript.appendSystemBlock(m.nextBlockID("system"), systemLevelInfo, fmt.Sprintf("line %02d", i), time.Unix(int64(i), 0))
+	}
+	m.refreshTranscriptViewport()
+	m.viewport.GotoTop()
+	before := m.viewport.YOffset
+
+	m.transcript.appendSystemBlock(m.nextBlockID("system"), systemLevelInfo, "new output", time.Unix(20, 0))
+	m.refreshTranscriptViewport()
+
+	if m.viewport.YOffset != before {
+		t.Fatalf("viewport YOffset changed from %d to %d", before, m.viewport.YOffset)
+	}
+	if !m.hasNewTranscriptOutput {
+		t.Fatalf("expected new output indicator when user is away from bottom")
 	}
 }
 

@@ -146,6 +146,20 @@ func (m *interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, cmd
 			}
 		}
+		if m.focus == focusTranscript {
+			if msg.Type == tea.KeyEsc {
+				m.focus = focusInput
+				m.viewVersion++
+				return m, nil
+			}
+			var cmd tea.Cmd
+			m.viewport, cmd = m.viewport.Update(msg)
+			if m.viewport.AtBottom() {
+				m.hasNewTranscriptOutput = false
+			}
+			m.viewVersion++
+			return m, cmd
+		}
 		switch msg.Type {
 		case tea.KeyTab:
 			if m.acceptSlashCommandCompletion() {
@@ -157,6 +171,24 @@ func (m *interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case tea.KeyDown:
 			if m.moveSlashCommandSelection(1) {
+				return m, nil
+			}
+		case tea.KeyPgUp, tea.KeyPgDown:
+			m.focus = focusTranscript
+			if m.viewport.Width <= 0 || m.viewport.Height <= 0 {
+				m.initTranscriptViewport(getTerminalWidth(), transcriptViewportHeight())
+			}
+			var cmd tea.Cmd
+			m.viewport, cmd = m.viewport.Update(msg)
+			if m.viewport.AtBottom() {
+				m.hasNewTranscriptOutput = false
+			}
+			m.viewVersion++
+			return m, cmd
+		case tea.KeyEsc:
+			if m.focus == focusTranscript {
+				m.focus = focusInput
+				m.viewVersion++
 				return m, nil
 			}
 		case tea.KeyEnter:

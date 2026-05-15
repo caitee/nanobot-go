@@ -2,7 +2,9 @@ package main
 
 import (
 	"strings"
+	"time"
 
+	"github.com/charmbracelet/bubbles/viewport"
 	"github.com/charmbracelet/lipgloss"
 )
 
@@ -12,6 +14,12 @@ import (
 func (m *interactiveModel) View() string {
 	textInputOut := m.textInput.View()
 	width := getTerminalWidth()
+	if m.viewport.Width != width {
+		m.viewport.Width = width
+	}
+	m.viewport.Height = transcriptViewportHeight()
+	m.refreshTranscriptViewport()
+	viewportOut := m.viewport.View()
 	key := viewCacheKey{
 		version:            m.viewVersion,
 		spinnerIdx:         m.spinnerIdx,
@@ -23,6 +31,12 @@ func (m *interactiveModel) View() string {
 		status:             m.status,
 		displayedText:      m.displayedText,
 		typewriterQueueLen: len(m.typewriterQueue),
+		viewportContent:    viewportOut,
+		viewportWidth:      m.viewport.Width,
+		viewportHeight:     m.viewport.Height,
+		viewportYOffset:    m.viewport.YOffset,
+		focus:              m.focus,
+		hasNewOutput:       m.hasNewTranscriptOutput,
 	}
 	// Cache hit: nothing relevant has changed since the last successful
 	// render. Returning the stored string lets bubbletea's own diff detect a
@@ -44,6 +58,11 @@ func (m *interactiveModel) View() string {
 		m.cachedViewKey = key
 		m.cachedViewOutput = out
 		return out
+	}
+
+	if view := strings.TrimRight(viewportOut, "\n"); strings.TrimSpace(view) != "" {
+		s.WriteString(view)
+		s.WriteString("\n")
 	}
 
 	if m.active {
@@ -94,6 +113,59 @@ func (m *interactiveModel) View() string {
 	m.cachedViewKey = key
 	m.cachedViewOutput = out
 	return out
+}
+
+func transcriptViewportHeight() int {
+	h := getTerminalHeight() - 4
+	if h < 5 {
+		return 5
+	}
+	return h
+}
+
+func (m *interactiveModel) initTranscriptViewport(width, height int) {
+	if width <= 0 {
+		width = getTerminalWidth()
+	}
+	if height <= 0 {
+		height = transcriptViewportHeight()
+	}
+	m.viewport = viewport.New(width, height)
+	m.renderer = transcriptRenderer{}
+	if m.focus != focusTranscript && m.focus != focusOverlay {
+		m.focus = focusInput
+	}
+}
+
+func (m *interactiveModel) refreshTranscriptViewport() {
+	if m.viewport.Width <= 0 || m.viewport.Height <= 0 {
+		m.initTranscriptViewport(getTerminalWidth(), transcriptViewportHeight())
+	}
+	wasAtBottom := m.viewport.AtBottom()
+	wasEmpty := strings.TrimSpace(m.transcriptViewportText) == ""
+	content := m.renderer.renderTranscript(m.transcript, renderContext{
+		width:  m.viewport.Width,
+		focus:  m.focus,
+		active: m.active,
+		now:    time.Now(),
+	})
+	contentChanged := content != m.transcriptViewportText
+	if contentChanged {
+		m.transcriptViewportText = content
+		m.viewVersion++
+	}
+	m.viewport.SetContent(content)
+	if wasAtBottom || wasEmpty {
+		m.viewport.GotoBottom()
+		if m.hasNewTranscriptOutput {
+			m.viewVersion++
+		}
+		m.hasNewTranscriptOutput = false
+		return
+	}
+	if contentChanged {
+		m.hasNewTranscriptOutput = true
+	}
 }
 
 // renderRound renders one round (reasoning + tool calls).
