@@ -56,13 +56,11 @@ func plainView(s string) string {
 	return ansiEscapeRE.ReplaceAllString(s, "")
 }
 
-func TestSubmitPromptAppendsTranscriptBlocksWithoutPrintAbove(t *testing.T) {
-	calledPrintAbove := false
+func TestSubmitPromptAppendsTranscriptBlocks(t *testing.T) {
 	m := &interactiveModel{
-		dispatcher:   appcore.NewDispatcher(appcore.DispatcherOptions{Bus: bus.New(1)}),
-		printAboveFn: func(string) { calledPrintAbove = true },
-		renderer:     transcriptRenderer{},
-		focus:        focusInput,
+		dispatcher: appcore.NewDispatcher(appcore.DispatcherOptions{Bus: bus.New(1)}),
+		renderer:   transcriptRenderer{},
+		focus:      focusInput,
 	}
 	m.initTranscriptViewport(80, 10)
 
@@ -72,9 +70,6 @@ func TestSubmitPromptAppendsTranscriptBlocksWithoutPrintAbove(t *testing.T) {
 	}
 	if _, ok := cmd().(spinnerTickMsg); !ok {
 		t.Fatalf("expected submitPrompt to return spinner tick only")
-	}
-	if calledPrintAbove {
-		t.Fatalf("prompt path printed above the TUI")
 	}
 	if len(m.transcript.blocks) != 2 {
 		t.Fatalf("blocks = %d, want user + assistant", len(m.transcript.blocks))
@@ -112,12 +107,10 @@ func TestHandleRuntimeEventUsesTranscript(t *testing.T) {
 	}
 }
 
-func TestResponseMsgFinalizesTranscriptWithoutPrintAbove(t *testing.T) {
-	calledPrintAbove := false
+func TestResponseMsgFinalizesTranscript(t *testing.T) {
 	m := &interactiveModel{
-		printAboveFn: func(string) { calledPrintAbove = true },
-		renderer:     transcriptRenderer{},
-		focus:        focusInput,
+		renderer: transcriptRenderer{},
+		focus:    focusInput,
 	}
 	m.initTranscriptViewport(80, 10)
 	m.beginPromptForTranscript("hello")
@@ -127,9 +120,6 @@ func TestResponseMsgFinalizesTranscriptWithoutPrintAbove(t *testing.T) {
 		cmd()
 	}
 
-	if calledPrintAbove {
-		t.Fatalf("response finalization printed above the TUI")
-	}
 	asst := m.transcript.activeAssistant()
 	if asst == nil || asst.status != assistantStatusDone || asst.finalSource != finalSourceFallback {
 		t.Fatalf("assistant not finalized from outbound fallback: %+v", asst)
@@ -447,8 +437,6 @@ func TestTranscriptRendererToolDetailLinesFitTerminalWidth(t *testing.T) {
 
 func TestHandleRuntimeEvent_TurnStartKeepsPreviousRoundInTranscript(t *testing.T) {
 	m := newTestModel()
-	calledPrintAbove := false
-	m.printAboveFn = func(string) { calledPrintAbove = true }
 
 	m.handleRuntimeEvent(runtime.Event{Kind: runtime.EventTurnStart, Timestamp: time.Now()})
 	startAt := time.Now()
@@ -478,9 +466,6 @@ func TestHandleRuntimeEvent_TurnStartKeepsPreviousRoundInTranscript(t *testing.T
 	if cmd != nil {
 		t.Fatal("expected TurnStart to avoid print commands after transcript migration")
 	}
-	if calledPrintAbove {
-		t.Fatal("TurnStart printed above the TUI")
-	}
 	out := plainView(m.renderer.renderTranscript(m.transcript, renderContext{width: 80}))
 	if !strings.Contains(out, "read_file") {
 		t.Fatalf("expected transcript to include tool name; got:\n%s", out)
@@ -495,8 +480,6 @@ func TestHandleRuntimeEvent_TurnStartKeepsPreviousRoundInTranscript(t *testing.T
 
 func TestAgentEnd_FinalizesTranscriptWithToolCallsFromSameTurn(t *testing.T) {
 	m := newTestModel()
-	calledPrintAbove := false
-	m.printAboveFn = func(string) { calledPrintAbove = true }
 
 	m.handleRuntimeEvent(runtime.Event{Kind: runtime.EventTurnStart, Timestamp: time.Now()})
 	startAt := time.Now()
@@ -535,9 +518,6 @@ func TestAgentEnd_FinalizesTranscriptWithToolCallsFromSameTurn(t *testing.T) {
 	})
 	if cmd != nil {
 		t.Fatal("expected agent end to avoid print commands after transcript migration")
-	}
-	if calledPrintAbove {
-		t.Fatal("agent end printed above the TUI")
 	}
 	asst := m.transcript.activeAssistant()
 	if asst == nil || asst.status != assistantStatusDone {
@@ -1094,8 +1074,6 @@ func TestSlashCommandCompletionAcceptsSelectedRow(t *testing.T) {
 
 func TestAgentEnd_FinalizesTranscriptWithToolCallsFromPreviousTurn(t *testing.T) {
 	m := newTestModel()
-	calledPrintAbove := false
-	m.printAboveFn = func(string) { calledPrintAbove = true }
 
 	m.handleRuntimeEvent(runtime.Event{Kind: runtime.EventTurnStart, Timestamp: time.Now()})
 	startAt := time.Now()
@@ -1140,9 +1118,6 @@ func TestAgentEnd_FinalizesTranscriptWithToolCallsFromPreviousTurn(t *testing.T)
 	})
 	if cmd != nil {
 		t.Fatal("expected agent end to avoid print commands after transcript migration")
-	}
-	if calledPrintAbove {
-		t.Fatal("agent end printed above the TUI")
 	}
 	asst := m.transcript.activeAssistant()
 	if asst == nil || asst.status != assistantStatusDone {
@@ -1390,5 +1365,44 @@ func TestRunningToolDoesNotReuseGlobalSpinnerFrame(t *testing.T) {
 	}
 	if !strings.Contains(view, spinnerFrames[m.spinnerIdx]+" running tools") {
 		t.Fatalf("expected bottom status to keep global spinner, got:\n%s", view)
+	}
+}
+
+func TestSpinnerTickRefreshesRunningToolElapsedInTranscript(t *testing.T) {
+	m := newTestModel()
+	m.initTranscriptViewport(80, 5)
+	start := time.Now().Add(-1500 * time.Millisecond)
+
+	for i := range 8 {
+		m.transcript.appendSystemBlock(m.nextBlockID("system"), systemLevelInfo, fmt.Sprintf("history %d", i), start)
+	}
+	m.handleRuntimeEvent(runtime.Event{Kind: runtime.EventTurnStart, Timestamp: start})
+	m.handleRuntimeEvent(runtime.Event{
+		Kind:      runtime.EventToolExecutionStart,
+		Timestamp: start,
+		Data:      runtime.ToolStartData{ToolCallID: "call_1", ToolName: "shell"},
+	})
+
+	stale := m.renderer.renderTranscript(m.transcript, renderContext{width: 80, active: true, now: start.Add(100 * time.Millisecond)})
+	if !strings.Contains(plainView(stale), "running 100ms") {
+		t.Fatalf("test setup expected stale running duration, got:\n%s", plainView(stale))
+	}
+	m.transcriptViewportText = stale
+	m.viewport.SetContent(stale)
+	m.viewport.YOffset = 0
+	m.hasNewTranscriptOutput = false
+	m.waiting = true
+
+	_, cmd := m.Update(spinnerTickMsg{})
+	if cmd == nil {
+		t.Fatal("expected spinner to keep ticking while waiting")
+	}
+
+	out := plainView(m.transcriptViewportText)
+	if strings.Contains(out, "running 100ms") || !strings.Contains(out, "running 1.") {
+		t.Fatalf("expected spinner tick to refresh running tool elapsed time, got:\n%s", out)
+	}
+	if m.hasNewTranscriptOutput {
+		t.Fatalf("timer-only refresh should not mark new transcript output")
 	}
 }

@@ -31,7 +31,6 @@ type interactiveModel struct {
 	spinnerIdx       int
 	responseReceived bool
 	program          *tea.Program
-	printAboveFn     func(string)
 
 	runtimeEvents chan runtime.Event
 	outboundCh    <-chan bus.OutboundMessage
@@ -56,7 +55,6 @@ type interactiveModel struct {
 	viewVersion      uint64
 	cachedViewKey    viewCacheKey
 	cachedViewOutput string
-	cachedTextInput  string
 
 	// Slash-command completion state. The query is tracked so selection resets
 	// as soon as the input changes.

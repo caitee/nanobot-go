@@ -40,6 +40,9 @@ func (m *interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		waiting := m.waiting
 		if waiting {
 			m.spinnerIdx = (m.spinnerIdx + 1) % len(spinnerFrames)
+			if m.hasRunningTranscriptTool() {
+				m.refreshTranscriptViewportForRepaint()
+			}
 		}
 		m.mu.Unlock()
 		if waiting {
@@ -206,21 +209,9 @@ func cloneToolArgs(args map[string]any) map[string]any {
 	return out
 }
 
-func (m *interactiveModel) printAbove(content string) tea.Cmd {
-	content = strings.TrimRight(content, "\n")
-	if content == "" {
-		return nil
-	}
-	return func() tea.Msg {
-		if m.printAboveFn != nil {
-			m.printAboveFn(content)
-			return nil
-		}
-		if m.program != nil {
-			m.program.Println(content)
-		}
-		return nil
-	}
+func (m *interactiveModel) hasRunningTranscriptTool() bool {
+	asst := m.transcript.activeAssistant()
+	return asst != nil && asst.hasRunningTool()
 }
 
 // outboundFromAgentEventFinal reports whether an outbound message came from

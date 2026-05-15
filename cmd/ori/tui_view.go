@@ -166,6 +166,14 @@ func (m *interactiveModel) resizeTranscriptViewport(width, height int) bool {
 }
 
 func (m *interactiveModel) refreshTranscriptViewport() {
+	m.refreshTranscriptViewportWithNewOutput(true)
+}
+
+func (m *interactiveModel) refreshTranscriptViewportForRepaint() {
+	m.refreshTranscriptViewportWithNewOutput(false)
+}
+
+func (m *interactiveModel) refreshTranscriptViewportWithNewOutput(markNewOutput bool) {
 	if m.viewport.Width <= 0 || m.viewport.Height <= 0 {
 		m.initTranscriptViewport(getTerminalWidth(), transcriptViewportHeight())
 	}
@@ -187,7 +195,7 @@ func (m *interactiveModel) refreshTranscriptViewport() {
 		m.clearNewTranscriptOutput()
 		return
 	}
-	if contentChanged {
+	if contentChanged && markNewOutput {
 		m.markNewTranscriptOutput()
 	}
 }
