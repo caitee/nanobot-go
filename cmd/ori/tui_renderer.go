@@ -24,7 +24,7 @@ func (r transcriptRenderer) renderTranscript(tr transcript, ctx renderContext) s
 	parts := make([]string, 0, len(tr.blocks))
 	for i := range tr.blocks {
 		blockCtx := ctx
-		blockCtx.active = tr.blocks[i].kind == blockKindAssistant && tr.blocks[i].id != "" && tr.blocks[i].id == tr.activeAssistantID
+		blockCtx.active = isLiveAssistantBlock(tr.blocks[i], tr.activeAssistantID)
 		rendered := strings.TrimRight(r.renderBlock(tr.blocks[i], blockCtx), "\n")
 		if strings.TrimSpace(rendered) == "" {
 			continue
@@ -32,6 +32,14 @@ func (r transcriptRenderer) renderTranscript(tr transcript, ctx renderContext) s
 		parts = append(parts, rendered)
 	}
 	return strings.Join(parts, "\n\n")
+}
+
+func isLiveAssistantBlock(b block, activeAssistantID string) bool {
+	return b.kind == blockKindAssistant &&
+		b.id != "" &&
+		b.id == activeAssistantID &&
+		b.assistant != nil &&
+		!isTerminalAssistantStatus(b.assistant.status)
 }
 
 func (r transcriptRenderer) renderBlock(b block, ctx renderContext) string {

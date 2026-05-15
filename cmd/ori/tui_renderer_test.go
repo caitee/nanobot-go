@@ -199,6 +199,34 @@ func TestTranscriptRendererReasoningUsesLiveOnlyForActiveAssistant(t *testing.T)
 	}
 }
 
+func TestTranscriptRendererTerminalActiveAssistantUsesCompletedReasoning(t *testing.T) {
+	now := time.Unix(113, 0)
+	var tr transcript
+	asst := tr.appendAssistantBlock("asst-done", now)
+	asst.appendReasoningDelta(strings.Join([]string{
+		"dh1",
+		"dh2",
+		"dh3",
+		"dv4",
+		"dv5",
+		"dv6",
+	}, "\n"), now)
+	asst.status = assistantStatusDone
+	tr.activeAssistantID = asst.id
+
+	out := plainView(transcriptRenderer{}.renderTranscript(tr, renderContext{width: 100, now: now}))
+	for _, hidden := range []string{"dh1", "dh2", "dh3"} {
+		if strings.Contains(out, hidden) {
+			t.Fatalf("expected terminal active assistant to hide completed reasoning line %q, got:\n%s", hidden, out)
+		}
+	}
+	for _, visible := range []string{"dv4", "dv5", "dv6"} {
+		if !strings.Contains(out, visible) {
+			t.Fatalf("expected terminal active assistant to include completed reasoning line %q, got:\n%s", visible, out)
+		}
+	}
+}
+
 func TestTranscriptRendererFinalConflictUsesFinalTextOnce(t *testing.T) {
 	now := time.Unix(104, 0)
 	var tr transcript
