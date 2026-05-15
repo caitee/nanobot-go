@@ -233,7 +233,7 @@ func (a *assistantBlock) appendReasoningDelta(delta string, ts time.Time) {
 	if delta == "" {
 		return
 	}
-	a.status = assistantStatusThinking
+	a.setStatusIfNonTerminal(assistantStatusThinking)
 	if len(a.segments) > 0 {
 		last := &a.segments[len(a.segments)-1]
 		if last.kind == segmentKindReasoning && last.reasoning != nil {
@@ -254,7 +254,7 @@ func (a *assistantBlock) appendTextDelta(delta string, ts time.Time) {
 	if delta == "" {
 		return
 	}
-	a.status = assistantStatusResponding
+	a.setStatusIfNonTerminal(assistantStatusResponding)
 	if len(a.segments) > 0 {
 		last := &a.segments[len(a.segments)-1]
 		if last.kind == segmentKindText && last.text != nil {
@@ -344,16 +344,22 @@ func (a *assistantBlock) clearTextBeforeSegment(segmentIndex int, ts time.Time) 
 }
 
 func (a *assistantBlock) upsertToolStart(id, name string, args map[string]any, startedAt time.Time) *toolCallSegment {
-	if tool := a.findTool(id, name); tool != nil {
-		tool.name = firstNonEmpty(name, tool.name)
-		tool.args = cloneToolArgs(args)
-		tool.status = toolStatusRunning
-		tool.startedAt = startedAt
-		tool.lastUpdate = startedAt
-		tool.orphan = false
-		a.status = assistantStatusRunningTools
-		return tool
+	if id != "" {
+		if tool := a.findTool(id, name); tool != nil {
+			tool.name = firstNonEmpty(name, tool.name)
+			tool.args = cloneToolArgs(args)
+			tool.status = toolStatusRunning
+			tool.startedAt = startedAt
+			tool.lastUpdate = startedAt
+			tool.orphan = false
+			a.setStatusIfNonTerminal(assistantStatusRunningTools)
+			return tool
+		}
 	}
+	return a.appendToolStart(id, name, args, startedAt, false)
+}
+
+func (a *assistantBlock) appendToolStart(id, name string, args map[string]any, startedAt time.Time, orphan bool) *toolCallSegment {
 	tool := &toolCallSegment{
 		id:         id,
 		name:       name,
@@ -361,6 +367,7 @@ func (a *assistantBlock) upsertToolStart(id, name string, args map[string]any, s
 		status:     toolStatusRunning,
 		startedAt:  startedAt,
 		lastUpdate: startedAt,
+		orphan:     orphan,
 	}
 	a.segments = append(a.segments, assistantSegment{
 		kind:      segmentKindTool,
@@ -368,15 +375,14 @@ func (a *assistantBlock) upsertToolStart(id, name string, args map[string]any, s
 		updatedAt: startedAt,
 		tool:      tool,
 	})
-	a.status = assistantStatusRunningTools
+	a.setStatusIfNonTerminal(assistantStatusRunningTools)
 	return tool
 }
 
 func (a *assistantBlock) updateTool(id, name, partial string, updatedAt time.Time) *toolCallSegment {
 	tool := a.findTool(id, name)
 	if tool == nil {
-		tool = a.upsertToolStart(id, name, nil, updatedAt)
-		tool.orphan = true
+		tool = a.appendToolStart(id, name, nil, updatedAt, true)
 	}
 	tool.name = firstNonEmpty(name, tool.name)
 	tool.partial = partial
@@ -384,27 +390,14 @@ func (a *assistantBlock) updateTool(id, name, partial string, updatedAt time.Tim
 	if tool.status == toolStatusPending {
 		tool.status = toolStatusRunning
 	}
-	a.status = assistantStatusRunningTools
+	a.setStatusIfNonTerminal(assistantStatusRunningTools)
 	return tool
 }
 
 func (a *assistantBlock) finishTool(id, name, result string, isError bool, endedAt time.Time) *toolCallSegment {
-	wasTerminal := isTerminalAssistantStatus(a.status)
 	tool := a.findTool(id, name)
 	if tool == nil {
-		tool = &toolCallSegment{
-			id:        id,
-			name:      name,
-			status:    toolStatusRunning,
-			startedAt: endedAt,
-			orphan:    true,
-		}
-		a.segments = append(a.segments, assistantSegment{
-			kind:      segmentKindTool,
-			createdAt: endedAt,
-			updatedAt: endedAt,
-			tool:      tool,
-		})
+		tool = a.appendToolStart(id, name, nil, endedAt, true)
 	}
 	tool.name = firstNonEmpty(name, tool.name)
 	tool.result = result
@@ -418,10 +411,17 @@ func (a *assistantBlock) finishTool(id, name, result string, isError bool, ended
 	if !tool.startedAt.IsZero() {
 		tool.durationMs = endedAt.Sub(tool.startedAt).Milliseconds()
 	}
-	if !wasTerminal && !a.hasRunningTool() {
-		a.status = assistantStatusThinking
+	if !a.hasRunningTool() {
+		a.setStatusIfNonTerminal(assistantStatusThinking)
 	}
 	return tool
+}
+
+func (a *assistantBlock) setStatusIfNonTerminal(status assistantStatus) {
+	if isTerminalAssistantStatus(a.status) {
+		return
+	}
+	a.status = status
 }
 
 func isTerminalAssistantStatus(status assistantStatus) bool {
@@ -444,7 +444,13 @@ func (a *assistantBlock) findTool(id, name string) *toolCallSegment {
 		return nil
 	}
 	if name != "" {
-		for i := range a.segments {
+		for i := len(a.segments) - 1; i >= 0; i-- {
+			tool := a.segments[i].tool
+			if a.segments[i].kind == segmentKindTool && tool != nil && tool.name == name && tool.status == toolStatusRunning {
+				return tool
+			}
+		}
+		for i := len(a.segments) - 1; i >= 0; i-- {
 			tool := a.segments[i].tool
 			if a.segments[i].kind == segmentKindTool && tool != nil && tool.name == name {
 				return tool

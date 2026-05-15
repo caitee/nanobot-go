@@ -186,6 +186,38 @@ func TestAssistantCreatesOrphanToolWhenMismatchedIDUsesSameName(t *testing.T) {
 	}
 }
 
+func TestAssistantNoIDSameNameToolStartsCreateSeparateSegments(t *testing.T) {
+	asst := &assistantBlock{status: assistantStatusThinking}
+	t1 := time.Unix(7, 0)
+	t2 := t1.Add(time.Second)
+
+	asst.upsertToolStart("", "shell", map[string]any{"cmd": "date"}, t1)
+	asst.upsertToolStart("", "shell", map[string]any{"cmd": "pwd"}, t2)
+
+	if len(asst.segments) != 2 {
+		t.Fatalf("segments = %d, want 2", len(asst.segments))
+	}
+	for i := range asst.segments {
+		if asst.segments[i].kind != segmentKindTool {
+			t.Fatalf("segments[%d].kind = %v, want tool", i, asst.segments[i].kind)
+		}
+	}
+	first := asst.segments[0].tool
+	second := asst.segments[1].tool
+	if first == nil || second == nil {
+		t.Fatalf("tool segments = (%+v, %+v), want both non-nil", first, second)
+	}
+	if first.name != "shell" || second.name != "shell" {
+		t.Fatalf("tool names = (%q, %q), want shell", first.name, second.name)
+	}
+	if first.args["cmd"] != "date" || second.args["cmd"] != "pwd" {
+		t.Fatalf("tool args = (%v, %v), want distinct args", first.args, second.args)
+	}
+	if !first.startedAt.Equal(t1) || !second.startedAt.Equal(t2) {
+		t.Fatalf("startedAt = (%v, %v), want (%v, %v)", first.startedAt, second.startedAt, t1, t2)
+	}
+}
+
 func TestAssistantFinalTextConflictClearsStaleTextSegments(t *testing.T) {
 	asst := &assistantBlock{status: assistantStatusThinking}
 	t1 := time.Unix(7, 0)
@@ -238,5 +270,36 @@ func TestAssistantFinishToolKeepsTerminalStatus(t *testing.T) {
 
 	if asst.status != assistantStatusDone {
 		t.Fatalf("assistant status = %v, want done", asst.status)
+	}
+}
+
+func TestAssistantLateMutationsKeepTerminalStatus(t *testing.T) {
+	tests := []assistantStatus{
+		assistantStatusDone,
+		assistantStatusError,
+		assistantStatusCancelled,
+	}
+	for _, status := range tests {
+		t.Run("terminal", func(t *testing.T) {
+			asst := &assistantBlock{status: status}
+			start := time.Unix(9, 0)
+
+			asst.appendReasoningDelta("late thought", start)
+			if asst.status != status {
+				t.Fatalf("after reasoning status = %v, want %v", asst.status, status)
+			}
+			asst.appendTextDelta("late text", start)
+			if asst.status != status {
+				t.Fatalf("after text status = %v, want %v", asst.status, status)
+			}
+			asst.upsertToolStart("call-1", "shell", nil, start)
+			if asst.status != status {
+				t.Fatalf("after tool start status = %v, want %v", asst.status, status)
+			}
+			asst.updateTool("call-1", "shell", "running", start)
+			if asst.status != status {
+				t.Fatalf("after tool update status = %v, want %v", asst.status, status)
+			}
+		})
 	}
 }
