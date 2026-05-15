@@ -832,10 +832,11 @@ func TestSessionsPanelRendersSessionRows(t *testing.T) {
 func TestTranscriptFromSessionMessagesBuildsBlocks(t *testing.T) {
 	messages := []appcore.SessionMessageView{
 		{Role: "user", Content: "hello"},
-		{Role: "assistant", Content: "answer", Reasoning: "thinking", ToolCalls: []appcore.SessionToolCallView{
+		{Role: "assistant", Reasoning: "thinking", ToolCalls: []appcore.SessionToolCallView{
 			{ID: "tool-1", Name: "shell", ArgumentsMap: map[string]any{"cmd": "date"}},
 		}},
 		{Role: "tool", ToolCallID: "tool-1", Name: "shell", Content: "tool result"},
+		{Role: "assistant", Content: "answer"},
 	}
 
 	tr := transcriptFromSessionMessages(messages, time.Unix(1, 0))
@@ -855,6 +856,48 @@ func TestTranscriptFromSessionMessagesBuildsBlocks(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Fatalf("session transcript missing %q:\n%s", want, out)
 		}
+	}
+	if got := strings.Count(out, "✦ ori"); got != 1 {
+		t.Fatalf("assistant headers = %d, want 1:\n%s", got, out)
+	}
+}
+
+func TestTranscriptFromSessionMessagesMatchesDelayedToolResultByID(t *testing.T) {
+	messages := []appcore.SessionMessageView{
+		{Role: "assistant", ToolCalls: []appcore.SessionToolCallView{
+			{ID: "tool-1", Name: "shell", ArgumentsMap: map[string]any{"cmd": "date"}},
+		}},
+		{Role: "assistant", Content: "answer before tool result"},
+		{Role: "tool", ToolCallID: "tool-1", Name: "shell", Content: "delayed result"},
+	}
+
+	tr := transcriptFromSessionMessages(messages, time.Unix(1, 0))
+
+	if tr.activeAssistantID != "" {
+		t.Fatalf("activeAssistantID = %q, want empty", tr.activeAssistantID)
+	}
+	if len(tr.blocks) != 1 {
+		t.Fatalf("blocks = %d, want one assistant block", len(tr.blocks))
+	}
+	asst := tr.blocks[0].assistant
+	if asst == nil {
+		t.Fatalf("assistant block missing: %+v", tr.blocks[0])
+	}
+	tool := asst.findTool("tool-1", "")
+	if tool == nil || tool.result != "delayed result" || tool.orphan {
+		t.Fatalf("tool result was not matched by ID: %+v", tool)
+	}
+	out := plainView(transcriptRenderer{}.renderTranscript(tr, renderContext{width: 80}))
+	for _, want := range []string{"shell", "answer before tool result", "delayed result"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("session transcript missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "(orphan)") {
+		t.Fatalf("matched tool rendered as orphan:\n%s", out)
+	}
+	if got := strings.Count(out, "✦ ori"); got != 1 {
+		t.Fatalf("assistant headers = %d, want 1:\n%s", got, out)
 	}
 }
 
@@ -947,6 +990,34 @@ func TestResumeSelectedSessionSwitchesContextAndClearsVisibleState(t *testing.T)
 		if !strings.Contains(out, want) {
 			t.Fatalf("resume transcript missing %q:\n%s", want, out)
 		}
+	}
+}
+
+func TestResumeSelectedSessionThenNewPromptUsesUniqueBlockIDs(t *testing.T) {
+	m := newSessionPanelTestModel(t)
+	m.initTranscriptViewport(80, 10)
+	m.openManagementPanel(appcore.UIRequestSessions)
+	for i, item := range m.managementSessions() {
+		if item.Key == "cli:target" {
+			m.panel.selected = i
+			break
+		}
+	}
+
+	if cmd := m.resumeSelectedSession(); cmd != nil {
+		t.Fatalf("resume returned print command")
+	}
+	m.beginPromptForTranscript("new prompt")
+
+	seen := map[string]bool{}
+	for _, block := range m.transcript.blocks {
+		if block.id == "" {
+			t.Fatalf("block with empty id: %+v", block)
+		}
+		if seen[block.id] {
+			t.Fatalf("duplicate transcript block id %q in blocks: %+v", block.id, m.transcript.blocks)
+		}
+		seen[block.id] = true
 	}
 }
 

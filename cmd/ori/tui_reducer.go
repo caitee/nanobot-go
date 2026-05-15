@@ -229,6 +229,13 @@ func transcriptFromSessionMessages(messages []appcore.SessionMessageView, ts tim
 		return fmt.Sprintf("%s-%d", prefix, nextID)
 	}
 	var currentAssistant *assistantBlock
+	toolCalls := map[string]*assistantBlock{}
+	ensureAssistant := func() *assistantBlock {
+		if currentAssistant == nil {
+			currentAssistant = tr.appendAssistantBlock(newID("assistant"), ts)
+		}
+		return currentAssistant
+	}
 
 	for _, msg := range messages {
 		switch msg.Role {
@@ -236,23 +243,30 @@ func transcriptFromSessionMessages(messages []appcore.SessionMessageView, ts tim
 			tr.appendUserBlock(newID("user"), msg.Content, ts)
 			currentAssistant = nil
 		case "assistant":
-			currentAssistant = tr.appendAssistantBlock(newID("assistant"), ts)
+			currentAssistant = ensureAssistant()
 			if msg.Reasoning != "" {
 				currentAssistant.appendReasoningDelta(msg.Reasoning, ts)
 			}
 			for _, call := range msg.ToolCalls {
 				currentAssistant.upsertToolStart(call.ID, call.Name, sessionToolCallArgs(call), ts)
+				if call.ID != "" {
+					toolCalls[call.ID] = currentAssistant
+				}
 			}
 			if msg.Content != "" {
 				currentAssistant.setFinalText(finalSourceRuntime, msg.Content, ts)
 			}
 			markSessionAssistantDone(currentAssistant, ts)
 		case "tool", "tool_result", "toolResult":
-			if currentAssistant == nil {
-				currentAssistant = tr.appendAssistantBlock(newID("assistant"), ts)
+			target := toolCalls[msg.ToolCallID]
+			if target == nil {
+				target = currentAssistant
 			}
-			currentAssistant.finishTool(msg.ToolCallID, msg.Name, msg.Content, false, ts)
-			markSessionAssistantDone(currentAssistant, ts)
+			if target == nil {
+				target = ensureAssistant()
+			}
+			target.finishTool(msg.ToolCallID, msg.Name, msg.Content, false, ts)
+			markSessionAssistantDone(target, ts)
 		default:
 			message := msg.Content
 			if msg.Role != "" {
