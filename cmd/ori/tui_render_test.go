@@ -154,6 +154,102 @@ func TestViewportKeyRoutingDuringWaiting(t *testing.T) {
 	}
 }
 
+func TestTranscriptViewportNewOutputMarkerClearsAtBottom(t *testing.T) {
+	m := &interactiveModel{}
+	m.initTranscriptViewport(40, 5)
+	for i := 0; i < 16; i++ {
+		m.transcript.appendSystemBlock(m.nextBlockID("system"), systemLevelInfo, fmt.Sprintf("line %02d", i), time.Unix(int64(i), 0))
+	}
+	m.refreshTranscriptViewport()
+	m.viewport.GotoTop()
+	m.focus = focusTranscript
+
+	m.transcript.appendSystemBlock(m.nextBlockID("system"), systemLevelInfo, "new output", time.Unix(20, 0))
+	m.refreshTranscriptViewport()
+
+	if out := plainView(m.View()); !strings.Contains(out, "new transcript output below") {
+		t.Fatalf("expected new transcript marker, got:\n%s", out)
+	}
+
+	for i := 0; i < 20 && !m.viewport.AtBottom(); i++ {
+		m.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+	}
+
+	if !m.viewport.AtBottom() {
+		t.Fatalf("expected viewport to reach bottom, offset=%d", m.viewport.YOffset)
+	}
+	if out := plainView(m.View()); strings.Contains(out, "new transcript output below") {
+		t.Fatalf("expected new transcript marker to clear at bottom, got:\n%s", out)
+	}
+}
+
+func TestTranscriptViewportResizePreservesTailFollow(t *testing.T) {
+	m := &interactiveModel{}
+	m.initTranscriptViewport(40, 10)
+	for i := 0; i < 24; i++ {
+		m.transcript.appendSystemBlock(m.nextBlockID("system"), systemLevelInfo, fmt.Sprintf("line %02d", i), time.Unix(int64(i), 0))
+	}
+	m.refreshTranscriptViewport()
+	if !m.viewport.AtBottom() {
+		t.Fatalf("expected initial viewport at bottom")
+	}
+
+	m.resizeTranscriptViewport(40, 5)
+
+	if !m.viewport.AtBottom() {
+		t.Fatalf("expected resize to preserve bottom-follow, offset=%d", m.viewport.YOffset)
+	}
+	if m.hasNewTranscriptOutput {
+		t.Fatal("resize should not mark existing transcript content as new output")
+	}
+	if out := plainView(m.viewport.View()); !strings.Contains(out, "line 23") {
+		t.Fatalf("expected resized viewport to keep latest line visible, got:\n%s", out)
+	}
+}
+
+func TestTranscriptViewportViewDoesNotRefreshContent(t *testing.T) {
+	m := &interactiveModel{}
+	m.initTranscriptViewport(40, 5)
+	m.transcript.appendSystemBlock(m.nextBlockID("system"), systemLevelInfo, "unrefreshed", time.Unix(1, 0))
+
+	if out := plainView(m.View()); strings.Contains(out, "unrefreshed") {
+		t.Fatalf("View should use existing viewport content instead of refreshing transcript, got:\n%s", out)
+	}
+
+	m.refreshTranscriptViewport()
+	if out := plainView(m.View()); !strings.Contains(out, "unrefreshed") {
+		t.Fatalf("explicit refresh should make transcript content visible, got:\n%s", out)
+	}
+}
+
+func TestTranscriptViewportEscReturnsToInputFocus(t *testing.T) {
+	m := &interactiveModel{focus: focusTranscript}
+	m.initTranscriptViewport(40, 5)
+
+	m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+
+	if m.focus != focusInput {
+		t.Fatalf("expected Esc to return to input focus, got %v", m.focus)
+	}
+}
+
+func TestTranscriptViewportQuitKeysDuringWaiting(t *testing.T) {
+	for _, key := range []tea.KeyType{tea.KeyCtrlC, tea.KeyCtrlD} {
+		t.Run(key.String(), func(t *testing.T) {
+			m := &interactiveModel{focus: focusTranscript, waiting: true, done: make(chan struct{})}
+
+			_, cmd := m.Update(tea.KeyMsg{Type: key})
+
+			if !m.quitting {
+				t.Fatalf("expected %s to quit while transcript-focused and waiting", key)
+			}
+			if cmd == nil {
+				t.Fatalf("expected %s to return quit command", key)
+			}
+		})
+	}
+}
+
 func TestManagementPanelKeysDuringWaiting(t *testing.T) {
 	m := newSessionPanelTestModel(t)
 	m.openManagementPanel(appcore.UIRequestSessions)

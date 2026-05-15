@@ -14,11 +14,6 @@ import (
 func (m *interactiveModel) View() string {
 	textInputOut := m.textInput.View()
 	width := getTerminalWidth()
-	if m.viewport.Width != width {
-		m.viewport.Width = width
-	}
-	m.viewport.Height = transcriptViewportHeight()
-	m.refreshTranscriptViewport()
 	viewportOut := m.viewport.View()
 	key := viewCacheKey{
 		version:            m.viewVersion,
@@ -90,6 +85,10 @@ func (m *interactiveModel) View() string {
 	}
 
 	s.WriteString("\n")
+	if m.hasNewTranscriptOutput {
+		s.WriteString(waitingStyle.Render("new transcript output below"))
+		s.WriteString("\n")
+	}
 	if m.active && m.status != "" && m.status != "done" {
 		s.WriteString(spinnerStyle.Render(spinnerFrames[m.spinnerIdx]))
 		s.WriteString(" ")
@@ -116,7 +115,11 @@ func (m *interactiveModel) View() string {
 }
 
 func transcriptViewportHeight() int {
-	h := getTerminalHeight() - 4
+	return transcriptViewportHeightFor(getTerminalHeight())
+}
+
+func transcriptViewportHeightFor(terminalHeight int) int {
+	h := terminalHeight - 4
 	if h < 5 {
 		return 5
 	}
@@ -130,10 +133,45 @@ func (m *interactiveModel) initTranscriptViewport(width, height int) {
 	if height <= 0 {
 		height = transcriptViewportHeight()
 	}
+	if height < 5 {
+		height = 5
+	}
 	m.viewport = viewport.New(width, height)
 	m.renderer = transcriptRenderer{}
 	if m.focus != focusTranscript && m.focus != focusOverlay {
 		m.focus = focusInput
+	}
+}
+
+func (m *interactiveModel) resizeTranscriptViewport(width, height int) {
+	if width <= 0 {
+		width = getTerminalWidth()
+	}
+	if height <= 0 {
+		height = transcriptViewportHeight()
+	}
+	if height < 5 {
+		height = 5
+	}
+	if m.viewport.Width <= 0 || m.viewport.Height <= 0 {
+		m.initTranscriptViewport(width, height)
+		return
+	}
+	wasAtBottom := m.viewport.AtBottom()
+	if m.viewport.Width == width && m.viewport.Height == height {
+		return
+	}
+	m.viewport.Width = width
+	m.viewport.Height = height
+	m.viewport.SetContent(m.transcriptViewportText)
+	m.viewVersion++
+	if wasAtBottom {
+		m.viewport.GotoBottom()
+		m.clearNewTranscriptOutput()
+		return
+	}
+	if m.viewport.AtBottom() {
+		m.clearNewTranscriptOutput()
 	}
 }
 
@@ -157,15 +195,32 @@ func (m *interactiveModel) refreshTranscriptViewport() {
 	m.viewport.SetContent(content)
 	if wasAtBottom || wasEmpty {
 		m.viewport.GotoBottom()
-		if m.hasNewTranscriptOutput {
-			m.viewVersion++
-		}
-		m.hasNewTranscriptOutput = false
+		m.clearNewTranscriptOutput()
+		return
+	}
+	if m.viewport.AtBottom() {
+		m.clearNewTranscriptOutput()
 		return
 	}
 	if contentChanged {
-		m.hasNewTranscriptOutput = true
+		m.markNewTranscriptOutput()
 	}
+}
+
+func (m *interactiveModel) markNewTranscriptOutput() {
+	if m.hasNewTranscriptOutput {
+		return
+	}
+	m.hasNewTranscriptOutput = true
+	m.viewVersion++
+}
+
+func (m *interactiveModel) clearNewTranscriptOutput() {
+	if !m.hasNewTranscriptOutput {
+		return
+	}
+	m.hasNewTranscriptOutput = false
+	m.viewVersion++
 }
 
 // renderRound renders one round (reasoning + tool calls).

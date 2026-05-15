@@ -119,6 +119,11 @@ func (m *interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.mu.Unlock()
 		return m, cmd
 
+	case tea.WindowSizeMsg:
+		m.resizeTranscriptViewport(msg.Width, transcriptViewportHeightFor(msg.Height))
+		m.viewVersion++
+		return m, nil
+
 	case tea.KeyMsg:
 		switch msg.Type {
 		case tea.KeyCtrlC, tea.KeyCtrlD:
@@ -152,7 +157,7 @@ func (m *interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			var cmd tea.Cmd
 			m.viewport, cmd = m.viewport.Update(msg)
 			if m.viewport.AtBottom() {
-				m.hasNewTranscriptOutput = false
+				m.clearNewTranscriptOutput()
 			}
 			m.viewVersion++
 			return m, cmd
@@ -161,12 +166,12 @@ func (m *interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case tea.KeyPgUp, tea.KeyPgDown:
 			m.focus = focusTranscript
 			if m.viewport.Width <= 0 || m.viewport.Height <= 0 {
-				m.initTranscriptViewport(getTerminalWidth(), transcriptViewportHeight())
+				m.resizeTranscriptViewport(getTerminalWidth(), transcriptViewportHeight())
 			}
 			var cmd tea.Cmd
 			m.viewport, cmd = m.viewport.Update(msg)
 			if m.viewport.AtBottom() {
-				m.hasNewTranscriptOutput = false
+				m.clearNewTranscriptOutput()
 			}
 			m.viewVersion++
 			return m, cmd
