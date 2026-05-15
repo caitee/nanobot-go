@@ -102,6 +102,9 @@ func TestAssistantUpsertsToolSegments(t *testing.T) {
 	if got.durationMs != 250 {
 		t.Fatalf("durationMs = %d, want 250", got.durationMs)
 	}
+	if got := asst.segments[0].updatedAt; !got.Equal(end) {
+		t.Fatalf("segment updatedAt = %v, want %v", got, end)
+	}
 }
 
 func TestAssistantCreatesOrphanToolWhenEndArrivesFirst(t *testing.T) {
@@ -117,6 +120,69 @@ func TestAssistantCreatesOrphanToolWhenEndArrivesFirst(t *testing.T) {
 	got := asst.segments[0].tool
 	if got == nil || !got.orphan || got.status != toolStatusDone || got.result != "late result" {
 		t.Fatalf("orphan tool not rendered into transcript state: %+v", got)
+	}
+}
+
+func TestAssistantLateToolStartAfterOrphanEndKeepsSettledResult(t *testing.T) {
+	asst := &assistantBlock{status: assistantStatusThinking}
+	start := time.Unix(5, 0)
+	end := start.Add(250 * time.Millisecond)
+
+	asst.finishTool("call-1", "shell", "done", false, end)
+	asst.upsertToolStart("call-1", "shell", map[string]any{"cmd": "date"}, start)
+
+	if len(asst.segments) != 1 {
+		t.Fatalf("segments = %d, want 1", len(asst.segments))
+	}
+	if asst.segments[0].kind != segmentKindTool {
+		t.Fatalf("segments[0].kind = %v, want tool", asst.segments[0].kind)
+	}
+	got := asst.segments[0].tool
+	if got == nil {
+		t.Fatal("tool segment is nil")
+	}
+	if got.orphan {
+		t.Fatalf("orphan = true, want false")
+	}
+	if got.status != toolStatusDone || got.result != "done" {
+		t.Fatalf("settled result changed: %+v", got)
+	}
+	if !got.startedAt.Equal(start) || !got.endedAt.Equal(end) {
+		t.Fatalf("tool times = (%v, %v), want (%v, %v)", got.startedAt, got.endedAt, start, end)
+	}
+	if got.durationMs != 250 {
+		t.Fatalf("durationMs = %d, want 250", got.durationMs)
+	}
+	if asst.status == assistantStatusRunningTools {
+		t.Fatalf("assistant status = running tools, want non-running")
+	}
+}
+
+func TestAssistantLateToolUpdateOnSettledToolDoesNotResumeRunningStatus(t *testing.T) {
+	asst := &assistantBlock{status: assistantStatusThinking}
+	start := time.Unix(6, 0)
+	end := start.Add(250 * time.Millisecond)
+	update := end.Add(250 * time.Millisecond)
+
+	asst.upsertToolStart("call-1", "shell", map[string]any{"cmd": "date"}, start)
+	asst.finishTool("call-1", "shell", "done", false, end)
+	if asst.status != assistantStatusThinking {
+		t.Fatalf("assistant status after finish = %v, want thinking", asst.status)
+	}
+	asst.updateTool("call-1", "shell", "late partial", update)
+
+	if len(asst.segments) != 1 {
+		t.Fatalf("segments = %d, want 1", len(asst.segments))
+	}
+	got := asst.segments[0].tool
+	if got == nil || got.status != toolStatusDone || got.partial != "late partial" {
+		t.Fatalf("late update changed settled tool incorrectly: %+v", got)
+	}
+	if asst.status != assistantStatusThinking {
+		t.Fatalf("assistant status after late update = %v, want thinking", asst.status)
+	}
+	if got := asst.segments[0].updatedAt; !got.Equal(update) {
+		t.Fatalf("segment updatedAt = %v, want %v", got, update)
 	}
 }
 

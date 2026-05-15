@@ -345,14 +345,21 @@ func (a *assistantBlock) clearTextBeforeSegment(segmentIndex int, ts time.Time) 
 
 func (a *assistantBlock) upsertToolStart(id, name string, args map[string]any, startedAt time.Time) *toolCallSegment {
 	if id != "" {
-		if tool := a.findTool(id, name); tool != nil {
+		if tool, segmentIndex := a.findToolSegment(id, name); tool != nil {
+			wasSettled := isSettledToolStatus(tool.status)
 			tool.name = firstNonEmpty(name, tool.name)
 			tool.args = cloneToolArgs(args)
-			tool.status = toolStatusRunning
 			tool.startedAt = startedAt
 			tool.lastUpdate = startedAt
 			tool.orphan = false
-			a.setStatusIfNonTerminal(assistantStatusRunningTools)
+			if !tool.endedAt.IsZero() {
+				tool.durationMs = tool.endedAt.Sub(startedAt).Milliseconds()
+			}
+			a.touchSegment(segmentIndex, startedAt)
+			if !wasSettled {
+				tool.status = toolStatusRunning
+				a.setStatusIfNonTerminal(assistantStatusRunningTools)
+			}
 			return tool
 		}
 	}
@@ -380,24 +387,30 @@ func (a *assistantBlock) appendToolStart(id, name string, args map[string]any, s
 }
 
 func (a *assistantBlock) updateTool(id, name, partial string, updatedAt time.Time) *toolCallSegment {
-	tool := a.findTool(id, name)
+	tool, segmentIndex := a.findToolSegment(id, name)
 	if tool == nil {
 		tool = a.appendToolStart(id, name, nil, updatedAt, true)
+		segmentIndex = len(a.segments) - 1
 	}
+	wasSettled := isSettledToolStatus(tool.status)
 	tool.name = firstNonEmpty(name, tool.name)
 	tool.partial = partial
 	tool.lastUpdate = updatedAt
 	if tool.status == toolStatusPending {
 		tool.status = toolStatusRunning
 	}
-	a.setStatusIfNonTerminal(assistantStatusRunningTools)
+	a.touchSegment(segmentIndex, updatedAt)
+	if !wasSettled {
+		a.setStatusIfNonTerminal(assistantStatusRunningTools)
+	}
 	return tool
 }
 
 func (a *assistantBlock) finishTool(id, name, result string, isError bool, endedAt time.Time) *toolCallSegment {
-	tool := a.findTool(id, name)
+	tool, segmentIndex := a.findToolSegment(id, name)
 	if tool == nil {
 		tool = a.appendToolStart(id, name, nil, endedAt, true)
+		segmentIndex = len(a.segments) - 1
 	}
 	tool.name = firstNonEmpty(name, tool.name)
 	tool.result = result
@@ -411,10 +424,17 @@ func (a *assistantBlock) finishTool(id, name, result string, isError bool, ended
 	if !tool.startedAt.IsZero() {
 		tool.durationMs = endedAt.Sub(tool.startedAt).Milliseconds()
 	}
+	a.touchSegment(segmentIndex, endedAt)
 	if !a.hasRunningTool() {
 		a.setStatusIfNonTerminal(assistantStatusThinking)
 	}
 	return tool
+}
+
+func (a *assistantBlock) touchSegment(index int, ts time.Time) {
+	if index >= 0 && index < len(a.segments) {
+		a.segments[index].updatedAt = ts
+	}
 }
 
 func (a *assistantBlock) setStatusIfNonTerminal(status assistantStatus) {
@@ -433,31 +453,40 @@ func isTerminalAssistantStatus(status assistantStatus) bool {
 	}
 }
 
+func isSettledToolStatus(status toolStatus) bool {
+	return status == toolStatusDone || status == toolStatusError
+}
+
 func (a *assistantBlock) findTool(id, name string) *toolCallSegment {
+	tool, _ := a.findToolSegment(id, name)
+	return tool
+}
+
+func (a *assistantBlock) findToolSegment(id, name string) (*toolCallSegment, int) {
 	if id != "" {
 		for i := range a.segments {
 			tool := a.segments[i].tool
 			if a.segments[i].kind == segmentKindTool && tool != nil && tool.id == id {
-				return tool
+				return tool, i
 			}
 		}
-		return nil
+		return nil, -1
 	}
 	if name != "" {
 		for i := len(a.segments) - 1; i >= 0; i-- {
 			tool := a.segments[i].tool
 			if a.segments[i].kind == segmentKindTool && tool != nil && tool.name == name && tool.status == toolStatusRunning {
-				return tool
+				return tool, i
 			}
 		}
 		for i := len(a.segments) - 1; i >= 0; i-- {
 			tool := a.segments[i].tool
 			if a.segments[i].kind == segmentKindTool && tool != nil && tool.name == name {
-				return tool
+				return tool, i
 			}
 		}
 	}
-	return nil
+	return nil, -1
 }
 
 func (a *assistantBlock) hasRunningTool() bool {
