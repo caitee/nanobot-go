@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -49,6 +50,9 @@ func TestTranscriptRendererUsesMarkdownFieldForMarkdownCommands(t *testing.T) {
 	if !strings.Contains(out, "bold") {
 		t.Fatalf("expected markdown command output to include rendered text, got:\n%s", out)
 	}
+	if strings.Contains(out, "**bold**") {
+		t.Fatalf("expected markdown command output not to render raw markers as plain text, got:\n%s", out)
+	}
 }
 
 func TestTranscriptRendererToolLinesFitNarrowWidth(t *testing.T) {
@@ -83,6 +87,23 @@ func TestTranscriptRendererUserLinesFitNarrowWidth(t *testing.T) {
 	assertTranscriptRendererLinesFit(t, out, 24)
 }
 
+func TestTranscriptRendererUserPlainTextWrapPreservesContent(t *testing.T) {
+	now := time.Unix(114, 0)
+	var tr transcript
+	tr.appendUserBlock("user-1", "alpha SENTINEL omega", now)
+
+	out := plainView(transcriptRenderer{}.renderTranscript(tr, renderContext{width: 8, now: now}))
+	assertTranscriptRendererLinesFit(t, out, 8)
+	for _, want := range []string{"alpha", "SENTINEL", "omega"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected wrapped user output to preserve %q, got:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "...") {
+		t.Fatalf("expected wrapped user body not to use truncation ellipses, got:\n%s", out)
+	}
+}
+
 func TestTranscriptRendererCommandLinesFitNarrowWidth(t *testing.T) {
 	now := time.Unix(106, 0)
 	var tr transcript
@@ -99,6 +120,37 @@ func TestTranscriptRendererCommandLinesFitNarrowWidth(t *testing.T) {
 	assertTranscriptRendererLinesFit(t, out, 32)
 }
 
+func TestTranscriptRendererCommandPlainTextWrapPreservesContent(t *testing.T) {
+	now := time.Unix(115, 0)
+	var tr transcript
+	tr.appendCommandBlock("cmd-1", "/wrap", "alpha SENTINEL omega", "", "ready", now)
+
+	out := plainView(transcriptRenderer{}.renderTranscript(tr, renderContext{width: 8, now: now}))
+	assertTranscriptRendererLinesFit(t, out, 8)
+	for _, want := range []string{"alpha", "SENTINEL", "omega"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected wrapped command output to preserve %q, got:\n%s", want, out)
+		}
+	}
+	body := strings.Join(strings.Split(out, "\n")[1:], "\n")
+	if strings.Contains(body, "...") {
+		t.Fatalf("expected wrapped command body not to use truncation ellipses, got:\n%s", out)
+	}
+}
+
+func TestTranscriptRendererPlainTextWrapHandlesCJKWidth(t *testing.T) {
+	now := time.Unix(116, 0)
+	var tr transcript
+	tr.appendUserBlock("user-1", "你好世界你好世界", now)
+	tr.appendCommandBlock("cmd-1", "/cjk", "再见世界再见世界", "", "", now.Add(time.Second))
+
+	out := plainView(transcriptRenderer{}.renderTranscript(tr, renderContext{width: 6, now: now}))
+	assertTranscriptRendererLinesFit(t, out, 6)
+	if strings.Contains(out, "...") {
+		t.Fatalf("expected CJK wrapped body not to use truncation ellipses, got:\n%s", out)
+	}
+}
+
 func TestTranscriptRendererSystemLinesFitNarrowWidth(t *testing.T) {
 	now := time.Unix(107, 0)
 	var tr transcript
@@ -106,6 +158,26 @@ func TestTranscriptRendererSystemLinesFitNarrowWidth(t *testing.T) {
 
 	out := plainView(transcriptRenderer{}.renderTranscript(tr, renderContext{width: 28, now: now}))
 	assertTranscriptRendererLinesFit(t, out, 28)
+}
+
+func TestTranscriptRendererToolTinyWidthsFit(t *testing.T) {
+	now := time.Unix(117, 0)
+	for _, width := range []int{1, 2, 6, 7, 8, 10} {
+		t.Run(fmt.Sprintf("width_%d", width), func(t *testing.T) {
+			var tr transcript
+			asst := tr.appendAssistantBlock("asst-1", now)
+			tool := asst.upsertToolStart("call-1", "shell", map[string]any{
+				"argument": "value",
+			}, now)
+			tool.partial = "partial preview"
+			tool.result = "result preview"
+			tool.status = toolStatusDone
+			tool.durationMs = 1
+
+			out := plainView(transcriptRenderer{}.renderTranscript(tr, renderContext{width: width, now: now}))
+			assertTranscriptRendererLinesFit(t, out, width)
+		})
+	}
 }
 
 func TestTranscriptRendererAssistantMarkdownAndFinalFallbackFitNarrowWidth(t *testing.T) {

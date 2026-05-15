@@ -66,7 +66,7 @@ func (r transcriptRenderer) renderUserBlock(user *userBlock, ctx renderContext) 
 	var b strings.Builder
 	b.WriteString(userPromptStyle.Render(fitLine("you", ctx.width)))
 	b.WriteString("\n")
-	b.WriteString(userMessageStyle.Render(fitPlainText(user.content, ctx.width)))
+	b.WriteString(userMessageStyle.Render(wrapPlainText(user.content, ctx.width)))
 	return b.String()
 }
 
@@ -175,7 +175,7 @@ func (r transcriptRenderer) renderCommandBlock(cmd *commandBlock, ctx renderCont
 	b.WriteString(slashCommandSelectedStyle.Render(fitLine(header, ctx.width)))
 	if cmd.text != "" {
 		b.WriteString("\n")
-		b.WriteString(fitPlainText(cmd.text, ctx.width))
+		b.WriteString(wrapPlainText(cmd.text, ctx.width))
 	}
 	if cmd.markdown != "" {
 		b.WriteString("\n")
@@ -301,11 +301,11 @@ func renderMarkdownForWidth(content string, width int) string {
 		glamour.WithWordWrap(markdownWrapWidth(width)),
 	)
 	if renderer == nil {
-		return fitPlainText(content, width)
+		return wrapPlainText(content, width)
 	}
 	rendered, err := renderer.Render(content)
 	if err != nil {
-		return fitPlainText(content, width)
+		return wrapPlainText(content, width)
 	}
 	return fitRenderedLines(strings.TrimSuffix(rendered, "\n"), width)
 }
@@ -320,11 +320,11 @@ func renderReasoningMarkdownForWidth(content string, width int) string {
 		glamour.WithWordWrap(markdownWrapWidth(width)),
 	)
 	if renderer == nil {
-		return reasoningStyle.Render(fitPlainText(content, width))
+		return reasoningStyle.Render(wrapPlainText(content, width))
 	}
 	rendered, err := renderer.Render(content)
 	if err != nil {
-		return reasoningStyle.Render(fitPlainText(content, width))
+		return reasoningStyle.Render(wrapPlainText(content, width))
 	}
 	return fitRenderedLines(strings.TrimSuffix(rendered, "\n"), width)
 }
@@ -336,10 +336,23 @@ func markdownWrapWidth(width int) int {
 	return width - 4
 }
 
-func fitPlainText(text string, width int) string {
+func wrapPlainText(text string, width int) string {
+	if width <= 0 {
+		width = getTerminalWidth()
+	}
 	lines := strings.Split(text, "\n")
 	for i := range lines {
-		lines[i] = fitLine(lines[i], width)
+		lines[i] = hardwrapLongLines(ansi.Wrap(lines[i], width, " "), width)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func hardwrapLongLines(text string, width int) string {
+	lines := strings.Split(text, "\n")
+	for i := range lines {
+		if ansi.StringWidth(lines[i]) > width {
+			lines[i] = ansi.Hardwrap(lines[i], width, true)
+		}
 	}
 	return strings.Join(lines, "\n")
 }
@@ -361,7 +374,7 @@ func fitPrefixedLine(prefix, value string, width int) string {
 	if available < 1 {
 		return fitLine(prefix, width)
 	}
-	return prefix + truncateStr(value, available)
+	return fitLine(prefix+fitLine(value, available), width)
 }
 
 func fitLine(line string, width int) string {
