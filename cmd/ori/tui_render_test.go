@@ -132,6 +132,52 @@ func TestRefreshTranscriptViewportPreservesScrollWhenAwayFromBottom(t *testing.T
 	}
 }
 
+func TestViewportKeyRoutingDuringWaiting(t *testing.T) {
+	m := &interactiveModel{waiting: true, focus: focusInput}
+	m.initTranscriptViewport(40, 5)
+	for i := 0; i < 20; i++ {
+		m.transcript.appendSystemBlock(m.nextBlockID("system"), systemLevelInfo, fmt.Sprintf("line %02d", i), time.Unix(int64(i), 0))
+	}
+	m.refreshTranscriptViewport()
+	before := m.viewport.YOffset
+	if before == 0 {
+		t.Fatalf("expected viewport to have scrollback")
+	}
+
+	m.Update(tea.KeyMsg{Type: tea.KeyPgUp})
+
+	if m.focus != focusTranscript {
+		t.Fatalf("expected PageUp to focus transcript while waiting, got %v", m.focus)
+	}
+	if m.viewport.YOffset >= before {
+		t.Fatalf("expected PageUp to update viewport offset below %d, got %d", before, m.viewport.YOffset)
+	}
+}
+
+func TestManagementPanelKeysDuringWaiting(t *testing.T) {
+	m := newSessionPanelTestModel(t)
+	m.openManagementPanel(appcore.UIRequestSessions)
+	m.waiting = true
+	if got := len(m.managementPanelRows()); got < 2 {
+		t.Fatalf("expected multiple panel rows, got %d", got)
+	}
+
+	m.Update(tea.KeyMsg{Type: tea.KeyDown})
+
+	if m.panel == nil {
+		t.Fatal("expected panel to stay open after Down")
+	}
+	if m.panel.selected != 1 {
+		t.Fatalf("expected Down to move panel selection while waiting, got %d", m.panel.selected)
+	}
+
+	m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+
+	if m.panel != nil {
+		t.Fatalf("expected Esc to close panel while waiting, got %+v", m.panel)
+	}
+}
+
 func TestCloseOpenMarkdownCompletesDanglingLinkDestination(t *testing.T) {
 	got := closeOpenMarkdown("see [docs](https://example.com")
 	if got != "see [docs](https://example.com)" {

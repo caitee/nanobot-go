@@ -138,9 +138,6 @@ func (m *interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.viewVersion++
 			return m, tea.Quit
 		}
-		if m.waiting {
-			return m, nil
-		}
 		if m.panel != nil {
 			if handled, cmd := m.handleManagementPanelKey(msg); handled {
 				return m, cmd
@@ -161,18 +158,6 @@ func (m *interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 		switch msg.Type {
-		case tea.KeyTab:
-			if m.acceptSlashCommandCompletion() {
-				return m, nil
-			}
-		case tea.KeyUp:
-			if m.moveSlashCommandSelection(-1) {
-				return m, nil
-			}
-		case tea.KeyDown:
-			if m.moveSlashCommandSelection(1) {
-				return m, nil
-			}
 		case tea.KeyPgUp, tea.KeyPgDown:
 			m.focus = focusTranscript
 			if m.viewport.Width <= 0 || m.viewport.Height <= 0 {
@@ -189,6 +174,23 @@ func (m *interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.focus == focusTranscript {
 				m.focus = focusInput
 				m.viewVersion++
+				return m, nil
+			}
+		}
+		if m.waiting {
+			return m, nil
+		}
+		switch msg.Type {
+		case tea.KeyTab:
+			if m.acceptSlashCommandCompletion() {
+				return m, nil
+			}
+		case tea.KeyUp:
+			if m.moveSlashCommandSelection(-1) {
+				return m, nil
+			}
+		case tea.KeyDown:
+			if m.moveSlashCommandSelection(1) {
 				return m, nil
 			}
 		case tea.KeyEnter:
