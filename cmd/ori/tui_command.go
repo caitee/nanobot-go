@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	appcore "ori/internal/app"
 	"ori/internal/bus"
@@ -74,22 +75,8 @@ func (m *interactiveModel) applySlashCommandResult(input string, result *appcore
 
 func (m *interactiveModel) submitPrompt(displayContent, dispatchContent string) tea.Cmd {
 	m.mu.Lock()
-	m.active = true
-	m.waiting = true
-	m.responseReceived = false
-	m.spinnerIdx = 0
-	m.currentRound = nil
-	m.streamText = ""
-	m.displayedText = ""
-	m.typewriterQueue = nil
-	m.flushedText = ""
-	m.status = "waiting"
-	m.viewVersion++
+	m.beginPromptForTranscript(displayContent)
 	m.mu.Unlock()
-
-	padded := displayContent + strings.Repeat(" ", max(0, getTerminalWidth()-lipgloss.Width(displayContent)))
-	userMsg := "\n" + userMessageStyle.Render(padded)
-	printCmd := m.printAbove(userMsg)
 
 	m.dispatcher.Bus().PublishInbound(bus.InboundMessage{
 		Channel:    "cli",
@@ -99,7 +86,19 @@ func (m *interactiveModel) submitPrompt(displayContent, dispatchContent string) 
 		SessionKey: m.sessionKey,
 	})
 
-	return tea.Batch(printCmd, m.tickSpinner())
+	return m.tickSpinner()
+}
+
+func (m *interactiveModel) beginPromptForTranscript(displayContent string) {
+	m.beginTranscriptPrompt(displayContent, time.Now())
+	m.spinnerIdx = 0
+	m.currentRound = nil
+	m.streamText = ""
+	m.displayedText = ""
+	m.typewriterQueue = nil
+	m.flushedText = ""
+	m.refreshTranscriptViewport()
+	m.viewVersion++
 }
 
 func (m *interactiveModel) applyClearCommandResult() {

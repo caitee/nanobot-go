@@ -10,6 +10,7 @@ import (
 	"time"
 
 	appcore "ori/internal/app"
+	"ori/internal/bus"
 	"ori/internal/config"
 	"ori/internal/llm"
 	"ori/internal/runtime"
@@ -53,6 +54,93 @@ var ansiEscapeRE = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 
 func plainView(s string) string {
 	return ansiEscapeRE.ReplaceAllString(s, "")
+}
+
+func TestSubmitPromptAppendsTranscriptBlocksWithoutPrintAbove(t *testing.T) {
+	calledPrintAbove := false
+	m := &interactiveModel{
+		dispatcher:   appcore.NewDispatcher(appcore.DispatcherOptions{Bus: bus.New(1)}),
+		printAboveFn: func(string) { calledPrintAbove = true },
+		renderer:     transcriptRenderer{},
+		focus:        focusInput,
+	}
+	m.initTranscriptViewport(80, 10)
+
+	cmd := m.submitPrompt("hello", "hello")
+	if cmd == nil {
+		t.Fatal("expected submitPrompt to return spinner tick")
+	}
+	if _, ok := cmd().(spinnerTickMsg); !ok {
+		t.Fatalf("expected submitPrompt to return spinner tick only")
+	}
+	if calledPrintAbove {
+		t.Fatalf("prompt path printed above the TUI")
+	}
+	if len(m.transcript.blocks) != 2 {
+		t.Fatalf("blocks = %d, want user + assistant", len(m.transcript.blocks))
+	}
+	if m.transcript.blocks[0].kind != blockKindUser || m.transcript.blocks[1].kind != blockKindAssistant {
+		t.Fatalf("unexpected blocks: %+v", m.transcript.blocks)
+	}
+	if out := plainView(m.transcriptViewportText); !strings.Contains(out, "hello") {
+		t.Fatalf("prompt was not rendered into transcript viewport:\n%s", out)
+	}
+}
+
+func TestHandleRuntimeEventUsesTranscriptInsteadOfCurrentRound(t *testing.T) {
+	m := &interactiveModel{renderer: transcriptRenderer{}, focus: focusInput}
+	m.initTranscriptViewport(80, 10)
+	m.beginPromptForTranscript("hello")
+
+	cmd := m.handleRuntimeEvent(runtime.Event{
+		Kind: runtime.EventMessageUpdate,
+		Data: runtime.MessageUpdateData{StreamEvent: llm.StreamEvent{
+			Kind:  llm.StreamEventTextDelta,
+			Delta: "answer",
+		}},
+	})
+
+	if cmd != nil {
+		t.Fatalf("runtime text delta returned print command")
+	}
+	if m.currentRound != nil || m.displayedText != "" || len(m.typewriterQueue) != 0 || m.flushedText != "" {
+		t.Fatalf("old live state was mutated: currentRound=%+v displayed=%q queue=%d flushed=%q",
+			m.currentRound, m.displayedText, len(m.typewriterQueue), m.flushedText)
+	}
+	asst := m.transcript.activeAssistant()
+	if asst == nil || len(asst.segments) != 1 || asst.segments[0].text.text != "answer" {
+		t.Fatalf("text delta not captured in transcript: %+v", asst)
+	}
+	if out := plainView(m.transcriptViewportText); !strings.Contains(out, "answer") {
+		t.Fatalf("runtime text delta was not rendered into transcript viewport:\n%s", out)
+	}
+}
+
+func TestResponseMsgFinalizesTranscriptWithoutPrintAbove(t *testing.T) {
+	calledPrintAbove := false
+	m := &interactiveModel{
+		printAboveFn: func(string) { calledPrintAbove = true },
+		renderer:     transcriptRenderer{},
+		focus:        focusInput,
+	}
+	m.initTranscriptViewport(80, 10)
+	m.beginPromptForTranscript("hello")
+
+	_, cmd := m.Update(responseMsg{content: "final", reasoning: "why", agentEventFinal: true, fallback: true})
+	if cmd != nil {
+		cmd()
+	}
+
+	if calledPrintAbove {
+		t.Fatalf("response finalization printed above the TUI")
+	}
+	asst := m.transcript.activeAssistant()
+	if asst == nil || asst.status != assistantStatusDone || asst.finalSource != finalSourceFallback {
+		t.Fatalf("assistant not finalized from outbound fallback: %+v", asst)
+	}
+	if out := plainView(m.transcriptViewportText); !strings.Contains(out, "final") || !strings.Contains(out, "why") {
+		t.Fatalf("final response was not rendered into transcript viewport:\n%s", out)
+	}
 }
 
 func TestView_RendersLiveToolCall(t *testing.T) {
@@ -427,13 +515,10 @@ func TestRenderRoundToolDetailLinesFitTerminalWidth(t *testing.T) {
 	}
 }
 
-func TestHandleRuntimeEvent_TurnStartFlushesPreviousRound(t *testing.T) {
+func TestHandleRuntimeEvent_TurnStartKeepsPreviousRoundInTranscript(t *testing.T) {
 	m := newTestModel()
-	var printed strings.Builder
-	m.printAboveFn = func(s string) {
-		printed.WriteString(s)
-		printed.WriteString("\n")
-	}
+	calledPrintAbove := false
+	m.printAboveFn = func(string) { calledPrintAbove = true }
 
 	m.handleRuntimeEvent(runtime.Event{Kind: runtime.EventTurnStart, Timestamp: time.Now()})
 	startAt := time.Now()
@@ -457,29 +542,31 @@ func TestHandleRuntimeEvent_TurnStartFlushesPreviousRound(t *testing.T) {
 		},
 	})
 
-	// Second TurnStart should flush the previous round above the TUI.
+	// Second TurnStart should keep the previous tool segment in transcript,
+	// not flush it above the TUI.
 	cmd := m.handleRuntimeEvent(runtime.Event{Kind: runtime.EventTurnStart, Timestamp: time.Now()})
-	if cmd == nil {
-		t.Fatal("expected TurnStart to return a flush command for the previous round")
+	if cmd != nil {
+		t.Fatal("expected TurnStart to avoid print commands after transcript migration")
 	}
-	cmd()
-
-	out := printed.String()
+	if calledPrintAbove {
+		t.Fatal("TurnStart printed above the TUI")
+	}
+	out := plainView(m.renderer.renderTranscript(m.transcript, renderContext{width: 80}))
 	if !strings.Contains(out, "read_file") {
-		t.Fatalf("expected flushed output to include tool name; got:\n%s", out)
+		t.Fatalf("expected transcript to include tool name; got:\n%s", out)
 	}
 	if !strings.Contains(out, "path") || !strings.Contains(out, "/tmp/demo.md") {
-		t.Fatalf("expected flushed output to include structured tool args; got:\n%s", out)
+		t.Fatalf("expected transcript to include structured tool args; got:\n%s", out)
 	}
 	if !strings.Contains(out, "Result") {
-		t.Fatalf("expected flushed output to include tool result; got:\n%s", out)
+		t.Fatalf("expected transcript to include tool result; got:\n%s", out)
 	}
 }
 
-func TestAgentEnd_PrintsFinalOutputWithToolCallsFromSameTurn(t *testing.T) {
+func TestAgentEnd_FinalizesTranscriptWithToolCallsFromSameTurn(t *testing.T) {
 	m := newTestModel()
-	var printed string
-	m.printAboveFn = func(s string) { printed = s }
+	calledPrintAbove := false
+	m.printAboveFn = func(string) { calledPrintAbove = true }
 
 	m.handleRuntimeEvent(runtime.Event{Kind: runtime.EventTurnStart, Timestamp: time.Now()})
 	startAt := time.Now()
@@ -516,22 +603,25 @@ func TestAgentEnd_PrintsFinalOutputWithToolCallsFromSameTurn(t *testing.T) {
 		Timestamp: time.Now(),
 		Data:      runtime.AgentEndData{Messages: []runtime.AgentMessage{assistant}},
 	})
-	if cmd == nil {
-		t.Fatal("expected finalize command on agent end")
+	if cmd != nil {
+		t.Fatal("expected agent end to avoid print commands after transcript migration")
 	}
-	cmd()
-
-	if printed == "" {
-		t.Fatal("expected finalize to print output above the TUI, got empty string")
+	if calledPrintAbove {
+		t.Fatal("agent end printed above the TUI")
 	}
-	if !strings.Contains(printed, "read_file") {
-		t.Fatalf("expected final printed output to include tool name; got:\n%s", printed)
+	asst := m.transcript.activeAssistant()
+	if asst == nil || asst.status != assistantStatusDone {
+		t.Fatalf("assistant not finalized: %+v", asst)
 	}
-	if !strings.Contains(printed, "path") || !strings.Contains(printed, "/tmp/demo.md") {
-		t.Fatalf("expected final printed output to include structured tool args; got:\n%s", printed)
+	out := plainView(m.renderer.renderTranscript(m.transcript, renderContext{width: 80}))
+	if !strings.Contains(out, "read_file") {
+		t.Fatalf("expected final transcript to include tool name; got:\n%s", out)
 	}
-	if !strings.Contains(printed, "Result") {
-		t.Fatalf("expected final printed output to include tool result; got:\n%s", printed)
+	if !strings.Contains(out, "path") || !strings.Contains(out, "/tmp/demo.md") {
+		t.Fatalf("expected final transcript to include structured tool args; got:\n%s", out)
+	}
+	if !strings.Contains(out, "Result") || !strings.Contains(out, "hello world") {
+		t.Fatalf("expected final transcript to include tool result and final text; got:\n%s", out)
 	}
 }
 
@@ -914,13 +1004,10 @@ func TestRenderResetCommandOutputIncludesBannerBeforeCommand(t *testing.T) {
 	}
 }
 
-func TestAgentEnd_PrintsFinalOutputWithToolCallsFromPreviousTurn(t *testing.T) {
+func TestAgentEnd_FinalizesTranscriptWithToolCallsFromPreviousTurn(t *testing.T) {
 	m := newTestModel()
-	var printed strings.Builder
-	m.printAboveFn = func(s string) {
-		printed.WriteString(s)
-		printed.WriteString("\n")
-	}
+	calledPrintAbove := false
+	m.printAboveFn = func(string) { calledPrintAbove = true }
 
 	m.handleRuntimeEvent(runtime.Event{Kind: runtime.EventTurnStart, Timestamp: time.Now()})
 	startAt := time.Now()
@@ -944,17 +1031,11 @@ func TestAgentEnd_PrintsFinalOutputWithToolCallsFromPreviousTurn(t *testing.T) {
 		},
 	})
 
-	// Second TurnStart must flush the previous round above the TUI.
+	// Second TurnStart keeps the previous round in transcript.
 	flushCmd := m.handleRuntimeEvent(runtime.Event{Kind: runtime.EventTurnStart, Timestamp: time.Now()})
-	if flushCmd == nil {
-		t.Fatal("expected TurnStart to return a flush command for the previous round")
+	if flushCmd != nil {
+		t.Fatal("expected TurnStart to avoid print commands after transcript migration")
 	}
-	flushCmd()
-
-	if m.currentRound == nil {
-		m.currentRound = &thinkingRound{}
-	}
-	m.currentRound.reasoning = "wrapping up"
 
 	assistant := runtime.WrapLLM(llm.AssistantMessage{
 		Content: []llm.Content{
@@ -969,17 +1050,22 @@ func TestAgentEnd_PrintsFinalOutputWithToolCallsFromPreviousTurn(t *testing.T) {
 		Timestamp: time.Now(),
 		Data:      runtime.AgentEndData{Messages: []runtime.AgentMessage{assistant}},
 	})
-	if cmd == nil {
-		t.Fatal("expected finalize command on agent end")
+	if cmd != nil {
+		t.Fatal("expected agent end to avoid print commands after transcript migration")
 	}
-	cmd()
-
-	all := printed.String()
-	if !strings.Contains(all, "read_file") {
-		t.Fatalf("expected cumulative printed output to include read_file from a prior turn; got:\n%s", all)
+	if calledPrintAbove {
+		t.Fatal("agent end printed above the TUI")
 	}
-	if !strings.Contains(all, "hello world") {
-		t.Fatalf("expected cumulative printed output to include assistant answer; got:\n%s", all)
+	asst := m.transcript.activeAssistant()
+	if asst == nil || asst.status != assistantStatusDone {
+		t.Fatalf("assistant not finalized: %+v", asst)
+	}
+	out := plainView(m.renderer.renderTranscript(m.transcript, renderContext{width: 80}))
+	if !strings.Contains(out, "read_file") {
+		t.Fatalf("expected transcript to include read_file from a prior turn; got:\n%s", out)
+	}
+	if !strings.Contains(out, "wrapping up") || !strings.Contains(out, "hello world") {
+		t.Fatalf("expected transcript to include reasoning and assistant answer; got:\n%s", out)
 	}
 }
 

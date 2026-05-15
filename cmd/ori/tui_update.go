@@ -5,7 +5,6 @@ import (
 	"strings"
 	"time"
 
-	appcore "ori/internal/app"
 	"ori/internal/bus"
 	"ori/internal/llm"
 	"ori/internal/runtime"
@@ -107,17 +106,21 @@ func (m *interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.mu.Unlock()
 			return m, m.deferResponse(msg)
 		}
-		cmd := m.finalizeAssistantMessage(msg.content, msg.reasoning)
-		m.viewVersion++
+		if m.finalizeTranscriptFromOutbound(msg.content, msg.reasoning, msg.agentEventFinal) {
+			m.refreshTranscriptViewport()
+			m.viewVersion++
+		}
 		m.mu.Unlock()
-		return m, cmd
+		return m, nil
 
 	case runtimeEventMsg:
 		m.mu.Lock()
-		cmd := m.handleRuntimeEvent(msg.ev)
-		m.viewVersion++
+		if m.reduceRuntimeEvent(msg.ev) {
+			m.refreshTranscriptViewport()
+			m.viewVersion++
+		}
 		m.mu.Unlock()
-		return m, cmd
+		return m, nil
 
 	case tea.WindowSizeMsg:
 		m.resizeTranscriptViewport(msg.Width, transcriptViewportHeightFor(msg.Height))
@@ -126,16 +129,13 @@ func (m *interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.Type {
 		case tea.KeyCtrlC, tea.KeyCtrlD:
-			if m.active && (m.streamText != "" || (m.currentRound != nil && (m.currentRound.reasoning != "" || len(m.currentRound.toolCalls) > 0))) {
-				output := m.formatCurrentState()
-				cmd := m.printAbove(output)
-				m.clearActiveState()
-				m.active = false
-				m.waiting = false
+			if m.active {
+				m.cancelActiveAssistant()
 				m.quitting = true
 				m.shutdown()
+				m.refreshTranscriptViewport()
 				m.viewVersion++
-				return m, tea.Batch(cmd, tea.Quit)
+				return m, tea.Quit
 			}
 			m.quitting = true
 			m.shutdown()
@@ -233,131 +233,14 @@ func (m *interactiveModel) handleEnter() (tea.Model, tea.Cmd) {
 	return m, m.submitPrompt(userInput, userInput)
 }
 
-// handleRuntimeEvent processes a single runtime.Event. Called with m.mu held.
-// Returns a Cmd for the final message path; nil otherwise.
+// handleRuntimeEvent keeps legacy tests on the transcript reducer path.
+// Called with m.mu held.
 func (m *interactiveModel) handleRuntimeEvent(ev runtime.Event) tea.Cmd {
-	if !m.active {
+	if !m.active && ev.Kind != runtime.EventAgentEnd {
 		return nil
 	}
-	switch ev.Kind {
-	case runtime.EventAgentStart:
-		m.status = "thinking"
-		// Flush the "✦ ori" banner once at the top of the response so it
-		// sits above the first round of reasoning/tool calls instead of
-		// appearing between the last round and the final message.
-		return m.printAbove(renderAssistantHeader())
-
-	case runtime.EventTurnStart:
-		m.status = "thinking"
-		// New turn → flush the previous round (if non-empty) to the history
-		// area above the TUI, so the user sees it persist as the next round
-		// starts. View() only renders currentRound, so without this flush the
-		// finished round would vanish until finalizeAssistantMessage runs.
-		var flushCmd tea.Cmd
-		if m.currentRound != nil && (m.currentRound.reasoning != "" || len(m.currentRound.toolCalls) > 0) {
-			flushCmd = m.printAbove(m.renderCompletedRound(*m.currentRound))
-		}
-		m.currentRound = &thinkingRound{}
-		m.streamText = ""
-		m.displayedText = ""
-		m.typewriterQueue = nil
-		return flushCmd
-
-	case runtime.EventMessageUpdate:
-		data, ok := ev.MessageUpdate()
-		if !ok {
-			return nil
-		}
-		switch data.StreamEvent.Kind {
-		case llm.StreamEventThinkingDelta:
-			m.status = "thinking"
-			if m.currentRound == nil {
-				m.currentRound = &thinkingRound{}
-			}
-			m.currentRound.reasoning += data.StreamEvent.Delta
-		case llm.StreamEventTextDelta:
-			m.status = "responding"
-			m.streamText += data.StreamEvent.Delta
-			if data.StreamEvent.Delta != "" {
-				wasEmpty := len(m.typewriterQueue) == 0
-				m.typewriterQueue = append(m.typewriterQueue, []rune(data.StreamEvent.Delta)...)
-				if wasEmpty {
-					return m.tickTypewriter()
-				}
-			}
-			// The stream-window flush check now piggybacks on the typewriter
-			// tick (throttled). Running it on every delta was the main source
-			// of spinner stutter on long streams — glamour rendering the full
-			// displayed text + lipgloss width calc is linear per delta, which
-			// adds up to quadratic over a 10k-character response.
-			return nil
-		}
-
-	case runtime.EventToolExecutionStart:
-		m.status = "running tools"
-		data, ok := ev.ToolStart()
-		if !ok {
-			return nil
-		}
-		if m.currentRound == nil {
-			m.currentRound = &thinkingRound{}
-		}
-		args := formatArgs(data.Args)
-		entry := toolCallEntry{
-			id:        data.ToolCallID,
-			name:      data.ToolName,
-			args:      args,
-			argsMap:   cloneToolArgs(data.Args),
-			status:    "running",
-			startTime: ev.Timestamp,
-		}
-		entry.displayArgs.set(args)
-		m.currentRound.toolCalls = append(m.currentRound.toolCalls, entry)
-
-	case runtime.EventToolExecUpdate:
-		data, ok := ev.ToolUpdate()
-		if !ok {
-			return nil
-		}
-		if idx := m.findToolCall(data.ToolCallID, data.ToolName); idx >= 0 {
-			partial := contentsToString(data.Partial)
-			m.currentRound.toolCalls[idx].partial = partial
-			m.currentRound.toolCalls[idx].displayPartial.set(partial)
-			m.currentRound.toolCalls[idx].lastUpdate = ev.Timestamp
-		}
-
-	case runtime.EventToolExecutionEnd:
-		data, ok := ev.ToolEnd()
-		if !ok {
-			return nil
-		}
-		if idx := m.findToolCall(data.ToolCallID, data.ToolName); idx >= 0 {
-			if data.IsError {
-				m.currentRound.toolCalls[idx].status = "error"
-			} else {
-				m.currentRound.toolCalls[idx].status = "done"
-			}
-			resultStr := contentsToString(data.Result)
-			m.currentRound.toolCalls[idx].result = resultStr
-			m.currentRound.toolCalls[idx].displayResult.set(resultStr)
-			if !m.currentRound.toolCalls[idx].startTime.IsZero() {
-				m.currentRound.toolCalls[idx].durationMs = ev.Timestamp.Sub(m.currentRound.toolCalls[idx].startTime).Milliseconds()
-			}
-		}
-		// All tools in this round have settled — fall back to "thinking" so the
-		// status line doesn't keep showing "using tools" in the gap before the
-		// next delta/event arrives.
-		if m.currentRound != nil && !hasRunningToolCall(m.currentRound.toolCalls) {
-			m.status = "thinking"
-		}
-
-	case runtime.EventAgentEnd:
-		// Finalize in this turn. The outbound message arrives shortly after
-		// with the same content (published by the dispatcher), but we use
-		// the agent_end payload directly — it's the authoritative record.
-		data, _ := ev.AgentEnd()
-		text, reasoning := appcore.ExtractFinalAssistant(data.Messages)
-		return m.finalizeAssistantMessage(text, reasoning)
+	if m.reduceRuntimeEvent(ev) {
+		m.refreshTranscriptViewport()
 	}
 	return nil
 }
