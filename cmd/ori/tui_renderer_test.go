@@ -74,6 +74,82 @@ func TestTranscriptRendererToolLinesFitNarrowWidth(t *testing.T) {
 	}
 }
 
+func TestTranscriptRendererUserLinesFitNarrowWidth(t *testing.T) {
+	now := time.Unix(105, 0)
+	var tr transcript
+	tr.appendUserBlock("user-1", strings.Repeat("hello ", 20), now)
+
+	out := plainView(transcriptRenderer{}.renderTranscript(tr, renderContext{width: 24, now: now}))
+	assertTranscriptRendererLinesFit(t, out, 24)
+}
+
+func TestTranscriptRendererCommandLinesFitNarrowWidth(t *testing.T) {
+	now := time.Unix(106, 0)
+	var tr transcript
+	tr.appendCommandBlock(
+		"cmd-1",
+		"/status-with-a-very-long-name",
+		strings.Repeat("plain ", 20),
+		"**"+strings.Repeat("markdown ", 20)+"**",
+		"ready-with-a-very-long-status",
+		now,
+	)
+
+	out := plainView(transcriptRenderer{}.renderTranscript(tr, renderContext{width: 32, now: now}))
+	assertTranscriptRendererLinesFit(t, out, 32)
+}
+
+func TestTranscriptRendererSystemLinesFitNarrowWidth(t *testing.T) {
+	now := time.Unix(107, 0)
+	var tr transcript
+	tr.appendSystemBlock("sys-1", systemLevelWarning, strings.Repeat("system message ", 20), now)
+
+	out := plainView(transcriptRenderer{}.renderTranscript(tr, renderContext{width: 28, now: now}))
+	assertTranscriptRendererLinesFit(t, out, 28)
+}
+
+func TestTranscriptRendererAssistantMarkdownAndFinalFallbackFitNarrowWidth(t *testing.T) {
+	now := time.Unix(108, 0)
+	var tr transcript
+	asst := tr.appendAssistantBlock("asst-1", now)
+	asst.appendTextDelta("**"+strings.Repeat("assistant markdown ", 20)+"**", now)
+	fallback := tr.appendAssistantBlock("asst-2", now.Add(time.Second))
+	fallback.finalText = strings.Repeat("fallback final ", 20)
+
+	out := plainView(transcriptRenderer{}.renderTranscript(tr, renderContext{width: 34, now: now}))
+	assertTranscriptRendererLinesFit(t, out, 34)
+}
+
+func TestTranscriptRendererReasoningLinesFitNarrowWidth(t *testing.T) {
+	now := time.Unix(109, 0)
+	var tr transcript
+	asst := tr.appendAssistantBlock("asst-1", now)
+	asst.appendReasoningDelta(strings.Join([]string{
+		strings.Repeat("hidden ", 20),
+		strings.Repeat("visible one ", 20),
+		strings.Repeat("visible two ", 20),
+		strings.Repeat("visible three ", 20),
+	}, "\n"), now)
+
+	out := plainView(transcriptRenderer{}.renderTranscript(tr, renderContext{width: 36, now: now}))
+	assertTranscriptRendererLinesFit(t, out, 36)
+}
+
+func TestTranscriptRendererAssistantStatusAndOrphanMarker(t *testing.T) {
+	now := time.Unix(110, 0)
+	var tr transcript
+	asst := tr.appendAssistantBlock("asst-1", now)
+	asst.status = assistantStatusRunningTools
+	asst.appendToolStart("", "shell", nil, now, true)
+
+	out := plainView(transcriptRenderer{}.renderTranscript(tr, renderContext{width: 80, now: now}))
+	for _, want := range []string{"running tools", "(orphan)"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected rendered transcript to contain %q, got:\n%s", want, out)
+		}
+	}
+}
+
 func TestTranscriptRendererFinalConflictUsesFinalTextOnce(t *testing.T) {
 	now := time.Unix(104, 0)
 	var tr transcript
@@ -89,5 +165,17 @@ func TestTranscriptRendererFinalConflictUsesFinalTextOnce(t *testing.T) {
 	}
 	if count := strings.Count(out, "final"); count != 1 {
 		t.Fatalf("expected final text once, got %d occurrences in:\n%s", count, out)
+	}
+}
+
+func assertTranscriptRendererLinesFit(t *testing.T, out string, width int) {
+	t.Helper()
+	for _, line := range strings.Split(out, "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		if got := lipgloss.Width(line); got > width {
+			t.Fatalf("expected line to fit width %d, got width %d for line %q in:\n%s", width, got, line, out)
+		}
 	}
 }

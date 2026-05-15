@@ -5,7 +5,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 type renderContext struct {
@@ -46,15 +48,16 @@ func (r transcriptRenderer) renderBlock(b block, ctx renderContext) string {
 	}
 }
 
-func (r transcriptRenderer) renderUserBlock(user *userBlock, _ renderContext) string {
+func (r transcriptRenderer) renderUserBlock(user *userBlock, ctx renderContext) string {
 	if user == nil {
 		return ""
 	}
+	ctx = normalizeRenderContext(ctx)
 	var b strings.Builder
-	b.WriteString(userPromptStyle.Render("you"))
+	b.WriteString(userPromptStyle.Render(fitLine("you", ctx.width)))
 	if user.content != "" {
 		b.WriteString("\n")
-		b.WriteString(userMessageStyle.Render(user.content))
+		b.WriteString(userMessageStyle.Render(fitPlainText(user.content, ctx.width)))
 	}
 	return b.String()
 }
@@ -64,15 +67,14 @@ func (r transcriptRenderer) renderAssistantBlock(asst *assistantBlock, ctx rende
 		return ""
 	}
 	var b strings.Builder
-	b.WriteString(spinnerStyle.Render("✦"))
-	b.WriteString(" ")
-	b.WriteString(assistantLabelStyle.Render("ori"))
+	header := "✦ ori"
 	if status := transcriptStatusString(asst.status); status != "" && asst.status != assistantStatusDone {
-		b.WriteString(waitingStyle.Render(" · " + status))
+		header += " · " + status
 	}
+	b.WriteString(spinnerStyle.Render(fitLine(header, ctx.width)))
 	if asst.finalConflict {
 		b.WriteString("\n")
-		b.WriteString(toolErrorStyle.Render("  merge conflict resolved"))
+		b.WriteString(toolErrorStyle.Render(fitLine("  merge conflict resolved", ctx.width)))
 	}
 
 	renderedText := false
@@ -89,7 +91,7 @@ func (r transcriptRenderer) renderAssistantBlock(asst *assistantBlock, ctx rende
 	}
 	if !renderedText && asst.finalText != "" {
 		b.WriteString("\n")
-		b.WriteString(renderMarkdown(asst.finalText))
+		b.WriteString(renderMarkdownForWidth(asst.finalText, ctx.width))
 	}
 	return b.String()
 }
@@ -100,12 +102,12 @@ func (r transcriptRenderer) renderSegment(seg assistantSegment, ctx renderContex
 		if seg.reasoning == nil {
 			return ""
 		}
-		return renderReasoningBlock(seg.reasoning.text, reasoningModeLive)
+		return renderReasoningBlockForWidth(seg.reasoning.text, reasoningModeLive, ctx.width)
 	case segmentKindText:
 		if seg.text == nil || seg.text.text == "" {
 			return ""
 		}
-		return renderMarkdown(seg.text.text)
+		return renderMarkdownForWidth(seg.text.text, ctx.width)
 	case segmentKindTool:
 		return r.renderToolSegment(seg.tool, ctx)
 	default:
@@ -148,35 +150,38 @@ func (r transcriptRenderer) renderToolSegment(tool *toolCallSegment, ctx renderC
 	return b.String()
 }
 
-func (r transcriptRenderer) renderCommandBlock(cmd *commandBlock, _ renderContext) string {
+func (r transcriptRenderer) renderCommandBlock(cmd *commandBlock, ctx renderContext) string {
 	if cmd == nil {
 		return ""
 	}
+	ctx = normalizeRenderContext(ctx)
 	var b strings.Builder
-	b.WriteString(slashCommandSelectedStyle.Render(cmd.command))
+	header := cmd.command
 	if cmd.status != "" {
-		b.WriteString(toolDurationStyle.Render(" · " + cmd.status))
+		header += " · " + cmd.status
 	}
+	b.WriteString(slashCommandSelectedStyle.Render(fitLine(header, ctx.width)))
 	if cmd.text != "" {
 		b.WriteString("\n")
-		b.WriteString(cmd.text)
+		b.WriteString(fitPlainText(cmd.text, ctx.width))
 	}
 	if cmd.markdown != "" {
 		b.WriteString("\n")
-		b.WriteString(renderMarkdown(cmd.markdown))
+		b.WriteString(renderMarkdownForWidth(cmd.markdown, ctx.width))
 	}
 	return b.String()
 }
 
-func (r transcriptRenderer) renderSystemBlock(system *systemBlock, _ renderContext) string {
+func (r transcriptRenderer) renderSystemBlock(system *systemBlock, ctx renderContext) string {
 	if system == nil {
 		return ""
 	}
+	ctx = normalizeRenderContext(ctx)
 	label := systemLevelLabel(system.level)
 	if system.message == "" {
-		return waitingStyle.Render(label)
+		return waitingStyle.Render(fitLine(label, ctx.width))
 	}
-	return waitingStyle.Render(label + " · " + system.message)
+	return waitingStyle.Render(fitLine(label+" · "+system.message, ctx.width))
 }
 
 func normalizeRenderContext(ctx renderContext) renderContext {
@@ -255,12 +260,95 @@ func renderToolPreviewForWidth(label, content string, style lipgloss.Style, widt
 	return b.String()
 }
 
+func renderReasoningBlockForWidth(reasoning string, mode reasoningRenderMode, width int) string {
+	lines := nonEmptyLines(reasoning)
+	if len(lines) == 0 {
+		return ""
+	}
+	visible := 3
+	if mode == reasoningModeLive {
+		visible = 5
+	}
+	if len(lines) < visible {
+		visible = len(lines)
+	}
+	preview := strings.Join(lines[len(lines)-visible:], "\n")
+	var b strings.Builder
+	b.WriteString(reasoningHeaderStyle.Render(fitLine(fmt.Sprintf("  thinking · %d lines summarized", len(lines)), width)))
+	if rendered := renderReasoningMarkdownForWidth(preview, width); rendered != "" {
+		b.WriteString("\n")
+		b.WriteString(rendered)
+	}
+	return b.String()
+}
+
+func renderMarkdownForWidth(content string, width int) string {
+	if content == "" {
+		return ""
+	}
+	content = preprocessMath(content)
+	renderer, _ := glamour.NewTermRenderer(
+		glamour.WithStandardStyle("dark"),
+		glamour.WithWordWrap(markdownWrapWidth(width)),
+	)
+	if renderer == nil {
+		return fitPlainText(content, width)
+	}
+	rendered, err := renderer.Render(content)
+	if err != nil {
+		return fitPlainText(content, width)
+	}
+	return fitRenderedLines(strings.TrimSuffix(rendered, "\n"), width)
+}
+
+func renderReasoningMarkdownForWidth(content string, width int) string {
+	if content == "" {
+		return ""
+	}
+	content = preprocessMath(content)
+	renderer, _ := glamour.NewTermRenderer(
+		glamour.WithStylesFromJSONBytes(reasoningStyleJSON),
+		glamour.WithWordWrap(markdownWrapWidth(width)),
+	)
+	if renderer == nil {
+		return reasoningStyle.Render(fitPlainText(content, width))
+	}
+	rendered, err := renderer.Render(content)
+	if err != nil {
+		return reasoningStyle.Render(fitPlainText(content, width))
+	}
+	return fitRenderedLines(strings.TrimSuffix(rendered, "\n"), width)
+}
+
+func markdownWrapWidth(width int) int {
+	if width <= 4 {
+		return 1
+	}
+	return width - 4
+}
+
+func fitPlainText(text string, width int) string {
+	lines := strings.Split(text, "\n")
+	for i := range lines {
+		lines[i] = fitLine(lines[i], width)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func fitRenderedLines(rendered string, width int) string {
+	lines := strings.Split(rendered, "\n")
+	for i := range lines {
+		lines[i] = fitLine(lines[i], width)
+	}
+	return strings.Join(lines, "\n")
+}
+
 func fitPrefixedLine(prefix, value string, width int) string {
 	if width <= 0 {
 		width = getTerminalWidth()
 	}
 	value = strings.ReplaceAll(value, "\n", " ")
-	available := width - lipgloss.Width(prefix)
+	available := width - ansi.StringWidth(prefix)
 	if available < 1 {
 		return fitLine(prefix, width)
 	}
@@ -271,10 +359,13 @@ func fitLine(line string, width int) string {
 	if width <= 0 {
 		width = getTerminalWidth()
 	}
-	if lipgloss.Width(line) <= width {
+	if ansi.StringWidth(line) <= width {
 		return line
 	}
-	return truncateStr(line, width)
+	if width <= 3 {
+		return ansi.Truncate(line, width, "")
+	}
+	return ansi.Truncate(line, width, "...")
 }
 
 func systemLevelLabel(level systemLevel) string {
