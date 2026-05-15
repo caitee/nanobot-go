@@ -180,6 +180,9 @@ func TestAssistantLateToolUpdateOnSettledToolDoesNotResumeRunningStatus(t *testi
 	if len(asst.segments) != 1 {
 		t.Fatalf("segments = %d, want 1", len(asst.segments))
 	}
+	if asst.segments[0].kind != segmentKindTool {
+		t.Fatalf("segments[0].kind = %v, want tool", asst.segments[0].kind)
+	}
 	got := asst.segments[0].tool
 	if got == nil || got.status != toolStatusDone || got.partial != "late partial" {
 		t.Fatalf("late update changed settled tool incorrectly: %+v", got)
