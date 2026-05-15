@@ -89,6 +89,9 @@ func TestAssistantUpsertsToolSegments(t *testing.T) {
 	if len(asst.segments) != 1 {
 		t.Fatalf("segments = %d, want 1", len(asst.segments))
 	}
+	if asst.segments[0].kind != segmentKindTool {
+		t.Fatalf("segments[0].kind = %v, want tool", asst.segments[0].kind)
+	}
 	got := asst.segments[0].tool
 	if got == nil || got.name != "shell" || got.status != toolStatusDone || got.result != "done" {
 		t.Fatalf("tool segment not finished correctly: %+v", got)
@@ -104,6 +107,9 @@ func TestAssistantCreatesOrphanToolWhenEndArrivesFirst(t *testing.T) {
 
 	if len(asst.segments) != 1 {
 		t.Fatalf("segments = %d, want 1", len(asst.segments))
+	}
+	if asst.segments[0].kind != segmentKindTool {
+		t.Fatalf("segments[0].kind = %v, want tool", asst.segments[0].kind)
 	}
 	got := asst.segments[0].tool
 	if got == nil || !got.orphan || got.status != toolStatusDone || got.result != "late result" {
