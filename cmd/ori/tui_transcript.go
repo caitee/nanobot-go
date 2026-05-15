@@ -1,0 +1,443 @@
+package main
+
+import (
+	"strings"
+	"time"
+)
+
+type blockKind int
+
+const (
+	blockKindUser blockKind = iota
+	blockKindAssistant
+	blockKindCommand
+	blockKindSystem
+)
+
+type assistantStatus int
+
+const (
+	assistantStatusThinking assistantStatus = iota
+	assistantStatusResponding
+	assistantStatusRunningTools
+	assistantStatusDone
+	assistantStatusError
+)
+
+type segmentKind int
+
+const (
+	segmentKindReasoning segmentKind = iota
+	segmentKindText
+	segmentKindTool
+)
+
+type toolStatus int
+
+const (
+	toolStatusPending toolStatus = iota
+	toolStatusRunning
+	toolStatusDone
+	toolStatusError
+)
+
+type finalSource int
+
+const (
+	finalSourceUnknown finalSource = iota
+	finalSourceStream
+	finalSourceAgentEnd
+	finalSourceOutbound
+)
+
+type systemLevel int
+
+const (
+	systemLevelInfo systemLevel = iota
+	systemLevelWarning
+	systemLevelError
+)
+
+type focusArea int
+
+const (
+	focusAreaInput focusArea = iota
+	focusAreaTranscript
+	focusAreaManagement
+)
+
+type transcript struct {
+	blocks            []block
+	activeAssistantID string
+	focus             focusArea
+}
+
+type block struct {
+	kind      blockKind
+	id        string
+	createdAt time.Time
+
+	user      *userBlock
+	assistant *assistantBlock
+	command   *commandBlock
+	system    *systemBlock
+}
+
+type userBlock struct {
+	id        string
+	text      string
+	createdAt time.Time
+}
+
+type assistantBlock struct {
+	id            string
+	status        assistantStatus
+	segments      []assistantSegment
+	createdAt     time.Time
+	completedAt   time.Time
+	finalText     string
+	finalConflict bool
+	finalSource   finalSource
+}
+
+type assistantSegment struct {
+	kind      segmentKind
+	createdAt time.Time
+	updatedAt time.Time
+
+	reasoning *reasoningSegment
+	text      *textSegment
+	tool      *toolCallSegment
+}
+
+type reasoningSegment struct {
+	text string
+}
+
+type textSegment struct {
+	text string
+}
+
+type toolCallSegment struct {
+	id         string
+	name       string
+	args       map[string]any
+	status     toolStatus
+	partial    string
+	result     string
+	durationMs int64
+	startTime  time.Time
+	endTime    time.Time
+	lastUpdate time.Time
+	expanded   bool
+	orphan     bool
+}
+
+type commandBlock struct {
+	id        string
+	command   string
+	output    string
+	createdAt time.Time
+}
+
+type systemBlock struct {
+	id        string
+	level     systemLevel
+	message   string
+	createdAt time.Time
+}
+
+func (tr *transcript) clear() {
+	tr.blocks = nil
+	tr.activeAssistantID = ""
+	tr.focus = focusAreaInput
+}
+
+func (tr *transcript) appendUserBlock(id, text string, createdAt time.Time) *userBlock {
+	user := &userBlock{id: id, text: text, createdAt: createdAt}
+	tr.blocks = append(tr.blocks, block{
+		kind:      blockKindUser,
+		id:        id,
+		createdAt: createdAt,
+		user:      user,
+	})
+	return user
+}
+
+func (tr *transcript) appendAssistantBlock(id string, createdAt time.Time) *assistantBlock {
+	assistant := &assistantBlock{
+		id:        id,
+		status:    assistantStatusThinking,
+		createdAt: createdAt,
+	}
+	tr.blocks = append(tr.blocks, block{
+		kind:      blockKindAssistant,
+		id:        id,
+		createdAt: createdAt,
+		assistant: assistant,
+	})
+	tr.activeAssistantID = id
+	return assistant
+}
+
+func (tr *transcript) appendCommandBlock(id, command, output string, createdAt time.Time) *commandBlock {
+	commandBlock := &commandBlock{
+		id:        id,
+		command:   command,
+		output:    output,
+		createdAt: createdAt,
+	}
+	tr.blocks = append(tr.blocks, block{
+		kind:      blockKindCommand,
+		id:        id,
+		createdAt: createdAt,
+		command:   commandBlock,
+	})
+	return commandBlock
+}
+
+func (tr *transcript) appendSystemBlock(id string, level systemLevel, message string, createdAt time.Time) *systemBlock {
+	system := &systemBlock{
+		id:        id,
+		level:     level,
+		message:   message,
+		createdAt: createdAt,
+	}
+	tr.blocks = append(tr.blocks, block{
+		kind:      blockKindSystem,
+		id:        id,
+		createdAt: createdAt,
+		system:    system,
+	})
+	return system
+}
+
+func (tr *transcript) activeAssistant() *assistantBlock {
+	if tr.activeAssistantID == "" {
+		return nil
+	}
+	for i := len(tr.blocks) - 1; i >= 0; i-- {
+		if tr.blocks[i].kind == blockKindAssistant && tr.blocks[i].id == tr.activeAssistantID {
+			return tr.blocks[i].assistant
+		}
+	}
+	return nil
+}
+
+func (a *assistantBlock) appendReasoningDelta(delta string) {
+	if delta == "" {
+		return
+	}
+	a.status = assistantStatusThinking
+	if len(a.segments) > 0 {
+		last := &a.segments[len(a.segments)-1]
+		if last.kind == segmentKindReasoning && last.reasoning != nil {
+			last.reasoning.text += delta
+			last.updatedAt = time.Now()
+			return
+		}
+	}
+	now := time.Now()
+	a.segments = append(a.segments, assistantSegment{
+		kind:      segmentKindReasoning,
+		createdAt: now,
+		updatedAt: now,
+		reasoning: &reasoningSegment{text: delta},
+	})
+}
+
+func (a *assistantBlock) appendTextDelta(delta string) {
+	if delta == "" {
+		return
+	}
+	a.status = assistantStatusResponding
+	if len(a.segments) > 0 {
+		last := &a.segments[len(a.segments)-1]
+		if last.kind == segmentKindText && last.text != nil {
+			last.text.text += delta
+			last.updatedAt = time.Now()
+			return
+		}
+	}
+	now := time.Now()
+	a.segments = append(a.segments, assistantSegment{
+		kind:      segmentKindText,
+		createdAt: now,
+		updatedAt: now,
+		text:      &textSegment{text: delta},
+	})
+}
+
+func (a *assistantBlock) streamedText() string {
+	var builder strings.Builder
+	for i := range a.segments {
+		if a.segments[i].kind == segmentKindText && a.segments[i].text != nil {
+			builder.WriteString(a.segments[i].text.text)
+		}
+	}
+	return builder.String()
+}
+
+func (a *assistantBlock) setFinalText(source finalSource, final string) bool {
+	merged, conflict := mergeFinalText(a.streamedText(), final)
+	a.finalText = merged
+	a.finalConflict = conflict
+	a.finalSource = source
+	a.status = assistantStatusDone
+	a.replaceTextSegments(merged)
+	return conflict
+}
+
+func (a *assistantBlock) replaceTextSegments(text string) {
+	firstText := -1
+	filtered := a.segments[:0]
+	for i := range a.segments {
+		segment := a.segments[i]
+		if segment.kind != segmentKindText {
+			filtered = append(filtered, segment)
+			continue
+		}
+		if firstText == -1 {
+			firstText = len(filtered)
+			segment.text = &textSegment{text: text}
+			segment.updatedAt = time.Now()
+			filtered = append(filtered, segment)
+		}
+	}
+	if firstText == -1 && text != "" {
+		now := time.Now()
+		filtered = append(filtered, assistantSegment{
+			kind:      segmentKindText,
+			createdAt: now,
+			updatedAt: now,
+			text:      &textSegment{text: text},
+		})
+	}
+	a.segments = filtered
+}
+
+func (a *assistantBlock) upsertToolStart(id, name string, args map[string]any, startedAt time.Time) *toolCallSegment {
+	if tool := a.findTool(id, name); tool != nil {
+		tool.name = firstNonEmpty(name, tool.name)
+		tool.args = cloneToolArgs(args)
+		tool.status = toolStatusRunning
+		tool.startTime = startedAt
+		tool.lastUpdate = startedAt
+		tool.orphan = false
+		a.status = assistantStatusRunningTools
+		return tool
+	}
+	tool := &toolCallSegment{
+		id:         id,
+		name:       name,
+		args:       cloneToolArgs(args),
+		status:     toolStatusRunning,
+		startTime:  startedAt,
+		lastUpdate: startedAt,
+	}
+	a.segments = append(a.segments, assistantSegment{
+		kind:      segmentKindTool,
+		createdAt: startedAt,
+		updatedAt: startedAt,
+		tool:      tool,
+	})
+	a.status = assistantStatusRunningTools
+	return tool
+}
+
+func (a *assistantBlock) updateTool(id, name, partial string, updatedAt time.Time) *toolCallSegment {
+	tool := a.findTool(id, name)
+	if tool == nil {
+		tool = a.upsertToolStart(id, name, nil, updatedAt)
+		tool.orphan = true
+	}
+	tool.name = firstNonEmpty(name, tool.name)
+	tool.partial = partial
+	tool.lastUpdate = updatedAt
+	if tool.status == toolStatusPending {
+		tool.status = toolStatusRunning
+	}
+	a.status = assistantStatusRunningTools
+	return tool
+}
+
+func (a *assistantBlock) finishTool(id, name, result string, isError bool, endedAt time.Time) *toolCallSegment {
+	tool := a.findTool(id, name)
+	if tool == nil {
+		tool = &toolCallSegment{
+			id:        id,
+			name:      name,
+			status:    toolStatusRunning,
+			startTime: endedAt,
+			orphan:    true,
+		}
+		a.segments = append(a.segments, assistantSegment{
+			kind:      segmentKindTool,
+			createdAt: endedAt,
+			updatedAt: endedAt,
+			tool:      tool,
+		})
+	}
+	tool.name = firstNonEmpty(name, tool.name)
+	tool.result = result
+	tool.endTime = endedAt
+	tool.lastUpdate = endedAt
+	if isError {
+		tool.status = toolStatusError
+	} else {
+		tool.status = toolStatusDone
+	}
+	if !tool.startTime.IsZero() {
+		tool.durationMs = endedAt.Sub(tool.startTime).Milliseconds()
+	}
+	if !a.hasRunningTool() {
+		a.status = assistantStatusThinking
+	}
+	return tool
+}
+
+func (a *assistantBlock) findTool(id, name string) *toolCallSegment {
+	if id != "" {
+		for i := range a.segments {
+			tool := a.segments[i].tool
+			if a.segments[i].kind == segmentKindTool && tool != nil && tool.id == id {
+				return tool
+			}
+		}
+	}
+	if name != "" {
+		for i := range a.segments {
+			tool := a.segments[i].tool
+			if a.segments[i].kind == segmentKindTool && tool != nil && tool.name == name {
+				return tool
+			}
+		}
+	}
+	return nil
+}
+
+func (a *assistantBlock) hasRunningTool() bool {
+	for i := range a.segments {
+		tool := a.segments[i].tool
+		if a.segments[i].kind == segmentKindTool && tool != nil && tool.status == toolStatusRunning {
+			return true
+		}
+	}
+	return false
+}
+
+func mergeFinalText(streamed, final string) (string, bool) {
+	if final == "" {
+		return streamed, false
+	}
+	if streamed == "" {
+		return final, false
+	}
+	if strings.HasPrefix(final, streamed) {
+		return final, false
+	}
+	if strings.HasPrefix(streamed, final) {
+		return streamed, false
+	}
+	return final, true
+}
