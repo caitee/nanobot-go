@@ -49,10 +49,12 @@ func (m *interactiveModel) applySlashCommandResult(input string, result *appcore
 	if result.PromptReplacement != "" {
 		return m.submitPrompt(input, result.PromptReplacement)
 	}
+	if result.ResetSession || result.ClearViewport {
+		m.applyClearCommandResult()
+	}
 	m.appendCommandResult(input, result)
 	if result.UIRequest != "" {
 		m.openManagementPanel(result.UIRequest)
-		m.focus = focusOverlay
 	}
 	if result.Status != "" {
 		m.status = result.Status

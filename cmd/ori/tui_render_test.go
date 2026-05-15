@@ -696,6 +696,23 @@ func TestApplySlashCommandResultAppendsCommandBlock(t *testing.T) {
 	}
 }
 
+func TestApplySlashCommandResultAppendsMarkdownCommandBlock(t *testing.T) {
+	m := &interactiveModel{renderer: transcriptRenderer{}, focus: focusInput}
+	m.initTranscriptViewport(80, 10)
+
+	cmd := m.applySlashCommandResult("/help", &appcore.CommandResult{Markdown: "**help**", Status: "ready"})
+	if cmd != nil {
+		t.Fatalf("markdown command result returned print command")
+	}
+	if len(m.transcript.blocks) != 1 {
+		t.Fatalf("blocks = %d, want 1", len(m.transcript.blocks))
+	}
+	got := m.transcript.blocks[0].command
+	if got == nil || got.command != "/help" || got.markdown != "**help**" || got.status != "ready" {
+		t.Fatalf("markdown command block not appended: %+v", got)
+	}
+}
+
 func TestApplySlashCommandResultOpensOverlayAndRecordsCommand(t *testing.T) {
 	m := &interactiveModel{renderer: transcriptRenderer{}, focus: focusInput}
 	m.initTranscriptViewport(80, 10)
@@ -722,6 +739,16 @@ func TestClearCommandClearsTranscriptAndAddsSystemBlock(t *testing.T) {
 	m := &interactiveModel{renderer: transcriptRenderer{}, focus: focusInput}
 	m.initTranscriptViewport(80, 10)
 	m.transcript.appendUserBlock("u1", "old", time.Unix(1, 0))
+	m.active = true
+	m.waiting = true
+	m.responseReceived = true
+	m.currentRound = &thinkingRound{reasoning: "thinking"}
+	m.streamText = "stream"
+	m.displayedText = "displayed"
+	m.typewriterQueue = []rune("queued")
+	m.flushedText = "flushed"
+	m.spinnerIdx = 3
+	m.status = "thinking"
 
 	cmd := m.applySlashCommandResult("/clear", &appcore.CommandResult{
 		Text:          "New session started.",
@@ -737,6 +764,16 @@ func TestClearCommandClearsTranscriptAndAddsSystemBlock(t *testing.T) {
 	}
 	if got := m.transcript.blocks[0].system.message; got != "New session started." {
 		t.Fatalf("system message = %q, want New session started.", got)
+	}
+	if m.active || m.waiting || m.responseReceived || m.currentRound != nil || m.streamText != "" || m.displayedText != "" || len(m.typewriterQueue) != 0 || m.flushedText != "" {
+		t.Fatalf("clear did not reset visible state: active=%v waiting=%v responseReceived=%v round=%+v stream=%q displayed=%q queue=%q flushed=%q",
+			m.active, m.waiting, m.responseReceived, m.currentRound, m.streamText, m.displayedText, string(m.typewriterQueue), m.flushedText)
+	}
+	if m.spinnerIdx != 0 {
+		t.Fatalf("spinnerIdx = %d, want 0", m.spinnerIdx)
+	}
+	if m.status != "ready" {
+		t.Fatalf("status = %q, want ready", m.status)
 	}
 }
 
