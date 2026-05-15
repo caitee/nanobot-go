@@ -32,6 +32,9 @@ func (m *interactiveModel) ensureTranscriptAssistant(ts time.Time) *assistantBlo
 
 func (m *interactiveModel) reduceRuntimeEvent(ev runtime.Event) bool {
 	asst := m.ensureTranscriptAssistant(ev.Timestamp)
+	if m.syncTerminalReducerStatus(asst) {
+		return false
+	}
 	switch ev.Kind {
 	case runtime.EventAgentStart, runtime.EventTurnStart:
 		asst.setStatusIfNonTerminal(assistantStatusThinking)
@@ -103,7 +106,7 @@ func (m *interactiveModel) finalizeTranscriptAssistantAt(content, reasoning stri
 	if asst.status == assistantStatusError || asst.status == assistantStatusCancelled {
 		return false
 	}
-	if reasoning != "" {
+	if reasoning != "" && !assistantHasReasoningText(asst, reasoning) {
 		asst.appendReasoningDelta(reasoning, ts)
 	}
 	asst.setFinalText(source, content, ts)
@@ -140,8 +143,7 @@ func (m *interactiveModel) cancelActiveAssistant() {
 }
 
 func (m *interactiveModel) syncToolReducerStatus(asst *assistantBlock) {
-	if isTerminalAssistantStatus(asst.status) {
-		m.status = transcriptStatusString(asst.status)
+	if m.syncTerminalReducerStatus(asst) {
 		return
 	}
 	if asst.hasRunningTool() {
@@ -151,6 +153,24 @@ func (m *interactiveModel) syncToolReducerStatus(asst *assistantBlock) {
 	}
 	asst.setStatusIfNonTerminal(assistantStatusThinking)
 	m.status = "thinking"
+}
+
+func (m *interactiveModel) syncTerminalReducerStatus(asst *assistantBlock) bool {
+	if !isTerminalAssistantStatus(asst.status) {
+		return false
+	}
+	m.status = transcriptStatusString(asst.status)
+	return true
+}
+
+func assistantHasReasoningText(asst *assistantBlock, reasoning string) bool {
+	for i := range asst.segments {
+		segment := asst.segments[i]
+		if segment.kind == segmentKindReasoning && segment.reasoning != nil && segment.reasoning.text == reasoning {
+			return true
+		}
+	}
+	return false
 }
 
 func transcriptStatusString(status assistantStatus) string {

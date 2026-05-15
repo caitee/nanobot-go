@@ -225,6 +225,108 @@ func TestReducerLateToolEndThenStartPreservesSettledTool(t *testing.T) {
 	}
 }
 
+func TestReducerLateEventsKeepTerminalModelStatus(t *testing.T) {
+	m := &interactiveModel{}
+	m.beginTranscriptPrompt("hello", time.Unix(1, 0))
+	m.reduceRuntimeEvent(runtime.Event{
+		Kind:      runtime.EventAgentEnd,
+		Timestamp: time.Unix(2, 0),
+		Data: runtime.AgentEndData{Messages: []runtime.AgentMessage{
+			runtime.WrapLLM(llm.AssistantMessage{
+				Content: []llm.Content{llm.TextContent{Text: "answer"}},
+			}),
+		}},
+	})
+
+	lateEvents := []runtime.Event{
+		{Kind: runtime.EventAgentStart, Timestamp: time.Unix(3, 0)},
+		{
+			Kind:      runtime.EventMessageUpdate,
+			Timestamp: time.Unix(4, 0),
+			Data: runtime.MessageUpdateData{
+				StreamEvent: llm.StreamEvent{Kind: llm.StreamEventThinkingDelta, Delta: "late thought"},
+			},
+		},
+		{
+			Kind:      runtime.EventMessageUpdate,
+			Timestamp: time.Unix(5, 0),
+			Data: runtime.MessageUpdateData{
+				StreamEvent: llm.StreamEvent{Kind: llm.StreamEventTextDelta, Delta: "late answer"},
+			},
+		},
+	}
+	for _, ev := range lateEvents {
+		m.reduceRuntimeEvent(ev)
+		asst := requireActiveReducerAssistant(t, m)
+		if got := asst.status; got != assistantStatusDone {
+			t.Fatalf("after %s assistant status = %v, want done", ev.Kind, got)
+		}
+		if got := m.status; got != "done" {
+			t.Fatalf("after %s model status = %q, want done", ev.Kind, got)
+		}
+	}
+
+	cancelled := &interactiveModel{}
+	cancelled.beginTranscriptPrompt("hello", time.Unix(1, 0))
+	cancelled.cancelActiveAssistant()
+	cancelled.reduceRuntimeEvent(runtime.Event{
+		Kind:      runtime.EventMessageUpdate,
+		Timestamp: time.Unix(2, 0),
+		Data: runtime.MessageUpdateData{
+			StreamEvent: llm.StreamEvent{Kind: llm.StreamEventTextDelta, Delta: "late answer"},
+		},
+	})
+	asst := requireActiveReducerAssistant(t, cancelled)
+	if got := asst.status; got != assistantStatusCancelled {
+		t.Fatalf("cancelled assistant status = %v, want cancelled", got)
+	}
+	if got := cancelled.status; got != "cancelled" {
+		t.Fatalf("cancelled model status = %q, want cancelled", got)
+	}
+}
+
+func TestReducerAgentEndDoesNotDuplicateStreamedReasoning(t *testing.T) {
+	m := &interactiveModel{}
+	m.beginTranscriptPrompt("hello", time.Unix(1, 0))
+	m.reduceRuntimeEvent(runtime.Event{
+		Kind:      runtime.EventMessageUpdate,
+		Timestamp: time.Unix(2, 0),
+		Data: runtime.MessageUpdateData{
+			StreamEvent: llm.StreamEvent{Kind: llm.StreamEventThinkingDelta, Delta: "because"},
+		},
+	})
+	m.reduceRuntimeEvent(runtime.Event{
+		Kind:      runtime.EventAgentEnd,
+		Timestamp: time.Unix(3, 0),
+		Data: runtime.AgentEndData{Messages: []runtime.AgentMessage{
+			runtime.WrapLLM(llm.AssistantMessage{
+				Content: []llm.Content{
+					llm.ThinkingContent{Thinking: "because"},
+					llm.TextContent{Text: "answer"},
+				},
+			}),
+		}},
+	})
+
+	asst := requireActiveReducerAssistant(t, m)
+	reasoningCount := 0
+	for _, segment := range asst.segments {
+		if segment.kind != segmentKindReasoning {
+			continue
+		}
+		reasoningCount++
+		if segment.reasoning == nil {
+			t.Fatal("reasoning segment payload is nil")
+		}
+		if got := segment.reasoning.text; got != "because" {
+			t.Fatalf("reasoning text = %q, want because", got)
+		}
+	}
+	if reasoningCount != 1 {
+		t.Fatalf("reasoning segments = %d, want 1", reasoningCount)
+	}
+}
+
 func requireActiveReducerAssistant(t *testing.T, m *interactiveModel) *assistantBlock {
 	t.Helper()
 	asst := m.transcript.activeAssistant()
