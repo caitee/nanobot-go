@@ -153,6 +153,12 @@ func TestAssistantLateToolStartAfterOrphanEndKeepsSettledResult(t *testing.T) {
 	if got.durationMs != 250 {
 		t.Fatalf("durationMs = %d, want 250", got.durationMs)
 	}
+	if !got.lastUpdate.Equal(end) {
+		t.Fatalf("lastUpdate = %v, want %v", got.lastUpdate, end)
+	}
+	if got := asst.segments[0].updatedAt; !got.Equal(end) {
+		t.Fatalf("segment updatedAt = %v, want %v", got, end)
+	}
 	if asst.status == assistantStatusRunningTools {
 		t.Fatalf("assistant status = running tools, want non-running")
 	}
@@ -326,58 +332,89 @@ func TestAssistantFinalTextConflictClearsStaleTextSegments(t *testing.T) {
 }
 
 func TestAssistantFinishToolKeepsTerminalStatus(t *testing.T) {
-	tests := []assistantStatus{
-		assistantStatusDone,
-		assistantStatusError,
-		assistantStatusCancelled,
+	tests := []struct {
+		name   string
+		status assistantStatus
+	}{
+		{name: "done", status: assistantStatusDone},
+		{name: "error", status: assistantStatusError},
+		{name: "cancelled", status: assistantStatusCancelled},
 	}
-	for _, status := range tests {
-		t.Run("terminal", func(t *testing.T) {
-			asst := &assistantBlock{status: status}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			asst := &assistantBlock{status: tt.status}
 			start := time.Unix(8, 0)
 			end := start.Add(time.Second)
 
 			asst.upsertToolStart("call-1", "shell", nil, start)
-			asst.status = status
+			asst.status = tt.status
 			asst.finishTool("call-1", "shell", "done", false, end)
 
-			if asst.status != status {
-				t.Fatalf("assistant status = %v, want %v", asst.status, status)
+			if asst.status != tt.status {
+				t.Fatalf("assistant status = %v, want %v", asst.status, tt.status)
+			}
+		})
+	}
+}
+
+func TestAssistantSetFinalTextKeepsErrorAndCancelledStatus(t *testing.T) {
+	tests := []struct {
+		name   string
+		status assistantStatus
+	}{
+		{name: "error", status: assistantStatusError},
+		{name: "cancelled", status: assistantStatusCancelled},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			asst := &assistantBlock{status: tt.status}
+			ts := time.Unix(9, 0)
+
+			asst.setFinalText(finalSourceRuntime, "final", ts)
+
+			if asst.status != tt.status {
+				t.Fatalf("assistant status = %v, want %v", asst.status, tt.status)
+			}
+			if asst.finalText != "final" {
+				t.Fatalf("finalText = %q, want final", asst.finalText)
 			}
 		})
 	}
 }
 
 func TestAssistantLateMutationsKeepTerminalStatus(t *testing.T) {
-	tests := []assistantStatus{
-		assistantStatusDone,
-		assistantStatusError,
-		assistantStatusCancelled,
+	tests := []struct {
+		name   string
+		status assistantStatus
+	}{
+		{name: "done", status: assistantStatusDone},
+		{name: "error", status: assistantStatusError},
+		{name: "cancelled", status: assistantStatusCancelled},
 	}
-	for _, status := range tests {
-		t.Run("terminal", func(t *testing.T) {
-			asst := &assistantBlock{status: status}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			asst := &assistantBlock{status: tt.status}
 			start := time.Unix(9, 0)
 
 			asst.appendReasoningDelta("late thought", start)
-			if asst.status != status {
-				t.Fatalf("after reasoning status = %v, want %v", asst.status, status)
+			if asst.status != tt.status {
+				t.Fatalf("after reasoning status = %v, want %v", asst.status, tt.status)
 			}
 			asst.appendTextDelta("late text", start)
-			if asst.status != status {
-				t.Fatalf("after text status = %v, want %v", asst.status, status)
+			if asst.status != tt.status {
+				t.Fatalf("after text status = %v, want %v", asst.status, tt.status)
 			}
 			asst.upsertToolStart("call-1", "shell", nil, start)
-			if asst.status != status {
-				t.Fatalf("after tool start status = %v, want %v", asst.status, status)
+			if asst.status != tt.status {
+				t.Fatalf("after tool start status = %v, want %v", asst.status, tt.status)
 			}
 			asst.updateTool("call-1", "shell", "running", start)
-			if asst.status != status {
-				t.Fatalf("after tool update status = %v, want %v", asst.status, status)
+			if asst.status != tt.status {
+				t.Fatalf("after tool update status = %v, want %v", asst.status, tt.status)
 			}
 			asst.finishTool("call-1", "shell", "done", false, start)
-			if asst.status != status {
-				t.Fatalf("after tool end status = %v, want %v", asst.status, status)
+			if asst.status != tt.status {
+				t.Fatalf("after tool end status = %v, want %v", asst.status, tt.status)
 			}
 		})
 	}

@@ -286,7 +286,7 @@ func (a *assistantBlock) setFinalText(source finalSource, final string, ts time.
 	a.finalText = merged
 	a.finalConflict = conflict
 	a.finalSource = source
-	a.status = assistantStatusDone
+	a.setStatusIfNonTerminal(assistantStatusDone)
 	a.completedAt = ts
 	if !a.applyFinalTextSegment(merged, ts) {
 		a.finalConflict = true
@@ -350,13 +350,13 @@ func (a *assistantBlock) upsertToolStart(id, name string, args map[string]any, s
 			tool.name = firstNonEmpty(name, tool.name)
 			tool.args = cloneToolArgs(args)
 			tool.startedAt = startedAt
-			tool.lastUpdate = startedAt
 			tool.orphan = false
 			if !tool.endedAt.IsZero() {
 				tool.durationMs = tool.endedAt.Sub(startedAt).Milliseconds()
 			}
-			a.touchSegment(segmentIndex, startedAt)
 			if !wasSettled {
+				tool.lastUpdate = startedAt
+				a.touchSegment(segmentIndex, startedAt)
 				tool.status = toolStatusRunning
 				a.setStatusIfNonTerminal(assistantStatusRunningTools)
 			}
