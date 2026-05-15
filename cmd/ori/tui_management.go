@@ -30,6 +30,7 @@ func (m *interactiveModel) openManagementPanel(kind string) {
 		}
 	}
 	m.panel = panel
+	m.focus = focusOverlay
 	m.viewVersion++
 }
 
@@ -43,6 +44,7 @@ func (m *interactiveModel) handleManagementPanelKey(msg tea.KeyMsg) (bool, tea.C
 	switch msg.Type {
 	case tea.KeyEsc:
 		m.panel = nil
+		m.focus = focusInput
 		m.viewVersion++
 		return true, nil
 	case tea.KeyUp:
@@ -76,6 +78,7 @@ func (m *interactiveModel) handleManagementPanelEditKey(msg tea.KeyMsg) tea.Cmd 
 	case tea.KeyEsc:
 		m.panel.editingKey = ""
 		m.panel.editValue = ""
+		m.focus = focusOverlay
 	case tea.KeyEnter:
 		m.panel.configDraft[m.panel.editingKey] = m.panel.editValue
 		m.panel.editingKey = ""

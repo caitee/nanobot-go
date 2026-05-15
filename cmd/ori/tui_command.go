@@ -49,28 +49,17 @@ func (m *interactiveModel) applySlashCommandResult(input string, result *appcore
 	if result.PromptReplacement != "" {
 		return m.submitPrompt(input, result.PromptReplacement)
 	}
+	m.appendCommandResult(input, result)
 	if result.UIRequest != "" {
 		m.openManagementPanel(result.UIRequest)
-		if result.Status != "" {
-			m.status = result.Status
-		}
-		return nil
-	}
-	var cmds []tea.Cmd
-	if result.ResetSession || result.ClearViewport {
-		m.applyClearCommandResult()
-		cmds = append(cmds, clearTerminalHistory())
-	}
-	if output := renderedCommandOutput(m.banner, input, result); output != "" {
-		cmds = append(cmds, m.printAbove(output))
+		m.focus = focusOverlay
 	}
 	if result.Status != "" {
 		m.status = result.Status
 	}
-	if len(cmds) == 0 {
-		return nil
-	}
-	return tea.Sequence(cmds...)
+	m.refreshTranscriptViewport()
+	m.viewVersion++
+	return nil
 }
 
 func (m *interactiveModel) submitPrompt(displayContent, dispatchContent string) tea.Cmd {

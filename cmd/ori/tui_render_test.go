@@ -393,6 +393,39 @@ func TestManagementPanelKeysDuringWaiting(t *testing.T) {
 	if m.panel != nil {
 		t.Fatalf("expected Esc to close panel while waiting, got %+v", m.panel)
 	}
+	if m.focus != focusInput {
+		t.Fatalf("expected Esc to return focus to input, got %v", m.focus)
+	}
+}
+
+func TestManagementPanelEditEscKeepsOverlayFocus(t *testing.T) {
+	m := &interactiveModel{
+		focus: focusOverlay,
+		panel: &managementPanel{
+			kind:        appcore.UIRequestConfig,
+			configDraft: map[string]string{},
+			editingKey:  "model",
+			editValue:   "draft",
+		},
+	}
+
+	handled, cmd := m.handleManagementPanelKey(tea.KeyMsg{Type: tea.KeyEsc})
+
+	if !handled {
+		t.Fatal("expected edit Esc to be handled by panel")
+	}
+	if cmd != nil {
+		t.Fatal("expected edit Esc to avoid command")
+	}
+	if m.panel == nil {
+		t.Fatal("expected edit Esc to keep panel open")
+	}
+	if m.panel.editingKey != "" || m.panel.editValue != "" {
+		t.Fatalf("expected edit Esc to clear edit state, got key=%q value=%q", m.panel.editingKey, m.panel.editValue)
+	}
+	if m.focus != focusOverlay {
+		t.Fatalf("expected edit Esc to keep overlay focus, got %v", m.focus)
+	}
 }
 
 func TestCloseOpenMarkdownCompletesDanglingLinkDestination(t *testing.T) {
@@ -646,6 +679,67 @@ func TestInteractiveModelClearCommandResetsVisibleState(t *testing.T) {
 	}
 }
 
+func TestApplySlashCommandResultAppendsCommandBlock(t *testing.T) {
+	m := &interactiveModel{renderer: transcriptRenderer{}, focus: focusInput}
+	m.initTranscriptViewport(80, 10)
+
+	cmd := m.applySlashCommandResult("/status", &appcore.CommandResult{Text: "ready", Status: "ready"})
+	if cmd != nil {
+		t.Fatalf("plain command result returned print command")
+	}
+	if len(m.transcript.blocks) != 1 {
+		t.Fatalf("blocks = %d, want 1", len(m.transcript.blocks))
+	}
+	got := m.transcript.blocks[0].command
+	if got == nil || got.command != "/status" || got.text != "ready" || got.status != "ready" {
+		t.Fatalf("command block not appended: %+v", got)
+	}
+}
+
+func TestApplySlashCommandResultOpensOverlayAndRecordsCommand(t *testing.T) {
+	m := &interactiveModel{renderer: transcriptRenderer{}, focus: focusInput}
+	m.initTranscriptViewport(80, 10)
+
+	cmd := m.applySlashCommandResult("/mcp", &appcore.CommandResult{
+		Text:      "MCP status",
+		UIRequest: appcore.UIRequestMCP,
+	})
+	if cmd != nil {
+		t.Fatalf("UI command returned print command")
+	}
+	if m.panel == nil || m.panel.kind != appcore.UIRequestMCP {
+		t.Fatalf("panel not opened: %+v", m.panel)
+	}
+	if m.focus != focusOverlay {
+		t.Fatalf("focus = %v, want overlay", m.focus)
+	}
+	if len(m.transcript.blocks) != 1 || m.transcript.blocks[0].command == nil {
+		t.Fatalf("command transcript block missing: %+v", m.transcript.blocks)
+	}
+}
+
+func TestClearCommandClearsTranscriptAndAddsSystemBlock(t *testing.T) {
+	m := &interactiveModel{renderer: transcriptRenderer{}, focus: focusInput}
+	m.initTranscriptViewport(80, 10)
+	m.transcript.appendUserBlock("u1", "old", time.Unix(1, 0))
+
+	cmd := m.applySlashCommandResult("/clear", &appcore.CommandResult{
+		Text:          "New session started.",
+		Status:        "ready",
+		ResetSession:  true,
+		ClearViewport: true,
+	})
+	if cmd != nil {
+		t.Fatalf("clear returned terminal clear command")
+	}
+	if len(m.transcript.blocks) != 1 || m.transcript.blocks[0].system == nil {
+		t.Fatalf("clear did not replace transcript with system block: %+v", m.transcript.blocks)
+	}
+	if got := m.transcript.blocks[0].system.message; got != "New session started." {
+		t.Fatalf("system message = %q, want New session started.", got)
+	}
+}
+
 func TestSlashCommandCompletionAcceptsFirstMatch(t *testing.T) {
 	m := newTestModel()
 	m.textInput.SetValue("/sk")
@@ -659,18 +753,25 @@ func TestSlashCommandCompletionAcceptsFirstMatch(t *testing.T) {
 }
 
 func TestManagementPanelOpensFromUIRequest(t *testing.T) {
-	m := newTestModel()
+	m := &interactiveModel{renderer: transcriptRenderer{}, focus: focusInput}
+	m.initTranscriptViewport(80, 10)
 	result := &appcore.CommandResult{UIRequest: appcore.UIRequestMCP, Text: "fallback"}
 
 	if cmd := m.applySlashCommandResult("/mcp", result); cmd != nil {
 		t.Fatalf("expected panel open to avoid print command")
 	}
+	if len(m.transcript.blocks) != 1 || m.transcript.blocks[0].command == nil {
+		t.Fatalf("expected command block in transcript: %+v", m.transcript.blocks)
+	}
+	if m.panel == nil || m.panel.kind != appcore.UIRequestMCP {
+		t.Fatalf("expected MCP panel, got %+v", m.panel)
+	}
 	out := plainView(m.View())
 	if !strings.Contains(out, "MCP servers") {
 		t.Fatalf("expected MCP management panel, got:\n%s", out)
 	}
-	if strings.Contains(out, "fallback") {
-		t.Fatalf("TUI panel should not print fallback text in view, got:\n%s", out)
+	if strings.Count(out, "fallback") != 1 {
+		t.Fatalf("expected fallback only from transcript command block, got:\n%s", out)
 	}
 }
 

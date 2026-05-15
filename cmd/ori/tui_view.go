@@ -81,6 +81,9 @@ func (m *interactiveModel) View() string {
 		}
 	}
 	if m.panel != nil {
+		if strings.TrimSpace(viewportOut) != "" {
+			s.WriteString("\n")
+		}
 		s.WriteString(m.renderManagementPanel())
 	}
 

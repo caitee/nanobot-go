@@ -23,6 +23,32 @@ func (m *interactiveModel) beginTranscriptPrompt(content string, ts time.Time) {
 	m.status = "waiting"
 }
 
+func (m *interactiveModel) appendCommandResult(input string, result *appcore.CommandResult) {
+	if result == nil {
+		return
+	}
+	if result.ResetSession || result.ClearViewport {
+		m.transcript.clear()
+		message := result.Text
+		if message == "" {
+			message = "Session reset."
+		}
+		m.transcript.appendSystemBlock(m.nextBlockID("system"), systemLevelInfo, message, time.Now())
+		return
+	}
+	if result.Text == "" && result.Markdown == "" && result.Status == "" {
+		return
+	}
+	m.transcript.appendCommandBlock(
+		m.nextBlockID("command"),
+		input,
+		result.Text,
+		result.Markdown,
+		result.Status,
+		time.Now(),
+	)
+}
+
 func (m *interactiveModel) ensureTranscriptAssistant(ts time.Time) *assistantBlock {
 	if asst := m.transcript.activeAssistant(); asst != nil {
 		return asst
