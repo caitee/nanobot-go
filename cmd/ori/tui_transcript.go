@@ -224,7 +224,7 @@ func (tr *transcript) activeAssistant() *assistantBlock {
 	return nil
 }
 
-func (a *assistantBlock) appendReasoningDelta(delta string) {
+func (a *assistantBlock) appendReasoningDelta(delta string, ts time.Time) {
 	if delta == "" {
 		return
 	}
@@ -233,20 +233,19 @@ func (a *assistantBlock) appendReasoningDelta(delta string) {
 		last := &a.segments[len(a.segments)-1]
 		if last.kind == segmentKindReasoning && last.reasoning != nil {
 			last.reasoning.text += delta
-			last.updatedAt = time.Now()
+			last.updatedAt = ts
 			return
 		}
 	}
-	now := time.Now()
 	a.segments = append(a.segments, assistantSegment{
 		kind:      segmentKindReasoning,
-		createdAt: now,
-		updatedAt: now,
+		createdAt: ts,
+		updatedAt: ts,
 		reasoning: &reasoningSegment{text: delta},
 	})
 }
 
-func (a *assistantBlock) appendTextDelta(delta string) {
+func (a *assistantBlock) appendTextDelta(delta string, ts time.Time) {
 	if delta == "" {
 		return
 	}
@@ -255,15 +254,14 @@ func (a *assistantBlock) appendTextDelta(delta string) {
 		last := &a.segments[len(a.segments)-1]
 		if last.kind == segmentKindText && last.text != nil {
 			last.text.text += delta
-			last.updatedAt = time.Now()
+			last.updatedAt = ts
 			return
 		}
 	}
-	now := time.Now()
 	a.segments = append(a.segments, assistantSegment{
 		kind:      segmentKindText,
-		createdAt: now,
-		updatedAt: now,
+		createdAt: ts,
+		updatedAt: ts,
 		text:      &textSegment{text: delta},
 	})
 }
@@ -278,42 +276,37 @@ func (a *assistantBlock) streamedText() string {
 	return builder.String()
 }
 
-func (a *assistantBlock) setFinalText(source finalSource, final string) bool {
+func (a *assistantBlock) setFinalText(source finalSource, final string, ts time.Time) bool {
 	merged, conflict := mergeFinalText(a.streamedText(), final)
 	a.finalText = merged
 	a.finalConflict = conflict
 	a.finalSource = source
 	a.status = assistantStatusDone
-	a.replaceTextSegments(merged)
+	a.completedAt = ts
+	a.applyFinalTextSegment(merged, ts)
 	return conflict
 }
 
-func (a *assistantBlock) replaceTextSegments(text string) {
-	firstText := -1
-	filtered := a.segments[:0]
+func (a *assistantBlock) applyFinalTextSegment(text string, ts time.Time) {
+	lastText := -1
 	for i := range a.segments {
-		segment := a.segments[i]
-		if segment.kind != segmentKindText {
-			filtered = append(filtered, segment)
-			continue
-		}
-		if firstText == -1 {
-			firstText = len(filtered)
-			segment.text = &textSegment{text: text}
-			segment.updatedAt = time.Now()
-			filtered = append(filtered, segment)
+		if a.segments[i].kind == segmentKindText && a.segments[i].text != nil {
+			lastText = i
 		}
 	}
-	if firstText == -1 && text != "" {
-		now := time.Now()
-		filtered = append(filtered, assistantSegment{
+	if lastText >= 0 {
+		a.segments[lastText].text.text = text
+		a.segments[lastText].updatedAt = ts
+		return
+	}
+	if text != "" {
+		a.segments = append(a.segments, assistantSegment{
 			kind:      segmentKindText,
-			createdAt: now,
-			updatedAt: now,
+			createdAt: ts,
+			updatedAt: ts,
 			text:      &textSegment{text: text},
 		})
 	}
-	a.segments = filtered
 }
 
 func (a *assistantBlock) upsertToolStart(id, name string, args map[string]any, startedAt time.Time) *toolCallSegment {
