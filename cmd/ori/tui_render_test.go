@@ -12,6 +12,7 @@ import (
 	"ori/internal/config"
 	"ori/internal/llm"
 	"ori/internal/runtime"
+	"ori/internal/session"
 	"ori/internal/skills"
 
 	"github.com/charmbracelet/bubbles/textinput"
@@ -367,6 +368,156 @@ func TestManagementPanelOpensFromUIRequest(t *testing.T) {
 	if strings.Contains(out, "fallback") {
 		t.Fatalf("TUI panel should not print fallback text in view, got:\n%s", out)
 	}
+}
+
+func TestSessionsPanelRendersSessionRows(t *testing.T) {
+	m := newSessionPanelTestModel(t)
+	m.openManagementPanel(appcore.UIRequestSessions)
+
+	out := plainView(m.renderManagementPanel())
+
+	if !strings.Contains(out, "Sessions") {
+		t.Fatalf("expected sessions panel title, got:\n%s", out)
+	}
+	if !strings.Contains(out, "cli:target") || !strings.Contains(out, "target prompt") {
+		t.Fatalf("expected target session row, got:\n%s", out)
+	}
+	if !strings.Contains(out, "current") {
+		t.Fatalf("expected current session marker, got:\n%s", out)
+	}
+}
+
+func TestResumeSelectedSessionSwitchesContextAndClearsVisibleState(t *testing.T) {
+	m := newSessionPanelTestModel(t)
+	m.openManagementPanel(appcore.UIRequestSessions)
+	for i, item := range m.managementSessions() {
+		if item.Key == "cli:target" {
+			m.panel.selected = i
+			break
+		}
+	}
+	m.active = true
+	m.waiting = true
+	m.currentRound = &thinkingRound{reasoning: "thinking"}
+	m.streamText = "stream"
+	m.displayedText = "displayed"
+	m.typewriterQueue = []rune("queued")
+	m.flushedText = "flushed"
+	oldUnsubCalled := false
+	m.unsubRuntime = func() { oldUnsubCalled = true }
+
+	cmd := m.resumeSelectedSession()
+
+	if m.sessionKey != "cli:target" {
+		t.Fatalf("sessionKey = %q; want cli:target", m.sessionKey)
+	}
+	if m.chatID != "target" {
+		t.Fatalf("chatID = %q; want target", m.chatID)
+	}
+	if !oldUnsubCalled {
+		t.Fatal("expected old runtime subscription to be released")
+	}
+	if m.unsubRuntime == nil {
+		t.Fatal("expected runtime events to be resubscribed for resumed session")
+	}
+	if m.panel != nil {
+		t.Fatalf("expected panel to close after resume")
+	}
+	if m.active || m.waiting || m.currentRound != nil || m.streamText != "" || m.displayedText != "" || len(m.typewriterQueue) != 0 || m.flushedText != "" {
+		t.Fatalf("expected resume to clear visible state, got active=%v waiting=%v round=%+v stream=%q displayed=%q queued=%q flushed=%q",
+			m.active, m.waiting, m.currentRound, m.streamText, m.displayedText, string(m.typewriterQueue), m.flushedText)
+	}
+	if cmd == nil {
+		t.Fatal("expected resume to return a command for clearing and printing summary")
+	}
+}
+
+func TestRenderSessionResumeOutputIncludesSummary(t *testing.T) {
+	out := plainView(renderSessionResumeOutput("cli:target", appcore.SessionView{
+		Key:                "cli:target",
+		UpdatedAt:          "2026-05-15 09:02:00",
+		MessageCount:       3,
+		LastMessagePreview: "latest user prompt",
+	}, []appcore.SessionMessageView{
+		{Role: "user", Content: "hello ori"},
+		{Role: "assistant", Reasoning: "tool thinking", ToolCalls: []appcore.SessionToolCallView{{
+			ID:        "call_1",
+			Name:      "read_file",
+			Arguments: `{"path":"demo.md"}`,
+		}}},
+		{Role: "tool", Name: "read_file", ToolCallID: "call_1", Content: "file contents"},
+		{Role: "assistant", Reasoning: "final thinking", Content: "hello back"},
+		{Role: "user", Content: "next prompt"},
+		{Role: "assistant", Content: "next answer"},
+	}))
+
+	if !strings.Contains(out, "Resumed session: cli:target") ||
+		!strings.Contains(out, "Messages: 3") ||
+		!strings.Contains(out, "latest user prompt") ||
+		!strings.Contains(out, "thinking · 1 lines summarized") ||
+		!strings.Contains(out, "tool thinking") ||
+		!strings.Contains(out, "final thinking") ||
+		!strings.Contains(out, "hello ori") ||
+		!strings.Contains(out, "hello back") ||
+		!strings.Contains(out, "✓ read_file") ||
+		!strings.Contains(out, "Result") ||
+		!strings.Contains(out, "file contents") {
+		t.Fatalf("expected resume summary, got:\n%s", out)
+	}
+	if strings.Contains(out, `{"type":"thinking"`) || strings.Contains(out, `"thinking":"`) {
+		t.Fatalf("expected structured thinking blocks to render without raw JSON, got:\n%s", out)
+	}
+	if strings.Contains(out, "\nuser\nhello ori") || strings.Contains(out, "\ntool: read_file") {
+		t.Fatalf("expected replay to use live TUI rendering blocks instead of plain role labels, got:\n%s", out)
+	}
+	if got := strings.Count(out, "✦ ori"); got != 2 {
+		t.Fatalf("expected one assistant header per user turn, got %d:\n%s", got, out)
+	}
+	if !regexp.MustCompile(`hello back[^\n]*\n\nnext prompt`).MatchString(out) {
+		t.Fatalf("expected a blank line between assistant output and next user prompt, got:\n%s", out)
+	}
+}
+
+func newSessionPanelTestModel(t *testing.T) *interactiveModel {
+	t.Helper()
+	store, err := session.NewFileSessionStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewFileSessionStore: %v", err)
+	}
+	for _, sess := range []*session.Session{
+		{
+			Key:       "cli:current",
+			CreatedAt: time.Date(2026, 5, 15, 8, 0, 0, 0, time.UTC),
+			UpdatedAt: time.Date(2026, 5, 15, 8, 1, 0, 0, time.UTC),
+			Metadata:  map[string]any{},
+			Messages: []session.Message{
+				{Role: "user", Content: "current prompt"},
+			},
+		},
+		{
+			Key:       "cli:target",
+			CreatedAt: time.Date(2026, 5, 15, 9, 0, 0, 0, time.UTC),
+			UpdatedAt: time.Date(2026, 5, 15, 9, 2, 0, 0, time.UTC),
+			Metadata:  map[string]any{},
+			Messages: []session.Message{
+				{Role: "user", Content: "target prompt"},
+				{Role: "assistant", Content: "target answer"},
+			},
+		},
+	} {
+		if err := store.Save(sess); err != nil {
+			t.Fatalf("Save %s: %v", sess.Key, err)
+		}
+	}
+	mgmt := appcore.NewManagementService(appcore.ManagementOptions{SessionStore: store})
+	m := newTestModel()
+	m.sessionKey = "cli:current"
+	m.chatID = "current"
+	m.dispatcher = appcore.NewDispatcher(appcore.DispatcherOptions{
+		SessionStore: store,
+		Management:   mgmt,
+	})
+	return m
 }
 
 func TestManagementPanelKeepsDisabledStatusColorWhenSelected(t *testing.T) {

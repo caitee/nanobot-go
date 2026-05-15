@@ -52,11 +52,9 @@ func (m *interactiveModel) handleManagementPanelKey(msg tea.KeyMsg) (bool, tea.C
 		m.moveManagementPanelSelection(1)
 		return true, nil
 	case tea.KeySpace:
-		m.activateManagementPanelSelection(false)
-		return true, nil
+		return true, m.activateManagementPanelSelection(false)
 	case tea.KeyEnter:
-		m.activateManagementPanelSelection(true)
-		return true, nil
+		return true, m.activateManagementPanelSelection(true)
 	}
 	switch strings.ToLower(msg.String()) {
 	case "r":
@@ -133,7 +131,7 @@ func (m *interactiveModel) ensureManagementPanelSelectionVisible(total int) {
 	}
 }
 
-func (m *interactiveModel) activateManagementPanelSelection(enter bool) {
+func (m *interactiveModel) activateManagementPanelSelection(enter bool) tea.Cmd {
 	switch m.panel.kind {
 	case appcore.UIRequestMCP:
 		if enter {
@@ -145,8 +143,13 @@ func (m *interactiveModel) activateManagementPanelSelection(enter bool) {
 		m.toggleSelectedSkill()
 	case appcore.UIRequestConfig:
 		m.activateSelectedConfigField()
+	case appcore.UIRequestSessions:
+		if enter {
+			return m.resumeSelectedSession()
+		}
 	}
 	m.viewVersion++
+	return nil
 }
 
 func (m *interactiveModel) toggleSelectedMCPServer() {
@@ -287,6 +290,8 @@ func managementPanelTitle(kind string) string {
 		return slashCommandSelectedStyle.Render("Skills")
 	case appcore.UIRequestConfig:
 		return slashCommandSelectedStyle.Render("Config")
+	case appcore.UIRequestSessions:
+		return slashCommandSelectedStyle.Render("Sessions")
 	default:
 		return slashCommandSelectedStyle.Render("Management")
 	}
@@ -300,6 +305,8 @@ func managementPanelHelp(kind string) string {
 		return "↑/↓ select · Space toggle · Enter toggle · Esc close"
 	case appcore.UIRequestConfig:
 		return "↑/↓ select · Space toggle bool · Enter edit · s save · Esc close"
+	case appcore.UIRequestSessions:
+		return "↑/↓ select · Enter resume · Esc close"
 	default:
 		return "Esc close"
 	}
@@ -367,6 +374,26 @@ func (m *interactiveModel) managementPanelRows() []string {
 			rows = append(rows, fmt.Sprintf("%s  %s%s", field.Label, value, tag))
 		}
 		return rows
+	case appcore.UIRequestSessions:
+		items := m.managementSessions()
+		rows := make([]string, 0, len(items))
+		for _, item := range items {
+			current := ""
+			if item.Current {
+				current = toolRunningStyle.Render("current") + "  "
+			}
+			preview := strings.Join(strings.Fields(item.LastMessagePreview), " ")
+			if preview == "" {
+				preview = "(no user messages)"
+			}
+			rows = append(rows, fmt.Sprintf("%s  %s%s  %s  %s",
+				slashCommandSelectedStyle.Render(item.Key),
+				current,
+				toolArgsStyle.Render(fmt.Sprintf("messages=%d", item.MessageCount)),
+				toolArgsStyle.Render("updated="+item.UpdatedAt),
+				toolArgsStyle.Render(preview)))
+		}
+		return rows
 	default:
 		return nil
 	}
@@ -405,4 +432,234 @@ func (m *interactiveModel) managementConfigFields() []appcore.ConfigFieldView {
 		return nil
 	}
 	return mgmt.ConfigFields()
+}
+
+func (m *interactiveModel) managementSessions() []appcore.SessionView {
+	mgmt := m.management()
+	if mgmt == nil {
+		return nil
+	}
+	return mgmt.Sessions(m.sessionKey)
+}
+
+func (m *interactiveModel) resumeSelectedSession() tea.Cmd {
+	items := m.managementSessions()
+	if len(items) == 0 || m.panel == nil || m.panel.selected >= len(items) {
+		return nil
+	}
+	item := items[m.panel.selected]
+	if item.Key == "" {
+		return nil
+	}
+	if m.dispatcher != nil && m.sessionKey != "" && m.sessionKey != item.Key {
+		m.dispatcher.AbortSession(m.sessionKey)
+	}
+	m.sessionKey = item.Key
+	m.chatID = chatIDForSessionKey(item.Key)
+	m.subscribeRuntimeEvents(item.Key)
+	m.applyClearCommandResult()
+	m.panel = nil
+	m.status = "ready"
+	m.viewVersion++
+	messages := m.managementSessionMessages(item.Key)
+	return tea.Sequence(clearTerminalHistory(), m.printAbove(renderSessionResumeOutput(item.Key, item, messages)))
+}
+
+func chatIDForSessionKey(sessionKey string) string {
+	if idx := strings.Index(sessionKey, ":"); idx != -1 {
+		return sessionKey[idx+1:]
+	}
+	return sessionKey
+}
+
+func (m *interactiveModel) managementSessionMessages(key string) []appcore.SessionMessageView {
+	mgmt := m.management()
+	if mgmt == nil {
+		return nil
+	}
+	return mgmt.SessionMessages(key)
+}
+
+func renderSessionResumeOutput(sessionKey string, item appcore.SessionView, messages []appcore.SessionMessageView) string {
+	lines := []string{
+		"Resumed session: " + sessionKey,
+		fmt.Sprintf("Messages: %d", item.MessageCount),
+	}
+	if item.UpdatedAt != "" {
+		lines = append(lines, "Updated: "+item.UpdatedAt)
+	}
+	if item.LastMessagePreview != "" {
+		lines = append(lines, "Last user: "+item.LastMessagePreview)
+	}
+	var b strings.Builder
+	b.WriteString(renderCommandResultBlock("/sessions", &appcore.CommandResult{Text: strings.Join(lines, "\n")}))
+	if len(messages) == 0 {
+		return b.String()
+	}
+	b.WriteString("\n")
+	b.WriteString(borderStyle.Render(strings.Repeat("─", getTerminalWidth())))
+	b.WriteString("\n")
+	b.WriteString(slashCommandSelectedStyle.Render("History"))
+	if history := renderSessionHistory(messages); history != "" {
+		b.WriteString("\n\n")
+		b.WriteString(history)
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+func renderSessionHistory(messages []appcore.SessionMessageView) string {
+	toolResults := map[string]appcore.SessionMessageView{}
+	for _, msg := range messages {
+		if msg.Role == "tool" && msg.ToolCallID != "" {
+			toolResults[msg.ToolCallID] = msg
+		}
+	}
+
+	var b strings.Builder
+	var user string
+	var assistants []appcore.SessionMessageView
+	var standalone []appcore.SessionMessageView
+	flushTurn := func() {
+		if user == "" && len(assistants) == 0 && len(standalone) == 0 {
+			return
+		}
+		rendered := renderSessionTurn(user, assistants, standalone, toolResults)
+		if rendered != "" {
+			if b.Len() > 0 {
+				b.WriteString("\n\n")
+			}
+			b.WriteString(rendered)
+		}
+		user = ""
+		assistants = nil
+		standalone = nil
+	}
+
+	for _, msg := range messages {
+		switch msg.Role {
+		case "user":
+			flushTurn()
+			user = msg.Content
+		case "assistant":
+			assistants = append(assistants, msg)
+		case "tool":
+			if msg.ToolCallID == "" {
+				standalone = append(standalone, msg)
+			}
+		default:
+			if msg.Content != "" {
+				standalone = append(standalone, msg)
+			}
+		}
+	}
+	flushTurn()
+	return strings.TrimRight(b.String(), "\n")
+}
+
+func renderSessionTurn(user string, assistants []appcore.SessionMessageView, standalone []appcore.SessionMessageView, toolResults map[string]appcore.SessionMessageView) string {
+	var b strings.Builder
+	if rendered := renderSessionUserMessage(user); rendered != "" {
+		b.WriteString(rendered)
+	}
+	if rendered := renderSessionAssistantMessages(assistants, toolResults); rendered != "" {
+		if b.Len() > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString(rendered)
+	}
+	for _, msg := range standalone {
+		rendered := ""
+		if msg.Role == "tool" {
+			rendered = renderSessionToolMessage(msg)
+		} else if msg.Content != "" {
+			rendered = toolArgsStyle.Render(msg.Role) + "\n" + msg.Content
+		}
+		if rendered == "" {
+			continue
+		}
+		if b.Len() > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString(rendered)
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+func renderSessionUserMessage(content string) string {
+	if content == "" {
+		return ""
+	}
+	var b strings.Builder
+	for i, line := range strings.Split(content, "\n") {
+		if i > 0 {
+			b.WriteString("\n")
+		}
+		padded := line + strings.Repeat(" ", max(0, getTerminalWidth()-lipgloss.Width(line)))
+		b.WriteString(userMessageStyle.Render(padded))
+	}
+	return b.String()
+}
+
+func renderSessionAssistantMessages(messages []appcore.SessionMessageView, toolResults map[string]appcore.SessionMessageView) string {
+	var rounds []thinkingRound
+	var content []string
+	finalReasoning := ""
+	for _, msg := range messages {
+		round := sessionThinkingRound(msg, toolResults)
+		if round.reasoning != "" || len(round.toolCalls) > 0 {
+			rounds = append(rounds, round)
+		}
+		if strings.TrimSpace(msg.Content) != "" {
+			content = append(content, msg.Content)
+		}
+		if strings.TrimSpace(msg.Reasoning) != "" {
+			finalReasoning = msg.Reasoning
+		}
+	}
+	if len(rounds) == 0 && len(content) == 0 {
+		return ""
+	}
+	output := renderAssistantHeader()
+	output += formatAssistantMessage(rounds, strings.Join(content, "\n\n"), finalReasoning)
+	return strings.TrimRight(output, "\n")
+}
+
+func sessionThinkingRound(msg appcore.SessionMessageView, toolResults map[string]appcore.SessionMessageView) thinkingRound {
+	round := thinkingRound{reasoning: msg.Reasoning}
+	for _, tc := range msg.ToolCalls {
+		name := tc.Name
+		if name == "" {
+			name = tc.ID
+		}
+		entry := toolCallEntry{
+			id:         tc.ID,
+			name:       name,
+			args:       tc.Arguments,
+			argsMap:    tc.ArgumentsMap,
+			status:     "done",
+			durationMs: 0,
+		}
+		if result, ok := toolResults[tc.ID]; ok {
+			entry.result = result.Content
+			if entry.name == "" {
+				entry.name = result.Name
+			}
+		}
+		round.toolCalls = append(round.toolCalls, entry)
+	}
+	return round
+}
+
+func renderSessionToolMessage(msg appcore.SessionMessageView) string {
+	label := "tool"
+	if msg.Name != "" {
+		label += ": " + msg.Name
+	}
+	if msg.ToolCallID != "" {
+		label += " (" + msg.ToolCallID + ")"
+	}
+	if msg.Content == "" {
+		return toolEntryStyle.Render(label)
+	}
+	return toolEntryStyle.Render(label) + "\n" + msg.Content
 }

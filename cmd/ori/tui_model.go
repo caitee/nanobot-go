@@ -148,18 +148,32 @@ func newInteractiveModel(dispatcher *appcore.Dispatcher, messageBus bus.MessageB
 		runtimeEvents: eventCh,
 		outboundCh:    messageBus.ConsumeOutbound(),
 	}
-	m.unsubRuntime = dispatcher.SubscribeRuntimeEvents(func(e runtime.Event) {
+	m.subscribeRuntimeEvents(sessionKey)
+	return m
+}
+
+func (m *interactiveModel) subscribeRuntimeEvents(sessionKey string) {
+	if m.dispatcher == nil {
+		return
+	}
+	if m.unsubRuntime != nil {
+		m.unsubRuntime()
+		m.unsubRuntime = nil
+	}
+	if m.runtimeEvents == nil {
+		m.runtimeEvents = make(chan runtime.Event, 512)
+	}
+	m.unsubRuntime = m.dispatcher.SubscribeRuntimeEvents(func(e runtime.Event) {
 		if e.SessionID != sessionKey {
 			return
 		}
 		select {
-		case eventCh <- e:
+		case m.runtimeEvents <- e:
 		default:
 			// Event buffer full — drop to avoid blocking the emitter.
 			// The UI can always fall back to the outbound final message.
 		}
 	})
-	return m
 }
 
 // SetProgram installs the bubbletea program reference and starts the pump

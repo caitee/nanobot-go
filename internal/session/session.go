@@ -37,10 +37,11 @@ type Session struct {
 
 // SessionInfo represents session metadata for listing
 type SessionInfo struct {
-	Key          string    `json:"key"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
-	MessageCount int       `json:"message_count"`
+	Key                string    `json:"key"`
+	CreatedAt          time.Time `json:"created_at"`
+	UpdatedAt          time.Time `json:"updated_at"`
+	MessageCount       int       `json:"message_count"`
+	LastMessagePreview string    `json:"last_message_preview,omitempty"`
 }
 
 // _findLegalStart finds the first index where every tool result has a matching

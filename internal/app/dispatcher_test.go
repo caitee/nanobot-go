@@ -157,7 +157,7 @@ func TestDispatcherListsDefaultSlashCommands(t *testing.T) {
 		names[cmd.Name] = true
 	}
 
-	for _, name := range []string{"help", "clear", "new", "status", "stop", "reasoning"} {
+	for _, name := range []string{"help", "clear", "new", "status", "stop", "reasoning", "sessions"} {
 		if !names[name] {
 			t.Fatalf("expected default command %q in command list: %+v", name, commands)
 		}
@@ -216,6 +216,7 @@ func TestDispatcherManagementCommandsReturnUIRequestsAndFallbackText(t *testing.
 		{input: "/mcp", want: app.UIRequestMCP},
 		{input: "/skills", want: app.UIRequestSkills},
 		{input: "/config", want: app.UIRequestConfig},
+		{input: "/sessions", want: app.UIRequestSessions},
 	} {
 		result, handled := d.ExecuteCommand(context.Background(), tt.input, bus.InboundMessage{
 			Channel: "cli", SenderID: "u", ChatID: "test", SessionKey: "cli:test",
@@ -229,6 +230,100 @@ func TestDispatcherManagementCommandsReturnUIRequestsAndFallbackText(t *testing.
 		if result.Text == "" {
 			t.Fatalf("%s should include fallback text", tt.input)
 		}
+	}
+}
+
+func TestDispatcherSessionsCommandReturnsHistoryFallback(t *testing.T) {
+	dir := t.TempDir()
+	store, err := session.NewFileSessionStore(filepath.Join(dir, "sessions"))
+	if err != nil {
+		t.Fatalf("session store: %v", err)
+	}
+	history := &session.Session{
+		Key:       "cli:history",
+		CreatedAt: time.Date(2026, 5, 15, 8, 0, 0, 0, time.UTC),
+		UpdatedAt: time.Date(2026, 5, 15, 8, 5, 0, 0, time.UTC),
+		Metadata:  map[string]any{},
+		Messages: []session.Message{
+			{Role: "user", Content: "restore this conversation"},
+			{Role: "assistant", Content: "ok"},
+		},
+	}
+	if err := store.Save(history); err != nil {
+		t.Fatalf("Save history: %v", err)
+	}
+	mgmt := app.NewManagementService(app.ManagementOptions{SessionStore: store})
+	d := app.NewDispatcher(app.DispatcherOptions{
+		Bus:          bus.New(10),
+		SessionStore: store,
+		ToolRegistry: tool.NewRegistry(),
+		StreamFn:     fakeStreamFn("unused"),
+		Model:        llm.Model{ID: "test-model", Provider: "fake", API: "openai"},
+		Management:   mgmt,
+	})
+
+	result, handled := d.ExecuteCommand(context.Background(), "/sessions", bus.InboundMessage{SessionKey: "cli:current"})
+
+	if !handled || result == nil {
+		t.Fatalf("expected /sessions to be handled")
+	}
+	if result.UIRequest != app.UIRequestSessions {
+		t.Fatalf("UIRequest = %q; want %q", result.UIRequest, app.UIRequestSessions)
+	}
+	if !strings.Contains(result.Text, "cli:history") || !strings.Contains(result.Text, "restore this conversation") {
+		t.Fatalf("expected session fallback text, got %q", result.Text)
+	}
+}
+
+func TestManagementSessionMessagesReturnsFullTranscript(t *testing.T) {
+	dir := t.TempDir()
+	store, err := session.NewFileSessionStore(filepath.Join(dir, "sessions"))
+	if err != nil {
+		t.Fatalf("session store: %v", err)
+	}
+	history := &session.Session{
+		Key:       "cli:history",
+		CreatedAt: time.Date(2026, 5, 15, 8, 0, 0, 0, time.UTC),
+		UpdatedAt: time.Date(2026, 5, 15, 8, 5, 0, 0, time.UTC),
+		Metadata:  map[string]any{},
+		Messages: []session.Message{
+			{Role: "user", Content: "first user message"},
+			{Role: "assistant", Content: []any{
+				map[string]any{"type": "thinking", "thinking": "model private reasoning"},
+				map[string]any{"type": "text", "text": "assistant answer"},
+			}, ToolCalls: []session.ToolCall{{
+				ID:        "call_1",
+				Name:      "read_file",
+				Arguments: map[string]any{"path": "demo.md"},
+			}}},
+			{Role: "tool", Name: "read_file", ToolCallID: "call_1", Content: "file contents"},
+			{Role: "user", Content: []any{map[string]any{"text": "second user message"}}},
+		},
+	}
+	if err := store.Save(history); err != nil {
+		t.Fatalf("Save history: %v", err)
+	}
+	mgmt := app.NewManagementService(app.ManagementOptions{SessionStore: store})
+
+	messages := mgmt.SessionMessages("cli:history")
+
+	if len(messages) != 4 {
+		t.Fatalf("expected full transcript, got %+v", messages)
+	}
+	if messages[0].Role != "user" || messages[0].Content != "first user message" {
+		t.Fatalf("unexpected first message: %+v", messages[0])
+	}
+	if messages[1].Content != "assistant answer" || messages[1].Reasoning != "model private reasoning" {
+		t.Fatalf("expected assistant content and reasoning to be split, got %+v", messages[1])
+	}
+	if len(messages[1].ToolCalls) != 1 || messages[1].ToolCalls[0].Name != "read_file" || !strings.Contains(messages[1].ToolCalls[0].Arguments, "demo.md") {
+		t.Fatalf("expected assistant tool call details, got %+v", messages[1])
+	}
+	if messages[2].Role != "tool" || messages[2].Name != "read_file" || messages[2].Content != "file contents" {
+		t.Fatalf("unexpected tool message: %+v", messages[2])
+	}
+	if messages[3].Content != "second user message" {
+		t.Fatalf("unexpected structured content text: %+v", messages[3])
 	}
 }
 

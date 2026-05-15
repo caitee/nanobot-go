@@ -2,13 +2,16 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"ori/internal/config"
+	"ori/internal/session"
 	"ori/internal/skills"
 	"ori/internal/tool"
 	legacytools "ori/internal/tools"
@@ -21,6 +24,8 @@ const (
 	UIRequestSkills = "skills"
 	// UIRequestConfig asks a capable client to open the config management panel.
 	UIRequestConfig = "config"
+	// UIRequestSessions asks a capable client to open the session picker panel.
+	UIRequestSessions = "sessions"
 )
 
 // ManagementService owns user-facing management operations for TUI panels and
@@ -30,6 +35,7 @@ type ManagementService struct {
 	configPath   string
 	mcpPath      string
 	skillLoader  *skills.SkillLoader
+	sessionStore session.SessionStore
 	mcpManager   *legacytools.MCPManager
 	toolRegistry tool.Registry
 	hotApply     func() error
@@ -41,6 +47,7 @@ type ManagementOptions struct {
 	ConfigPath   string
 	MCPPath      string
 	SkillLoader  *skills.SkillLoader
+	SessionStore session.SessionStore
 	MCPManager   *legacytools.MCPManager
 	ToolRegistry tool.Registry
 	HotApply     func() error
@@ -76,6 +83,34 @@ type ConfigFieldView struct {
 	RestartRequired bool
 }
 
+// SessionView is a stable TUI-friendly session snapshot.
+type SessionView struct {
+	Key                string
+	Current            bool
+	CreatedAt          string
+	UpdatedAt          string
+	MessageCount       int
+	LastMessagePreview string
+}
+
+// SessionToolCallView is a TUI-friendly persisted assistant tool call.
+type SessionToolCallView struct {
+	ID           string
+	Name         string
+	Arguments    string
+	ArgumentsMap map[string]any
+}
+
+// SessionMessageView is a TUI-friendly persisted transcript message.
+type SessionMessageView struct {
+	Role       string
+	Content    string
+	Reasoning  string
+	Name       string
+	ToolCallID string
+	ToolCalls  []SessionToolCallView
+}
+
 // NewManagementService creates a management service with default user paths.
 func NewManagementService(opts ManagementOptions) *ManagementService {
 	cfg := opts.Config
@@ -99,6 +134,7 @@ func NewManagementService(opts ManagementOptions) *ManagementService {
 		configPath:   configPath,
 		mcpPath:      mcpPath,
 		skillLoader:  opts.SkillLoader,
+		sessionStore: opts.SessionStore,
 		mcpManager:   opts.MCPManager,
 		toolRegistry: opts.ToolRegistry,
 		hotApply:     opts.HotApply,
@@ -107,6 +143,149 @@ func NewManagementService(opts ManagementOptions) *ManagementService {
 		s.mcpManager.SetMetadataChangeHook(s.refreshMCPDirectTools)
 	}
 	return s
+}
+
+// Sessions returns persisted conversation sessions for management surfaces.
+func (s *ManagementService) Sessions(currentKey string) []SessionView {
+	if s == nil || s.sessionStore == nil {
+		return nil
+	}
+	return sessionViews(s.sessionStore.List(), currentKey)
+}
+
+// FormatSessionStatus returns a plain text session list fallback.
+func (s *ManagementService) FormatSessionStatus(currentKey string) string {
+	return formatSessionStatus(s.Sessions(currentKey))
+}
+
+// SessionMessages returns the full persisted transcript for a session.
+func (s *ManagementService) SessionMessages(key string) []SessionMessageView {
+	if s == nil || s.sessionStore == nil || key == "" {
+		return nil
+	}
+	sess := s.sessionStore.GetOrCreate(key)
+	if sess == nil {
+		return nil
+	}
+	return sessionMessageViews(sess.Messages)
+}
+
+func sessionViews(infos []session.SessionInfo, currentKey string) []SessionView {
+	out := make([]SessionView, 0, len(infos))
+	for _, info := range infos {
+		out = append(out, SessionView{
+			Key:                info.Key,
+			Current:            info.Key == currentKey,
+			CreatedAt:          formatSessionTime(info.CreatedAt),
+			UpdatedAt:          formatSessionTime(info.UpdatedAt),
+			MessageCount:       info.MessageCount,
+			LastMessagePreview: info.LastMessagePreview,
+		})
+	}
+	return out
+}
+
+func formatSessionStatus(items []SessionView) string {
+	if len(items) == 0 {
+		return "No sessions found."
+	}
+	lines := []string{"Sessions:"}
+	for _, item := range items {
+		current := ""
+		if item.Current {
+			current = " (current)"
+		}
+		line := fmt.Sprintf("%s%s: messages=%d, updated=%s",
+			item.Key, current, item.MessageCount, item.UpdatedAt)
+		if item.LastMessagePreview != "" {
+			line += ", last_user=" + item.LastMessagePreview
+		}
+		lines = append(lines, line)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func formatSessionTime(t time.Time) string {
+	if t.IsZero() {
+		return "unknown"
+	}
+	return t.Local().Format("2006-01-02 15:04:05")
+}
+
+func sessionMessageViews(messages []session.Message) []SessionMessageView {
+	out := make([]SessionMessageView, 0, len(messages))
+	for _, msg := range messages {
+		content, reasoning := sessionContentView(msg.Content)
+		view := SessionMessageView{
+			Role:       msg.Role,
+			Content:    content,
+			Reasoning:  reasoning,
+			Name:       msg.Name,
+			ToolCallID: msg.ToolCallID,
+		}
+		for _, tc := range msg.ToolCalls {
+			view.ToolCalls = append(view.ToolCalls, SessionToolCallView{
+				ID:           tc.ID,
+				Name:         tc.Name,
+				Arguments:    sessionArgumentsText(tc.Arguments),
+				ArgumentsMap: tc.Arguments,
+			})
+		}
+		out = append(out, view)
+	}
+	return out
+}
+
+func sessionArgumentsText(args map[string]any) string {
+	if len(args) == 0 {
+		return ""
+	}
+	data, err := json.Marshal(args)
+	if err != nil {
+		return fmt.Sprint(args)
+	}
+	return string(data)
+}
+
+func sessionContentView(content any) (string, string) {
+	switch v := content.(type) {
+	case string:
+		return v, ""
+	case []any:
+		textParts := make([]string, 0, len(v))
+		reasoningParts := make([]string, 0, len(v))
+		for _, item := range v {
+			text, reasoning := sessionContentView(item)
+			if text != "" {
+				textParts = append(textParts, text)
+			}
+			if reasoning != "" {
+				reasoningParts = append(reasoningParts, reasoning)
+			}
+		}
+		return strings.Join(textParts, "\n"), strings.Join(reasoningParts, "\n")
+	case map[string]any:
+		kind, _ := v["type"].(string)
+		if kind == "thinking" {
+			thinking, _ := v["thinking"].(string)
+			return "", thinking
+		}
+		for _, key := range []string{"text", "content", "input_text"} {
+			if text, ok := v[key].(string); ok {
+				return text, ""
+			}
+		}
+		data, err := json.Marshal(v)
+		if err != nil {
+			return fmt.Sprint(v), ""
+		}
+		return string(data), ""
+	default:
+		if content == nil {
+			return "", ""
+		}
+		return fmt.Sprint(content), ""
+	}
 }
 
 // SetHotApply installs the callback used after runtime-affecting saves.

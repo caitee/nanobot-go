@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -102,9 +104,17 @@ func (s *fileSessionStore) loadSession(key string) *Session {
 		}
 	}
 
-	file, err := os.Open(filePath)
+	session, err := readSessionFile(filePath)
 	if err != nil {
 		return nil
+	}
+	return session
+}
+
+func readSessionFile(filePath string) (*Session, error) {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return nil, err
 	}
 	defer file.Close()
 
@@ -177,8 +187,11 @@ func (s *fileSessionStore) loadSession(key string) *Session {
 			session.Messages = append(session.Messages, msg)
 		}
 	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
 
-	return &session
+	return &session, nil
 }
 
 // legacySessionFile returns the legacy session file path for a key
@@ -312,16 +325,111 @@ func (s *fileSessionStore) List() []SessionInfo {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	var infos []SessionInfo
-	for key, session := range s.sessions {
-		infos = append(infos, SessionInfo{
-			Key:          key,
-			CreatedAt:    session.CreatedAt,
-			UpdatedAt:    session.UpdatedAt,
-			MessageCount: len(session.Messages),
-		})
+	infosByKey := map[string]SessionInfo{}
+	paths, err := filepath.Glob(filepath.Join(s.sessionsDir, "*.jsonl"))
+	if err == nil {
+		for _, path := range paths {
+			session, err := readSessionFile(path)
+			if err != nil {
+				slog.Warn("failed to read session for listing", "path", path, "error", err)
+				continue
+			}
+			info := sessionInfo(session, sessionKeyFromPath(path))
+			infosByKey[info.Key] = info
+		}
 	}
+
+	for key, session := range s.sessions {
+		infosByKey[key] = sessionInfo(session, key)
+	}
+	infos := make([]SessionInfo, 0, len(infosByKey))
+	for _, info := range infosByKey {
+		infos = append(infos, info)
+	}
+	sort.SliceStable(infos, func(i, j int) bool {
+		if !infos[i].UpdatedAt.Equal(infos[j].UpdatedAt) {
+			return infos[i].UpdatedAt.After(infos[j].UpdatedAt)
+		}
+		return infos[i].Key < infos[j].Key
+	})
 	return infos
+}
+
+func sessionInfo(session *Session, fallbackKey string) SessionInfo {
+	if session == nil {
+		return SessionInfo{Key: fallbackKey}
+	}
+	key := session.Key
+	if key == "" {
+		key = fallbackKey
+	}
+	createdAt := session.CreatedAt
+	updatedAt := session.UpdatedAt
+	if updatedAt.IsZero() {
+		updatedAt = createdAt
+	}
+	if createdAt.IsZero() {
+		createdAt = updatedAt
+	}
+	return SessionInfo{
+		Key:                key,
+		CreatedAt:          createdAt,
+		UpdatedAt:          updatedAt,
+		MessageCount:       len(session.Messages),
+		LastMessagePreview: lastUserMessagePreview(session.Messages),
+	}
+}
+
+func sessionKeyFromPath(path string) string {
+	base := filepath.Base(path)
+	return strings.TrimSuffix(base, filepath.Ext(base))
+}
+
+func lastUserMessagePreview(messages []Message) string {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role != "user" {
+			continue
+		}
+		return compactPreview(contentText(messages[i].Content), 120)
+	}
+	return ""
+}
+
+func contentText(content any) string {
+	switch v := content.(type) {
+	case string:
+		return v
+	case []any:
+		parts := make([]string, 0, len(v))
+		for _, item := range v {
+			switch item := item.(type) {
+			case string:
+				parts = append(parts, item)
+			case map[string]any:
+				if text, ok := item["text"].(string); ok {
+					parts = append(parts, text)
+				}
+			}
+		}
+		return strings.Join(parts, " ")
+	default:
+		return ""
+	}
+}
+
+func compactPreview(text string, maxRunes int) string {
+	text = strings.Join(strings.Fields(text), " ")
+	if maxRunes <= 0 {
+		return text
+	}
+	runes := []rune(text)
+	if len(runes) <= maxRunes {
+		return text
+	}
+	if maxRunes <= 3 {
+		return string(runes[:maxRunes])
+	}
+	return string(runes[:maxRunes-3]) + "..."
 }
 
 func (s *fileSessionStore) Invalidate(key string) {

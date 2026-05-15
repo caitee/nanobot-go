@@ -181,6 +181,7 @@ func (a *App) Start(ctx context.Context) error {
 	a.Management = NewManagementService(ManagementOptions{
 		Config:       a.Config,
 		SkillLoader:  a.SkillLoader,
+		SessionStore: a.SessionStore,
 		MCPManager:   a.MCPManager,
 		ToolRegistry: a.ToolRegistry,
 	})

@@ -61,6 +61,7 @@ func RegisterDefaultCommands(d *Dispatcher) {
 	d.RegisterSlashCommand(Command{Name: "mcp", Description: "Manage MCP servers", Scope: CommandScopeApp, Handler: handleMCP})
 	d.RegisterSlashCommand(Command{Name: "skills", Description: "Manage skills", Scope: CommandScopeApp, Handler: handleSkills})
 	d.RegisterSlashCommand(Command{Name: "config", Description: "Manage common settings", Scope: CommandScopeApp, Handler: handleConfig})
+	d.RegisterSlashCommand(Command{Name: "sessions", Description: "Resume a previous session", Scope: CommandScopeApp, Handler: handleSessions})
 	d.RegisterSlashCommand(Command{Name: "reasoning", Description: "Toggle thinking mode", ArgumentHint: "on|off", Scope: CommandScopeApp, Handler: handleReasoning})
 	d.RegisterSlashCommand(Command{Name: "quit", Aliases: []string{"exit"}, Description: "Quit interactive mode", Scope: CommandScopeTUI, Handler: handleTUIOnly})
 }
@@ -146,6 +147,16 @@ func handleConfig(ctx context.Context, d *Dispatcher, args string, inbound bus.I
 		text = d.management.FormatConfigStatus()
 	}
 	return &CommandResult{Text: text, UIRequest: UIRequestConfig}, nil
+}
+
+func handleSessions(ctx context.Context, d *Dispatcher, args string, inbound bus.InboundMessage) (*CommandResult, error) {
+	text := "No sessions found."
+	if d.management != nil {
+		text = d.management.FormatSessionStatus(inbound.SessionKey)
+	} else if d.sessionStore != nil {
+		text = formatSessionStatus(sessionViews(d.sessionStore.List(), inbound.SessionKey))
+	}
+	return &CommandResult{Text: text, UIRequest: UIRequestSessions}, nil
 }
 
 func handleTUIOnly(ctx context.Context, d *Dispatcher, args string, inbound bus.InboundMessage) (*CommandResult, error) {
