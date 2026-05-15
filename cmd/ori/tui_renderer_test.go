@@ -150,6 +150,55 @@ func TestTranscriptRendererAssistantStatusAndOrphanMarker(t *testing.T) {
 	}
 }
 
+func TestTranscriptRendererSkipsEmptyUserAndSystemBlocks(t *testing.T) {
+	now := time.Unix(111, 0)
+	var tr transcript
+	tr.appendUserBlock("user-1", "", now)
+	tr.appendSystemBlock("sys-1", systemLevelInfo, "", now.Add(time.Second))
+
+	out := plainView(transcriptRenderer{}.renderTranscript(tr, renderContext{width: 80, now: now}))
+	if strings.TrimSpace(out) != "" {
+		t.Fatalf("expected empty user/system blocks to be omitted, got:\n%s", out)
+	}
+}
+
+func TestTranscriptRendererReasoningUsesLiveOnlyForActiveAssistant(t *testing.T) {
+	now := time.Unix(112, 0)
+	var tr transcript
+	completed := tr.appendAssistantBlock("asst-completed", now)
+	completed.appendReasoningDelta(strings.Join([]string{
+		"ch1",
+		"ch2",
+		"ch3",
+		"cv4",
+		"cv5",
+		"cv6",
+	}, "\n"), now)
+	completed.status = assistantStatusDone
+
+	active := tr.appendAssistantBlock("asst-active", now.Add(time.Second))
+	active.appendReasoningDelta(strings.Join([]string{
+		"ah1",
+		"av2",
+		"av3",
+		"av4",
+		"av5",
+		"av6",
+	}, "\n"), now.Add(time.Second))
+
+	out := plainView(transcriptRenderer{}.renderTranscript(tr, renderContext{width: 100, now: now}))
+	for _, hidden := range []string{"ch1", "ch2", "ch3", "ah1"} {
+		if strings.Contains(out, hidden) {
+			t.Fatalf("expected reasoning output to hide %q, got:\n%s", hidden, out)
+		}
+	}
+	for _, visible := range []string{"cv4", "cv5", "cv6", "av2", "av3", "av4", "av5", "av6"} {
+		if !strings.Contains(out, visible) {
+			t.Fatalf("expected reasoning output to include %q, got:\n%s", visible, out)
+		}
+	}
+}
+
 func TestTranscriptRendererFinalConflictUsesFinalTextOnce(t *testing.T) {
 	now := time.Unix(104, 0)
 	var tr transcript

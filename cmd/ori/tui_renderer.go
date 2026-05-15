@@ -23,7 +23,9 @@ func (r transcriptRenderer) renderTranscript(tr transcript, ctx renderContext) s
 	ctx = normalizeRenderContext(ctx)
 	parts := make([]string, 0, len(tr.blocks))
 	for i := range tr.blocks {
-		rendered := strings.TrimRight(r.renderBlock(tr.blocks[i], ctx), "\n")
+		blockCtx := ctx
+		blockCtx.active = tr.blocks[i].kind == blockKindAssistant && tr.blocks[i].id != "" && tr.blocks[i].id == tr.activeAssistantID
+		rendered := strings.TrimRight(r.renderBlock(tr.blocks[i], blockCtx), "\n")
 		if strings.TrimSpace(rendered) == "" {
 			continue
 		}
@@ -49,16 +51,14 @@ func (r transcriptRenderer) renderBlock(b block, ctx renderContext) string {
 }
 
 func (r transcriptRenderer) renderUserBlock(user *userBlock, ctx renderContext) string {
-	if user == nil {
+	if user == nil || user.content == "" {
 		return ""
 	}
 	ctx = normalizeRenderContext(ctx)
 	var b strings.Builder
 	b.WriteString(userPromptStyle.Render(fitLine("you", ctx.width)))
-	if user.content != "" {
-		b.WriteString("\n")
-		b.WriteString(userMessageStyle.Render(fitPlainText(user.content, ctx.width)))
-	}
+	b.WriteString("\n")
+	b.WriteString(userMessageStyle.Render(fitPlainText(user.content, ctx.width)))
 	return b.String()
 }
 
@@ -102,7 +102,11 @@ func (r transcriptRenderer) renderSegment(seg assistantSegment, ctx renderContex
 		if seg.reasoning == nil {
 			return ""
 		}
-		return renderReasoningBlockForWidth(seg.reasoning.text, reasoningModeLive, ctx.width)
+		mode := reasoningModeCompleted
+		if ctx.active {
+			mode = reasoningModeLive
+		}
+		return renderReasoningBlockForWidth(seg.reasoning.text, mode, ctx.width)
 	case segmentKindText:
 		if seg.text == nil || seg.text.text == "" {
 			return ""
@@ -173,14 +177,11 @@ func (r transcriptRenderer) renderCommandBlock(cmd *commandBlock, ctx renderCont
 }
 
 func (r transcriptRenderer) renderSystemBlock(system *systemBlock, ctx renderContext) string {
-	if system == nil {
+	if system == nil || system.message == "" {
 		return ""
 	}
 	ctx = normalizeRenderContext(ctx)
 	label := systemLevelLabel(system.level)
-	if system.message == "" {
-		return waitingStyle.Render(fitLine(label, ctx.width))
-	}
 	return waitingStyle.Render(fitLine(label+" · "+system.message, ctx.width))
 }
 
