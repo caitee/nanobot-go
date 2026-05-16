@@ -79,6 +79,9 @@ func (m *interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.resizeTranscriptViewport(msg.Width, transcriptViewportHeightFor(msg.Height))
 		return m, nil
 
+	case tea.MouseMsg:
+		return m.handleMouse(msg)
+
 	case tea.KeyMsg:
 		switch msg.Type {
 		case tea.KeyCtrlC, tea.KeyCtrlD:
@@ -157,6 +160,52 @@ func (m *interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.textInput, cmd = m.textInput.Update(msg)
 	return m, cmd
+}
+
+func (m *interactiveModel) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	if !isTranscriptWheelMouse(msg) {
+		return m, nil
+	}
+	if m.panel != nil {
+		return m, nil
+	}
+	m.focus = focusTranscript
+	if m.viewport.Width <= 0 || m.viewport.Height <= 0 {
+		m.resizeTranscriptViewport(getTerminalWidth(), transcriptViewportHeight())
+	}
+	var cmd tea.Cmd
+	m.viewport, cmd = m.viewport.Update(normalizeTranscriptWheelMouse(msg))
+	if m.viewport.AtBottom() {
+		m.clearNewTranscriptOutput()
+	}
+	m.viewVersion++
+	return m, cmd
+}
+
+func isTranscriptWheelMouse(msg tea.MouseMsg) bool {
+	switch msg.Button {
+	case tea.MouseButtonWheelUp, tea.MouseButtonWheelDown:
+		return true
+	}
+	switch msg.Type {
+	case tea.MouseWheelUp, tea.MouseWheelDown:
+		return true
+	default:
+		return false
+	}
+}
+
+func normalizeTranscriptWheelMouse(msg tea.MouseMsg) tea.MouseMsg {
+	if msg.Button != tea.MouseButtonNone {
+		return msg
+	}
+	switch msg.Type {
+	case tea.MouseWheelUp:
+		msg.Button = tea.MouseButtonWheelUp
+	case tea.MouseWheelDown:
+		msg.Button = tea.MouseButtonWheelDown
+	}
+	return msg
 }
 
 func (m *interactiveModel) handleEnter() (tea.Model, tea.Cmd) {

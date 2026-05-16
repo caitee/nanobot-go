@@ -313,7 +313,7 @@ make check
 - `EventToolExecUpdate` 更新运行中 preview。
 - 工具运行态不复用 footer spinner。
 - 80 列和窄终端下工具详情行不溢出。
-- PageUp/PageDown 时 viewport 不被新输出偷走滚动位置。
+- PageUp/PageDown 和鼠标滚轮都驱动 transcript viewport；overlay 打开时滚轮不滚背后的历史。
 - running tool elapsed 可重绘，但 timer-only repaint 不触发 new-output 提示。
 
 ---
@@ -453,8 +453,12 @@ cmd/ori/
 ```go
 tea.NewProgram(m,
     tea.WithoutSignals(),
+    tea.WithMouseCellMotion(),
 )
 ```
+
+`WithMouseCellMotion` 用于把鼠标滚轮送进 transcript viewport。它不等于 alt screen；
+不要把对话历史重新拆回终端 scrollback。
 
 onboarding wizard 更像独立配置界面，因此使用替代屏幕：
 
@@ -464,8 +468,7 @@ tea.NewProgram(m,
 )
 ```
 
-只有真正需要鼠标交互时才启用 `tea.WithMouseCellMotion()`。不要在 `ori agent`
-里随意切到 alt screen，否则会破坏历史区输出体验。
+不要在 `ori agent` 里随意切到 alt screen，否则会破坏历史区输出体验。
 
 ---
 

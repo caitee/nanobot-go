@@ -231,6 +231,87 @@ func TestViewportKeyRoutingDuringWaiting(t *testing.T) {
 	}
 }
 
+func TestTranscriptViewportMouseWheelScrollsFromInputFocus(t *testing.T) {
+	m := &interactiveModel{focus: focusInput}
+	m.initTranscriptViewport(40, 5)
+	for i := range 20 {
+		m.transcript.appendSystemBlock(m.nextBlockID("system"), systemLevelInfo, fmt.Sprintf("line %02d", i), time.Unix(int64(i), 0))
+	}
+	m.refreshTranscriptViewport()
+	before := m.viewport.YOffset
+	if before == 0 {
+		t.Fatalf("expected viewport to have scrollback")
+	}
+
+	m.Update(tea.MouseMsg{
+		Type:   tea.MouseWheelUp,
+		Button: tea.MouseButtonWheelUp,
+		Action: tea.MouseActionPress,
+	})
+
+	if m.focus != focusTranscript {
+		t.Fatalf("expected mouse wheel to focus transcript, got %v", m.focus)
+	}
+	if m.viewport.YOffset >= before {
+		t.Fatalf("expected mouse wheel up to update viewport offset below %d, got %d", before, m.viewport.YOffset)
+	}
+}
+
+func TestTranscriptViewportMouseWheelDownClearsNewOutputAtBottom(t *testing.T) {
+	m := &interactiveModel{focus: focusInput}
+	m.initTranscriptViewport(40, 5)
+	for i := range 20 {
+		m.transcript.appendSystemBlock(m.nextBlockID("system"), systemLevelInfo, fmt.Sprintf("line %02d", i), time.Unix(int64(i), 0))
+	}
+	m.refreshTranscriptViewport()
+	bottom := m.viewport.YOffset
+	if bottom == 0 {
+		t.Fatalf("expected viewport to have scrollback")
+	}
+	m.viewport.YOffset = bottom - 1
+	m.hasNewTranscriptOutput = true
+
+	m.Update(tea.MouseMsg{
+		Type:   tea.MouseWheelDown,
+		Button: tea.MouseButtonWheelDown,
+		Action: tea.MouseActionPress,
+	})
+
+	if !m.viewport.AtBottom() {
+		t.Fatalf("expected mouse wheel down to reach bottom, offset=%d", m.viewport.YOffset)
+	}
+	if m.hasNewTranscriptOutput {
+		t.Fatalf("expected mouse wheel down at bottom to clear new-output marker")
+	}
+}
+
+func TestTranscriptViewportMouseWheelIgnoredWhenPanelOpen(t *testing.T) {
+	m := &interactiveModel{focus: focusOverlay}
+	m.initTranscriptViewport(40, 5)
+	for i := range 20 {
+		m.transcript.appendSystemBlock(m.nextBlockID("system"), systemLevelInfo, fmt.Sprintf("line %02d", i), time.Unix(int64(i), 0))
+	}
+	m.refreshTranscriptViewport()
+	before := m.viewport.YOffset
+	if before == 0 {
+		t.Fatalf("expected viewport to have scrollback")
+	}
+	m.panel = &managementPanel{kind: appcore.UIRequestMCP}
+
+	m.Update(tea.MouseMsg{
+		Type:   tea.MouseWheelUp,
+		Button: tea.MouseButtonWheelUp,
+		Action: tea.MouseActionPress,
+	})
+
+	if m.viewport.YOffset != before {
+		t.Fatalf("expected open panel to ignore transcript wheel scroll, offset changed from %d to %d", before, m.viewport.YOffset)
+	}
+	if m.focus != focusOverlay {
+		t.Fatalf("expected focus to stay on overlay, got %v", m.focus)
+	}
+}
+
 func TestTranscriptViewportNewOutputMarkerClearsAtBottom(t *testing.T) {
 	m := &interactiveModel{}
 	m.initTranscriptViewport(40, 5)
