@@ -124,8 +124,15 @@ func TestResponseMsgFinalizesTranscript(t *testing.T) {
 	if asst == nil || asst.status != assistantStatusDone || asst.finalSource != finalSourceFallback {
 		t.Fatalf("assistant not finalized from outbound fallback: %+v", asst)
 	}
-	if out := plainView(m.transcriptViewportText); !strings.Contains(out, "final") || !strings.Contains(out, "why") {
+	out := plainView(m.transcriptViewportText)
+	if !strings.Contains(out, "final") {
 		t.Fatalf("final response was not rendered into transcript viewport:\n%s", out)
+	}
+	if !strings.Contains(out, "thinking · 1 lines summarized") {
+		t.Fatalf("reasoning summary header was not rendered into transcript viewport:\n%s", out)
+	}
+	if strings.Contains(out, "why") {
+		t.Fatalf("normal transcript viewport should hide reasoning body:\n%s", out)
 	}
 }
 
@@ -563,7 +570,10 @@ func TestTranscriptRendererToolDetailLinesFitTerminalWidth(t *testing.T) {
 	asst.upsertToolStart("call-1", "web", map[string]any{"query": strings.Repeat("argument ", 20)}, time.Unix(1, 0))
 	asst.finishTool("call-1", "web", strings.Repeat("result ", 20), false, time.Unix(2, 0))
 
-	out := plainView((transcriptRenderer{}).renderTranscript(tr, renderContext{width: 80}))
+	out := plainView((transcriptRenderer{}).renderTranscript(tr, renderContext{
+		width:    80,
+		viewMode: transcriptViewDetail,
+	}))
 	for _, line := range strings.Split(out, "\n") {
 		if strings.Contains(line, "query") || strings.Contains(line, "Result") {
 			if width := lipgloss.Width(line); width > 80 {
@@ -604,7 +614,10 @@ func TestHandleRuntimeEvent_TurnStartKeepsPreviousRoundInTranscript(t *testing.T
 	if cmd != nil {
 		t.Fatal("expected TurnStart to avoid print commands after transcript migration")
 	}
-	out := plainView(m.renderer.renderTranscript(m.transcript, renderContext{width: 80}))
+	out := plainView(m.renderer.renderTranscript(m.transcript, renderContext{
+		width:    80,
+		viewMode: transcriptViewDetail,
+	}))
 	if !strings.Contains(out, "read_file") {
 		t.Fatalf("expected transcript to include tool name; got:\n%s", out)
 	}
@@ -661,7 +674,10 @@ func TestAgentEnd_FinalizesTranscriptWithToolCallsFromSameTurn(t *testing.T) {
 	if asst == nil || asst.status != assistantStatusDone {
 		t.Fatalf("assistant not finalized: %+v", asst)
 	}
-	out := plainView(m.renderer.renderTranscript(m.transcript, renderContext{width: 80}))
+	out := plainView(m.renderer.renderTranscript(m.transcript, renderContext{
+		width:    80,
+		viewMode: transcriptViewDetail,
+	}))
 	if !strings.Contains(out, "read_file") {
 		t.Fatalf("expected final transcript to include tool name; got:\n%s", out)
 	}
@@ -741,6 +757,60 @@ func TestApplySlashCommandResultOpensOverlayAndRecordsCommand(t *testing.T) {
 	}
 	if len(m.transcript.blocks) != 1 || m.transcript.blocks[0].command == nil {
 		t.Fatalf("command transcript block missing: %+v", m.transcript.blocks)
+	}
+}
+
+func TestViewCommandSwitchesTranscriptViewMode(t *testing.T) {
+	m := &interactiveModel{renderer: transcriptRenderer{}, focus: focusInput}
+	m.initTranscriptViewport(80, 10)
+	asst := m.transcript.appendAssistantBlock(m.nextBlockID("assistant"), time.Unix(1, 0))
+	asst.appendReasoningDelta("hidden\nvisible", time.Unix(1, 0))
+	m.refreshTranscriptViewport()
+	if strings.Contains(plainView(m.transcriptViewportText), "visible") {
+		t.Fatalf("normal mode should hide reasoning body before /view detail, got:\n%s", plainView(m.transcriptViewportText))
+	}
+
+	cmd := m.applyViewCommand("/view detail")
+	if cmd != nil {
+		t.Fatalf("/view detail returned unexpected command")
+	}
+	if m.viewMode != transcriptViewDetail {
+		t.Fatalf("viewMode = %q, want %q", m.viewMode, transcriptViewDetail)
+	}
+	out := plainView(m.transcriptViewportText)
+	for _, want := range []string{"visible", "/view detail", "View mode: detail"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected detail viewport to contain %q, got:\n%s", want, out)
+		}
+	}
+}
+
+func TestViewCommandRejectsUnknownMode(t *testing.T) {
+	m := &interactiveModel{renderer: transcriptRenderer{}, focus: focusInput}
+	m.initTranscriptViewport(80, 10)
+	m.viewMode = transcriptViewDetail
+
+	cmd := m.applyViewCommand("/view verbose")
+	if cmd != nil {
+		t.Fatalf("/view verbose returned unexpected command")
+	}
+	if m.viewMode != transcriptViewDetail {
+		t.Fatalf("invalid /view should preserve current mode, got %q", m.viewMode)
+	}
+	out := plainView(m.transcriptViewportText)
+	if !strings.Contains(out, "Usage: /view normal|detail") {
+		t.Fatalf("expected usage message for invalid /view, got:\n%s", out)
+	}
+}
+
+func TestAvailableSlashCommandsIncludesView(t *testing.T) {
+	m := newTestModel()
+	names := map[string]bool{}
+	for _, cmd := range m.availableSlashCommands() {
+		names[cmd.Name] = true
+	}
+	if !names["view"] {
+		t.Fatalf("expected /view in TUI slash command completions")
 	}
 }
 
@@ -836,7 +906,7 @@ func TestSessionsPanelRendersSessionRows(t *testing.T) {
 func TestTranscriptFromSessionMessagesBuildsBlocks(t *testing.T) {
 	messages := []appcore.SessionMessageView{
 		{Role: "user", Content: "hello"},
-		{Role: "assistant", Reasoning: "thinking", ToolCalls: []appcore.SessionToolCallView{
+		{Role: "assistant", Reasoning: "session private note", ToolCalls: []appcore.SessionToolCallView{
 			{ID: "tool-1", Name: "shell", ArgumentsMap: map[string]any{"cmd": "date"}},
 		}},
 		{Role: "tool", ToolCallID: "tool-1", Name: "shell", Content: "tool result"},
@@ -855,8 +925,11 @@ func TestTranscriptFromSessionMessagesBuildsBlocks(t *testing.T) {
 	if asst == nil || asst.status != assistantStatusDone {
 		t.Fatalf("assistant block missing or unfinished: %+v", tr.blocks[1])
 	}
-	out := plainView(transcriptRenderer{}.renderTranscript(tr, renderContext{width: 80}))
-	for _, want := range []string{"hello", "thinking", "answer", "shell", "tool result"} {
+	out := plainView(transcriptRenderer{}.renderTranscript(tr, renderContext{
+		width:    80,
+		viewMode: transcriptViewDetail,
+	}))
+	for _, want := range []string{"hello", "session private note", "answer", "shell", "tool result"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("session transcript missing %q:\n%s", want, out)
 		}
@@ -891,7 +964,10 @@ func TestTranscriptFromSessionMessagesMatchesDelayedToolResultByID(t *testing.T)
 	if tool == nil || tool.result != "delayed result" || tool.orphan {
 		t.Fatalf("tool result was not matched by ID: %+v", tool)
 	}
-	out := plainView(transcriptRenderer{}.renderTranscript(tr, renderContext{width: 80}))
+	out := plainView(transcriptRenderer{}.renderTranscript(tr, renderContext{
+		width:    80,
+		viewMode: transcriptViewDetail,
+	}))
 	for _, want := range []string{"shell", "answer before tool result", "delayed result"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("session transcript missing %q:\n%s", want, out)
@@ -1261,7 +1337,10 @@ func TestAgentEnd_FinalizesTranscriptWithToolCallsFromPreviousTurn(t *testing.T)
 	if asst == nil || asst.status != assistantStatusDone {
 		t.Fatalf("assistant not finalized: %+v", asst)
 	}
-	out := plainView(m.renderer.renderTranscript(m.transcript, renderContext{width: 80}))
+	out := plainView(m.renderer.renderTranscript(m.transcript, renderContext{
+		width:    80,
+		viewMode: transcriptViewDetail,
+	}))
 	if !strings.Contains(out, "read_file") {
 		t.Fatalf("expected transcript to include read_file from a prior turn; got:\n%s", out)
 	}
@@ -1366,8 +1445,8 @@ func TestTranscriptRendererReasoningBlockSummarizesLiveAndCompleted(t *testing.T
 		"line 7 visible",
 	}, "\n")
 
-	live := plainView(renderReasoningBlockForWidth(reasoning, reasoningModeLive, 80))
-	completed := plainView(renderReasoningBlockForWidth(reasoning, reasoningModeCompleted, 80))
+	live := plainView(renderReasoningBlockForWidth(reasoning, reasoningModeLive, 80, transcriptViewDetail))
+	completed := plainView(renderReasoningBlockForWidth(reasoning, reasoningModeCompleted, 80, transcriptViewDetail))
 
 	for name, out := range map[string]string{"live": live, "completed": completed} {
 		if !strings.Contains(out, "thinking · 7 lines summarized") {
@@ -1398,6 +1477,7 @@ func TestRenderToolCallUsesStableMultilineArguments(t *testing.T) {
 		},
 	})
 
+	renderModelTranscriptInDetail(m)
 	view := plainView(m.View())
 	commandIdx := strings.Index(view, "command")
 	timeoutIdx := strings.Index(view, "timeout")
@@ -1419,7 +1499,12 @@ func TestRenderToolArgumentLinesFitNarrowTerminal(t *testing.T) {
 	asst := tr.appendAssistantBlock("assistant-1", time.Unix(1, 0))
 	asst.upsertToolStart("call-1", "shell", map[string]any{"extremely_long_argument_key": strings.Repeat("value ", 20)}, time.Unix(1, 0))
 
-	out := plainView((transcriptRenderer{}).renderTranscript(tr, renderContext{width: 32, active: true, now: time.Unix(2, 0)}))
+	out := plainView((transcriptRenderer{}).renderTranscript(tr, renderContext{
+		width:    32,
+		active:   true,
+		now:      time.Unix(2, 0),
+		viewMode: transcriptViewDetail,
+	}))
 	for _, line := range strings.Split(out, "\n") {
 		if strings.Contains(line, "extremely") || strings.Contains(line, "...") {
 			if width := lipgloss.Width(line); width > 32 {
@@ -1442,7 +1527,10 @@ func TestRenderToolResultShowsPreviewAndHiddenLineCount(t *testing.T) {
 		"line 6 hidden",
 	}, "\n"), false, time.Unix(2, 0))
 
-	out := plainView((transcriptRenderer{}).renderTranscript(tr, renderContext{width: 80}))
+	out := plainView((transcriptRenderer{}).renderTranscript(tr, renderContext{
+		width:    80,
+		viewMode: transcriptViewDetail,
+	}))
 	for _, want := range []string{"line 1", "line 2", "line 3", "line 4", "... 2 more lines"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("expected result preview to include %q, got:\n%s", want, out)
@@ -1471,10 +1559,30 @@ func TestHandleRuntimeEvent_ToolUpdateRendersRunningPreview(t *testing.T) {
 		},
 	})
 
+	renderModelTranscriptInDetail(m)
 	view := plainView(m.View())
 	if !strings.Contains(view, "partial output") {
 		t.Fatalf("expected running tool preview to include partial output, got:\n%s", view)
 	}
+}
+
+func renderModelTranscriptInDetail(m *interactiveModel) {
+	if m.viewport.Width <= 0 || m.viewport.Height <= 0 {
+		m.initTranscriptViewport(80, 10)
+	}
+	content := m.renderer.renderTranscript(m.transcript, renderContext{
+		width:    m.viewport.Width,
+		focus:    m.focus,
+		active:   m.active,
+		now:      time.Now(),
+		viewMode: transcriptViewDetail,
+	})
+	m.transcriptViewportText = content
+	m.viewport.Height = transcriptViewportHeightForContent(content, m.viewportMaxHeight)
+	m.viewport.SetContent(content)
+	m.viewport.GotoBottom()
+	m.viewVersion++
+	m.cachedViewOutput = ""
 }
 
 func TestRunningToolDoesNotReuseGlobalSpinnerFrame(t *testing.T) {

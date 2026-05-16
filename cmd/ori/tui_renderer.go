@@ -10,11 +10,26 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
+type transcriptViewMode string
+
+const (
+	transcriptViewNormal transcriptViewMode = "normal"
+	transcriptViewDetail transcriptViewMode = "detail"
+)
+
+func normalizeTranscriptViewMode(mode transcriptViewMode) transcriptViewMode {
+	if mode == transcriptViewDetail {
+		return transcriptViewDetail
+	}
+	return transcriptViewNormal
+}
+
 type renderContext struct {
-	width  int
-	focus  focusArea
-	active bool
-	now    time.Time
+	width    int
+	focus    focusArea
+	active   bool
+	now      time.Time
+	viewMode transcriptViewMode
 }
 
 type transcriptRenderer struct{}
@@ -116,7 +131,7 @@ func (r transcriptRenderer) renderSegment(seg assistantSegment, ctx renderContex
 		if ctx.active {
 			mode = reasoningModeLive
 		}
-		return renderReasoningBlockForWidth(seg.reasoning.text, mode, ctx.width)
+		return renderReasoningBlockForWidth(seg.reasoning.text, mode, ctx.width, ctx.viewMode)
 	case segmentKindText:
 		if seg.text == nil || seg.text.text == "" {
 			return ""
@@ -134,6 +149,9 @@ func (r transcriptRenderer) renderToolSegment(tool *toolCallSegment, ctx renderC
 		return ""
 	}
 	ctx = normalizeRenderContext(ctx)
+	if ctx.viewMode == transcriptViewNormal {
+		return r.renderToolSummarySegment(tool, ctx)
+	}
 	var b strings.Builder
 	icon, status, iconStyle := toolSegmentStatusParts(tool, ctx)
 	name := firstNonEmpty(tool.name, "tool")
@@ -162,6 +180,81 @@ func (r transcriptRenderer) renderToolSegment(tool *toolCallSegment, ctx renderC
 		b.WriteString(renderToolPreviewForWidth("Result", tool.result, toolPreviewStyle, ctx.width, 4))
 	}
 	return b.String()
+}
+
+func (r transcriptRenderer) renderToolSummarySegment(tool *toolCallSegment, ctx renderContext) string {
+	icon, status, iconStyle := toolSummaryStatusParts(tool, ctx)
+	name := toolSummaryName(tool)
+	header := fmt.Sprintf("  %s %s%s", icon, name, status)
+	var b strings.Builder
+	b.WriteString(iconStyle.Render(fitLine(header, ctx.width)))
+	if tool.status == toolStatusError && tool.result != "" {
+		if rendered := renderToolSummaryPreview("Error", tool.result, toolErrorStyle, ctx.width); rendered != "" {
+			b.WriteString("\n")
+			b.WriteString(rendered)
+		}
+	}
+	if tool.status == toolStatusDone && tool.result != "" {
+		if rendered := renderToolSummaryPreview("Result", tool.result, toolPreviewStyle, ctx.width); rendered != "" {
+			b.WriteString("\n")
+			b.WriteString(rendered)
+		}
+	}
+	return b.String()
+}
+
+func toolSummaryStatusParts(tool *toolCallSegment, ctx renderContext) (string, string, lipgloss.Style) {
+	if tool.status != toolStatusRunning {
+		return toolSegmentStatusParts(tool, ctx)
+	}
+	status := " running"
+	if !tool.startedAt.IsZero() {
+		elapsed := ctx.now.Sub(tool.startedAt).Milliseconds()
+		if elapsed < 0 {
+			elapsed = 0
+		}
+		status += " " + formatDuration(elapsed)
+	}
+	if size := toolSegmentResultSize(tool); size != "" {
+		status += " · " + size
+	}
+	return "●", status, toolPulseStyle
+}
+
+func toolSummaryName(tool *toolCallSegment) string {
+	name := firstNonEmpty(tool.name, "tool")
+	if tool.orphan {
+		name += " (orphan)"
+	}
+	if arg := toolSummaryArgument(tool.args); arg != "" {
+		name += " " + truncateStr(arg, 24)
+	}
+	return name
+}
+
+func toolSummaryArgument(args map[string]any) string {
+	if len(args) == 0 {
+		return ""
+	}
+	for _, key := range []string{"path", "cmd", "command"} {
+		if v, ok := args[key]; ok {
+			return formatArgValue(v)
+		}
+	}
+	if len(args) == 1 {
+		for _, v := range args {
+			return formatArgValue(v)
+		}
+	}
+	return ""
+}
+
+func renderToolSummaryPreview(label, content string, style lipgloss.Style, width int) string {
+	lines := previewLines(content)
+	if len(lines) == 0 {
+		return ""
+	}
+	return style.Render(fitPrefixedLine("    │ "+label+": ", lines[0], width))
 }
 
 func (r transcriptRenderer) renderCommandBlock(cmd *commandBlock, ctx renderContext) string {
@@ -202,6 +295,7 @@ func normalizeRenderContext(ctx renderContext) renderContext {
 	if ctx.now.IsZero() {
 		ctx.now = time.Now()
 	}
+	ctx.viewMode = normalizeTranscriptViewMode(ctx.viewMode)
 	return ctx
 }
 
@@ -271,10 +365,15 @@ func renderToolPreviewForWidth(label, content string, style lipgloss.Style, widt
 	return b.String()
 }
 
-func renderReasoningBlockForWidth(reasoning string, mode reasoningRenderMode, width int) string {
+func renderReasoningBlockForWidth(reasoning string, mode reasoningRenderMode, width int, viewMode transcriptViewMode) string {
 	lines := nonEmptyLines(reasoning)
 	if len(lines) == 0 {
 		return ""
+	}
+	var b strings.Builder
+	b.WriteString(renderReasoningSummaryHeaderForWidth(len(lines), width))
+	if normalizeTranscriptViewMode(viewMode) == transcriptViewNormal {
+		return b.String()
 	}
 	visible := 3
 	if mode == reasoningModeLive {
@@ -284,13 +383,18 @@ func renderReasoningBlockForWidth(reasoning string, mode reasoningRenderMode, wi
 		visible = len(lines)
 	}
 	preview := strings.Join(lines[len(lines)-visible:], "\n")
-	var b strings.Builder
-	b.WriteString(reasoningHeaderStyle.Render(fitLine(fmt.Sprintf("  thinking · %d lines summarized", len(lines)), width)))
 	if rendered := renderReasoningMarkdownForWidth(preview, width); rendered != "" {
 		b.WriteString("\n")
 		b.WriteString(rendered)
 	}
 	return b.String()
+}
+
+func renderReasoningSummaryHeaderForWidth(lineCount, width int) string {
+	if lineCount <= 0 {
+		return ""
+	}
+	return reasoningHeaderStyle.Render(fitLine(fmt.Sprintf("  thinking · %d lines summarized", lineCount), width))
 }
 
 func renderMarkdownForWidth(content string, width int) string {

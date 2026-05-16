@@ -1,9 +1,12 @@
 package main
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 	"time"
+
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 // TestGenerateSessionKey verifies that generateSessionKey produces unique
@@ -64,4 +67,28 @@ func TestResolveSessionKey(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestInteractiveProgramOptionsDoNotEnableMouseReporting(t *testing.T) {
+	mouseCellMotion := teaStartupOptionsForTest(t, tea.WithMouseCellMotion())
+	mouseAllMotion := teaStartupOptionsForTest(t, tea.WithMouseAllMotion())
+	got := teaStartupOptionsForTest(t, interactiveProgramOptions()...)
+
+	if got&mouseCellMotion != 0 {
+		t.Fatal("interactive mode should not enable mouse cell-motion reporting; it prevents native terminal text selection")
+	}
+	if got&mouseAllMotion != 0 {
+		t.Fatal("interactive mode should not enable mouse all-motion reporting; it prevents native terminal text selection")
+	}
+}
+
+func teaStartupOptionsForTest(t *testing.T, opts ...tea.ProgramOption) int64 {
+	t.Helper()
+
+	p := tea.NewProgram(nil, opts...)
+	startupOptions := reflect.ValueOf(p).Elem().FieldByName("startupOptions")
+	if !startupOptions.IsValid() {
+		t.Fatal("bubbletea Program no longer exposes startupOptions; update this regression test")
+	}
+	return startupOptions.Int()
 }

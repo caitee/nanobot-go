@@ -63,6 +63,7 @@ func RegisterDefaultCommands(d *Dispatcher) {
 	d.RegisterSlashCommand(Command{Name: "config", Description: "Manage common settings", Scope: CommandScopeApp, Handler: handleConfig})
 	d.RegisterSlashCommand(Command{Name: "sessions", Description: "Resume a previous session", Scope: CommandScopeApp, Handler: handleSessions})
 	d.RegisterSlashCommand(Command{Name: "reasoning", Description: "Toggle thinking mode", ArgumentHint: "on|off", Scope: CommandScopeApp, Handler: handleReasoning})
+	d.RegisterSlashCommand(Command{Name: "view", Description: "Set transcript display mode", ArgumentHint: "normal|detail", Scope: CommandScopeTUI, Handler: handleTUIOnly})
 	d.RegisterSlashCommand(Command{Name: "quit", Aliases: []string{"exit"}, Description: "Quit interactive mode", Scope: CommandScopeTUI, Handler: handleTUIOnly})
 }
 

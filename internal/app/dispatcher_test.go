@@ -157,7 +157,7 @@ func TestDispatcherListsDefaultSlashCommands(t *testing.T) {
 		names[cmd.Name] = true
 	}
 
-	for _, name := range []string{"help", "clear", "new", "status", "stop", "reasoning", "sessions"} {
+	for _, name := range []string{"help", "clear", "new", "status", "stop", "reasoning", "sessions", "view"} {
 		if !names[name] {
 			t.Fatalf("expected default command %q in command list: %+v", name, commands)
 		}

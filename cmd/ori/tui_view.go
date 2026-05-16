@@ -29,6 +29,7 @@ func (m *interactiveModel) View() string {
 		viewportHeight:  m.viewport.Height,
 		viewportYOffset: m.viewport.YOffset,
 		focus:           m.focus,
+		viewMode:        normalizeTranscriptViewMode(m.viewMode),
 		hasNewOutput:    m.hasNewTranscriptOutput,
 	}
 	// Cache hit: nothing relevant has changed since the last successful
@@ -128,6 +129,7 @@ func (m *interactiveModel) initTranscriptViewport(width, height int) {
 	m.viewportMaxHeight = height
 	m.viewport = viewport.New(width, height)
 	m.renderer = transcriptRenderer{}
+	m.viewMode = normalizeTranscriptViewMode(m.viewMode)
 	if m.focus != focusTranscript && m.focus != focusOverlay {
 		m.focus = focusInput
 	}
@@ -232,10 +234,11 @@ func (m *interactiveModel) renderTranscriptViewportContent() string {
 
 func (m *interactiveModel) renderTranscriptViewportContentForWidth(width int) string {
 	return m.renderer.renderTranscript(m.transcript, renderContext{
-		width:  width,
-		focus:  m.focus,
-		active: m.active,
-		now:    time.Now(),
+		width:    width,
+		focus:    m.focus,
+		active:   m.active,
+		now:      time.Now(),
+		viewMode: normalizeTranscriptViewMode(m.viewMode),
 	})
 }
 

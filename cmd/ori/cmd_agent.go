@@ -135,10 +135,16 @@ func runAgentInteractive(ctx context.Context, app *appcore.App, cfg *config.Conf
 	fmt.Print(banner)
 
 	model := newInteractiveModel(app.Dispatcher, app.Bus, sessionKey, chatID, banner)
-	p := tea.NewProgram(model, tea.WithoutSignals(), tea.WithMouseCellMotion())
+	p := tea.NewProgram(model, interactiveProgramOptions()...)
 	model.SetProgram(p)
 	if _, err := p.Run(); err != nil {
 		slog.Error("interactive mode error", "error", err)
+	}
+}
+
+func interactiveProgramOptions() []tea.ProgramOption {
+	return []tea.ProgramOption{
+		tea.WithoutSignals(),
 	}
 }
 

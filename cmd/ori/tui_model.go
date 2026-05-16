@@ -46,6 +46,7 @@ type interactiveModel struct {
 	viewportMaxHeight      int
 	renderer               transcriptRenderer
 	focus                  focusArea
+	viewMode               transcriptViewMode
 	hasNewTranscriptOutput bool
 	transcriptViewportText string
 
@@ -82,6 +83,7 @@ type viewCacheKey struct {
 	viewportHeight  int
 	viewportYOffset int
 	focus           focusArea
+	viewMode        transcriptViewMode
 	hasNewOutput    bool
 }
 
@@ -126,6 +128,7 @@ func newInteractiveModel(dispatcher *appcore.Dispatcher, messageBus bus.MessageB
 		viewportMaxHeight: vp.Height,
 		renderer:          transcriptRenderer{},
 		focus:             focusInput,
+		viewMode:          transcriptViewNormal,
 	}
 	m.subscribeRuntimeEvents(sessionKey)
 	return m

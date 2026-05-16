@@ -94,13 +94,118 @@ func TestTranscriptRendererToolLinesFitNarrowWidth(t *testing.T) {
 	tool.endedAt = now.Add(time.Second)
 	tool.durationMs = 1000
 
-	out := plainView(transcriptRenderer{}.renderTranscript(tr, renderContext{width: 40, now: now}))
+	out := plainView(transcriptRenderer{}.renderTranscript(tr, renderContext{
+		width:    40,
+		now:      now,
+		viewMode: transcriptViewDetail,
+	}))
 	for _, line := range strings.Split(out, "\n") {
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
 		if width := lipgloss.Width(line); width > 40 {
 			t.Fatalf("expected line to fit width 40, got width %d for line %q in:\n%s", width, line, out)
+		}
+	}
+}
+
+func TestTranscriptRendererNormalToolShowsCompactResultPreview(t *testing.T) {
+	now := time.Unix(122, 0)
+	var tr transcript
+	asst := tr.appendAssistantBlock("asst-1", now)
+	asst.upsertToolStart("call-1", "list_dir", map[string]any{"path": "."}, now)
+	asst.finishTool("call-1", "list_dir", "alpha\nbeta", false, now.Add(3*time.Millisecond))
+
+	out := plainView(transcriptRenderer{}.renderTranscript(tr, renderContext{
+		width:    80,
+		now:      now.Add(3 * time.Millisecond),
+		viewMode: transcriptViewNormal,
+	}))
+	for _, want := range []string{"✓ list_dir .", "3ms", "10 chars"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected normal tool summary to contain %q, got:\n%s", want, out)
+		}
+	}
+	for _, want := range []string{"Result", "alpha"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected normal tool summary to include compact result preview %q, got:\n%s", want, out)
+		}
+	}
+	for _, hidden := range []string{"│ path", "beta"} {
+		if strings.Contains(out, hidden) {
+			t.Fatalf("normal tool summary should hide %q, got:\n%s", hidden, out)
+		}
+	}
+}
+
+func TestTranscriptRendererDetailToolKeepsArgumentsAndResultPreview(t *testing.T) {
+	now := time.Unix(123, 0)
+	var tr transcript
+	asst := tr.appendAssistantBlock("asst-1", now)
+	asst.upsertToolStart("call-1", "list_dir", map[string]any{"path": "."}, now)
+	asst.finishTool("call-1", "list_dir", "alpha\nbeta", false, now.Add(3*time.Millisecond))
+
+	out := plainView(transcriptRenderer{}.renderTranscript(tr, renderContext{
+		width:    80,
+		now:      now.Add(3 * time.Millisecond),
+		viewMode: transcriptViewDetail,
+	}))
+	for _, want := range []string{"✓ list_dir", "│ path", "Result", "alpha", "beta"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected detail tool block to contain %q, got:\n%s", want, out)
+		}
+	}
+}
+
+func TestTranscriptRendererNormalToolErrorShowsOnePreviewLine(t *testing.T) {
+	now := time.Unix(124, 0)
+	var tr transcript
+	asst := tr.appendAssistantBlock("asst-1", now)
+	asst.upsertToolStart("call-1", "read_file", map[string]any{"path": "/tmp/missing"}, now)
+	asst.finishTool("call-1", "read_file", "first error line\nsecond error line", true, now.Add(time.Millisecond))
+
+	out := plainView(transcriptRenderer{}.renderTranscript(tr, renderContext{
+		width:    80,
+		now:      now.Add(time.Millisecond),
+		viewMode: transcriptViewNormal,
+	}))
+	for _, want := range []string{"✗ read_file /tmp/missing", "Error", "first error line"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected normal error summary to contain %q, got:\n%s", want, out)
+		}
+	}
+	for _, hidden := range []string{"second error line", "... 1 more lines"} {
+		if strings.Contains(out, hidden) {
+			t.Fatalf("normal error summary should hide %q, got:\n%s", hidden, out)
+		}
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "Error") && lipgloss.Width(line) > 80 {
+			t.Fatalf("normal error preview should fit width 80, got %d for %q in:\n%s", lipgloss.Width(line), line, out)
+		}
+	}
+}
+
+func TestTranscriptRendererNormalRunningToolShowsPartialSize(t *testing.T) {
+	now := time.Unix(125, 0)
+	var tr transcript
+	asst := tr.appendAssistantBlock("asst-1", now)
+	tool := asst.upsertToolStart("call-1", "shell", map[string]any{"command": "printf hi"}, now)
+	tool.partial = "partial output"
+
+	out := plainView(transcriptRenderer{}.renderTranscript(tr, renderContext{
+		width:    80,
+		now:      now.Add(1200 * time.Millisecond),
+		viewMode: transcriptViewNormal,
+	}))
+	for _, want := range []string{"● shell", "running", "1.2s", "14 chars"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected normal running summary to contain %q, got:\n%s", want, out)
+		}
+	}
+	for _, hidden := range []string{"Preview", "partial output"} {
+		if strings.Contains(out, hidden) {
+			t.Fatalf("normal running summary should hide %q, got:\n%s", hidden, out)
 		}
 	}
 }
@@ -201,7 +306,11 @@ func TestTranscriptRendererToolTinyWidthsFit(t *testing.T) {
 			tool.status = toolStatusDone
 			tool.durationMs = 1
 
-			out := plainView(transcriptRenderer{}.renderTranscript(tr, renderContext{width: width, now: now}))
+			out := plainView(transcriptRenderer{}.renderTranscript(tr, renderContext{
+				width:    width,
+				now:      now,
+				viewMode: transcriptViewDetail,
+			}))
 			assertTranscriptRendererLinesFit(t, out, width)
 		})
 	}
@@ -255,7 +364,11 @@ func TestTranscriptRendererSkipsEmptyUserAndSystemBlocks(t *testing.T) {
 	tr.appendUserBlock("user-1", "", now)
 	tr.appendSystemBlock("sys-1", systemLevelInfo, "", now.Add(time.Second))
 
-	out := plainView(transcriptRenderer{}.renderTranscript(tr, renderContext{width: 80, now: now}))
+	out := plainView(transcriptRenderer{}.renderTranscript(tr, renderContext{
+		width:    80,
+		now:      now,
+		viewMode: transcriptViewDetail,
+	}))
 	if strings.TrimSpace(out) != "" {
 		t.Fatalf("expected empty user/system blocks to be omitted, got:\n%s", out)
 	}
@@ -285,7 +398,11 @@ func TestTranscriptRendererReasoningUsesLiveOnlyForActiveAssistant(t *testing.T)
 		"av6",
 	}, "\n"), now.Add(time.Second))
 
-	out := plainView(transcriptRenderer{}.renderTranscript(tr, renderContext{width: 100, now: now}))
+	out := plainView(transcriptRenderer{}.renderTranscript(tr, renderContext{
+		width:    100,
+		now:      now,
+		viewMode: transcriptViewDetail,
+	}))
 	for _, hidden := range []string{"ch1", "ch2", "ch3", "ah1"} {
 		if strings.Contains(out, hidden) {
 			t.Fatalf("expected reasoning output to hide %q, got:\n%s", hidden, out)
@@ -294,6 +411,124 @@ func TestTranscriptRendererReasoningUsesLiveOnlyForActiveAssistant(t *testing.T)
 	for _, visible := range []string{"cv4", "cv5", "cv6", "av2", "av3", "av4", "av5", "av6"} {
 		if !strings.Contains(out, visible) {
 			t.Fatalf("expected reasoning output to include %q, got:\n%s", visible, out)
+		}
+	}
+}
+
+func TestTranscriptRendererNormalReasoningIsHeaderOnly(t *testing.T) {
+	now := time.Unix(120, 0)
+	var tr transcript
+	asst := tr.appendAssistantBlock("asst-1", now)
+	asst.appendReasoningDelta(strings.Join([]string{
+		"hidden one",
+		"hidden two",
+		"tail one",
+		"tail two",
+		"tail three",
+	}, "\n"), now)
+
+	out := plainView(transcriptRenderer{}.renderTranscript(tr, renderContext{
+		width:    100,
+		now:      now,
+		viewMode: transcriptViewNormal,
+	}))
+	if !strings.Contains(out, "thinking · 5 lines summarized") {
+		t.Fatalf("expected reasoning header in normal mode, got:\n%s", out)
+	}
+	for _, hidden := range []string{"hidden one", "hidden two", "tail one", "tail two", "tail three"} {
+		if strings.Contains(out, hidden) {
+			t.Fatalf("normal mode should hide reasoning body %q, got:\n%s", hidden, out)
+		}
+	}
+}
+
+func TestTranscriptRendererNormalPreservesReasoningBoundariesAcrossToolSegments(t *testing.T) {
+	now := time.Unix(124, 0)
+	var tr transcript
+	asst := tr.appendAssistantBlock("asst-1", now)
+	asst.appendReasoningDelta("plan docs\nchoose files", now)
+	asst.appendToolStart("call-1", "list_dir", map[string]any{"path": "docs"}, now.Add(time.Second), false)
+	asst.finishTool("call-1", "list_dir", "ARCHITECTURE.md\nTUI-GUIDE.md", false, now.Add(2*time.Second))
+	asst.appendReasoningDelta("read docs", now.Add(3*time.Second))
+	asst.appendToolStart("call-2", "read_file", map[string]any{"path": "docs/TUI-GUIDE.md"}, now.Add(4*time.Second), false)
+	asst.finishTool("call-2", "read_file", "guide", false, now.Add(5*time.Second))
+	asst.appendReasoningDelta("compose final", now.Add(6*time.Second))
+	asst.appendTextDelta("docs summary", now.Add(7*time.Second))
+
+	out := plainView(transcriptRenderer{}.renderTranscript(tr, renderContext{
+		width:    100,
+		now:      now,
+		viewMode: transcriptViewNormal,
+	}))
+	if got := strings.Count(out, "thinking ·"); got != 3 {
+		t.Fatalf("normal mode should preserve reasoning segment boundaries, got %d thinking summaries:\n%s", got, out)
+	}
+	for _, want := range []string{
+		"thinking · 2 lines summarized",
+		"thinking · 1 lines summarized",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("normal mode should keep per-segment reasoning summary %q, got:\n%s", want, out)
+		}
+	}
+	for _, hidden := range []string{"plan docs", "choose files", "read docs", "compose final"} {
+		if strings.Contains(out, hidden) {
+			t.Fatalf("normal mode should hide reasoning body %q, got:\n%s", hidden, out)
+		}
+	}
+	for _, visible := range []string{"list_dir docs", "ARCHITECTURE.md", "read_file docs/TUI-GUIDE.md", "guide", "docs summary"} {
+		if !strings.Contains(out, visible) {
+			t.Fatalf("normal mode should keep non-reasoning segment %q, got:\n%s", visible, out)
+		}
+	}
+	assertInOrder(t, out,
+		"thinking · 2 lines summarized",
+		"list_dir docs",
+		"Result: ARCHITECTURE.md",
+		"thinking · 1 lines summarized",
+		"read_file docs/TUI-GUIDE.md",
+		"Result: guide",
+		"thinking · 1 lines summarized",
+		"docs summary",
+	)
+}
+
+func assertInOrder(t *testing.T, out string, parts ...string) {
+	t.Helper()
+	offset := 0
+	for _, part := range parts {
+		idx := strings.Index(out[offset:], part)
+		if idx < 0 {
+			t.Fatalf("expected %q after offset %d, got:\n%s", part, offset, out)
+		}
+		offset += idx + len(part)
+	}
+}
+
+func TestTranscriptRendererDetailReasoningKeepsTailSummary(t *testing.T) {
+	now := time.Unix(121, 0)
+	var tr transcript
+	asst := tr.appendAssistantBlock("asst-1", now)
+	asst.appendReasoningDelta(strings.Join([]string{
+		"hidden one",
+		"hidden two",
+		"tail one",
+		"tail two",
+		"tail three",
+	}, "\n"), now)
+	asst.status = assistantStatusDone
+
+	out := plainView(transcriptRenderer{}.renderTranscript(tr, renderContext{
+		width:    100,
+		now:      now,
+		viewMode: transcriptViewDetail,
+	}))
+	if strings.Contains(out, "hidden one") || strings.Contains(out, "hidden two") {
+		t.Fatalf("detail mode should still hide older reasoning lines, got:\n%s", out)
+	}
+	for _, visible := range []string{"tail one", "tail two", "tail three"} {
+		if !strings.Contains(out, visible) {
+			t.Fatalf("detail mode should include reasoning tail %q, got:\n%s", visible, out)
 		}
 	}
 }
@@ -313,7 +548,11 @@ func TestTranscriptRendererTerminalActiveAssistantUsesCompletedReasoning(t *test
 	asst.status = assistantStatusDone
 	tr.activeAssistantID = asst.id
 
-	out := plainView(transcriptRenderer{}.renderTranscript(tr, renderContext{width: 100, now: now}))
+	out := plainView(transcriptRenderer{}.renderTranscript(tr, renderContext{
+		width:    100,
+		now:      now,
+		viewMode: transcriptViewDetail,
+	}))
 	for _, hidden := range []string{"dh1", "dh2", "dh3"} {
 		if strings.Contains(out, hidden) {
 			t.Fatalf("expected terminal active assistant to hide completed reasoning line %q, got:\n%s", hidden, out)
@@ -335,7 +574,11 @@ func TestTranscriptRendererFinalConflictUsesFinalTextOnce(t *testing.T) {
 	asst.appendTextDelta("old", now.Add(2*time.Second))
 	asst.setFinalText(finalSourceRuntime, "final", now.Add(3*time.Second))
 
-	out := plainView(transcriptRenderer{}.renderTranscript(tr, renderContext{width: 80, now: now}))
+	out := plainView(transcriptRenderer{}.renderTranscript(tr, renderContext{
+		width:    80,
+		now:      now,
+		viewMode: transcriptViewDetail,
+	}))
 	if strings.Contains(out, "draft") || strings.Contains(out, "old") {
 		t.Fatalf("expected stale conflict text to stay hidden, got:\n%s", out)
 	}

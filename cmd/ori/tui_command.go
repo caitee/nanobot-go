@@ -22,6 +22,8 @@ func (m *interactiveModel) handleSlashCommand(input string) (bool, tea.Cmd) {
 		m.quitting = true
 		m.shutdown()
 		return true, tea.Quit
+	case "view":
+		return true, m.applyViewCommand(input)
 	}
 	if m.dispatcher == nil {
 		return false, nil
@@ -62,6 +64,34 @@ func (m *interactiveModel) applySlashCommandResult(input string, result *appcore
 	m.refreshTranscriptViewport()
 	m.viewVersion++
 	return nil
+}
+
+func (m *interactiveModel) applyViewCommand(input string) tea.Cmd {
+	mode, ok := parseViewCommandMode(input)
+	if !ok {
+		return m.applySlashCommandResult(input, &appcore.CommandResult{
+			Text: "Usage: /view normal|detail",
+		})
+	}
+	m.viewMode = mode
+	return m.applySlashCommandResult(input, &appcore.CommandResult{
+		Text: fmt.Sprintf("View mode: %s", mode),
+	})
+}
+
+func parseViewCommandMode(input string) (transcriptViewMode, bool) {
+	fields := strings.Fields(strings.TrimSpace(input))
+	if len(fields) != 2 || strings.TrimPrefix(fields[0], "/") != "view" {
+		return transcriptViewNormal, false
+	}
+	switch strings.ToLower(fields[1]) {
+	case "normal":
+		return transcriptViewNormal, true
+	case "detail":
+		return transcriptViewDetail, true
+	default:
+		return transcriptViewNormal, false
+	}
 }
 
 func (m *interactiveModel) submitPrompt(displayContent, dispatchContent string) tea.Cmd {
@@ -209,6 +239,7 @@ func (m *interactiveModel) availableSlashCommands() []appcore.Command {
 		{Name: "skills", Description: "List available skills"},
 		{Name: "status", Description: "Show bot status"},
 		{Name: "stop", Description: "Stop the current task"},
+		{Name: "view", Description: "Set transcript display mode", ArgumentHint: "normal|detail"},
 	}
 }
 
