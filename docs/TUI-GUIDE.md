@@ -313,7 +313,9 @@ make check
 - `EventToolExecUpdate` 更新运行中 preview。
 - 工具运行态不复用 footer spinner。
 - 80 列和窄终端下工具详情行不溢出。
-- PageUp/PageDown 和鼠标滚轮都驱动 transcript viewport；overlay 打开时滚轮不滚背后的历史。
+- PageUp/PageDown、上下键 fallback 和鼠标滚轮都驱动 transcript viewport；overlay 打开时滚轮不滚背后的历史。
+- transcript viewport 高度随内容增长，内容少时不补满屏幕，达到终端上限后再滚动。
+- 主 transcript 和底部输入区不再额外加全局 padding；用户消息用轻量输入标记区分，不显示 `you` 标签。
 - running tool elapsed 可重绘，但 timer-only repaint 不触发 new-output 提示。
 
 ---
@@ -448,7 +450,7 @@ cmd/ori/
 
 ## 常用 Tea 选项
 
-`ori agent` 保持普通终端历史可见：
+`ori agent` 保持普通终端历史可见，同时把可见对话收敛到 transcript viewport：
 
 ```go
 tea.NewProgram(m,
@@ -457,10 +459,11 @@ tea.NewProgram(m,
 )
 ```
 
-`WithMouseCellMotion` 用于把鼠标滚轮送进 transcript viewport。它不等于 alt screen；
-不要把对话历史重新拆回终端 scrollback。
+`WithMouseCellMotion` 用于把支持应用鼠标事件的终端滚轮送进 transcript
+viewport；上下键 fallback 覆盖把滚轮退化成方向键的终端。不要把 runtime 输出
+重新拆回第二套打印平面，也不要在 `View()` 之外直接打印新的可见历史。
 
-onboarding wizard 更像独立配置界面，因此使用替代屏幕：
+onboarding wizard 也使用替代屏幕：
 
 ```go
 tea.NewProgram(m,
@@ -468,7 +471,8 @@ tea.NewProgram(m,
 )
 ```
 
-不要在 `ori agent` 里随意切到 alt screen，否则会破坏历史区输出体验。
+如果新增 TUI 入口，默认先判断它是不是独立配置界面。像 onboarding 这种独立
+界面可以使用 alt screen；像 `ori agent` 这种对话界面则优先保留普通终端历史。
 
 ---
 

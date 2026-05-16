@@ -109,27 +109,12 @@ func (m *interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.viewVersion++
 				return m, nil
 			}
-			var cmd tea.Cmd
-			m.viewport, cmd = m.viewport.Update(msg)
-			if m.viewport.AtBottom() {
-				m.clearNewTranscriptOutput()
-			}
-			m.viewVersion++
-			return m, cmd
+			return m, m.scrollTranscriptViewport(msg)
 		}
 		switch msg.Type {
 		case tea.KeyPgUp, tea.KeyPgDown:
 			m.focus = focusTranscript
-			if m.viewport.Width <= 0 || m.viewport.Height <= 0 {
-				m.resizeTranscriptViewport(getTerminalWidth(), transcriptViewportHeight())
-			}
-			var cmd tea.Cmd
-			m.viewport, cmd = m.viewport.Update(msg)
-			if m.viewport.AtBottom() {
-				m.clearNewTranscriptOutput()
-			}
-			m.viewVersion++
-			return m, cmd
+			return m, m.scrollTranscriptViewport(msg)
 		case tea.KeyEsc:
 			if m.focus == focusTranscript {
 				m.focus = focusInput
@@ -137,24 +122,36 @@ func (m *interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 		}
-		if m.waiting {
-			return m, nil
-		}
 		switch msg.Type {
 		case tea.KeyTab:
+			if m.waiting {
+				return m, nil
+			}
 			if m.acceptSlashCommandCompletion() {
 				return m, nil
 			}
 		case tea.KeyUp:
-			if m.moveSlashCommandSelection(-1) {
+			if !m.waiting && m.moveSlashCommandSelection(-1) {
 				return m, nil
+			}
+			if cmd, handled := m.handleTranscriptArrowKey(msg); handled {
+				return m, cmd
 			}
 		case tea.KeyDown:
-			if m.moveSlashCommandSelection(1) {
+			if !m.waiting && m.moveSlashCommandSelection(1) {
 				return m, nil
 			}
+			if cmd, handled := m.handleTranscriptArrowKey(msg); handled {
+				return m, cmd
+			}
 		case tea.KeyEnter:
+			if m.waiting {
+				return m, nil
+			}
 			return m.handleEnter()
+		}
+		if m.waiting {
+			return m, nil
 		}
 	}
 	var cmd tea.Cmd
@@ -169,17 +166,29 @@ func (m *interactiveModel) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	if m.panel != nil {
 		return m, nil
 	}
-	m.focus = focusTranscript
+	return m, m.scrollTranscriptViewport(normalizeTranscriptWheelMouse(msg))
+}
+
+func (m *interactiveModel) handleTranscriptArrowKey(msg tea.KeyMsg) (tea.Cmd, bool) {
+	switch msg.Type {
+	case tea.KeyUp, tea.KeyDown:
+		return m.scrollTranscriptViewport(msg), true
+	default:
+		return nil, false
+	}
+}
+
+func (m *interactiveModel) scrollTranscriptViewport(msg tea.Msg) tea.Cmd {
 	if m.viewport.Width <= 0 || m.viewport.Height <= 0 {
 		m.resizeTranscriptViewport(getTerminalWidth(), transcriptViewportHeight())
 	}
 	var cmd tea.Cmd
-	m.viewport, cmd = m.viewport.Update(normalizeTranscriptWheelMouse(msg))
+	m.viewport, cmd = m.viewport.Update(msg)
 	if m.viewport.AtBottom() {
 		m.clearNewTranscriptOutput()
 	}
 	m.viewVersion++
-	return m, cmd
+	return cmd
 }
 
 func isTranscriptWheelMouse(msg tea.MouseMsg) bool {

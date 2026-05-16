@@ -43,6 +43,7 @@ type interactiveModel struct {
 	nextTranscriptID int
 
 	viewport               viewport.Model
+	viewportMaxHeight      int
 	renderer               transcriptRenderer
 	focus                  focusArea
 	hasNewTranscriptOutput bool
@@ -113,17 +114,18 @@ func newInteractiveModel(dispatcher *appcore.Dispatcher, messageBus bus.MessageB
 	// during bursty streams.
 	eventCh := make(chan runtime.Event, 512)
 	m := &interactiveModel{
-		textInput:     ti,
-		dispatcher:    dispatcher,
-		sessionKey:    sessionKey,
-		chatID:        chatID,
-		banner:        banner,
-		done:          make(chan struct{}),
-		runtimeEvents: eventCh,
-		outboundCh:    messageBus.ConsumeOutbound(),
-		viewport:      vp,
-		renderer:      transcriptRenderer{},
-		focus:         focusInput,
+		textInput:         ti,
+		dispatcher:        dispatcher,
+		sessionKey:        sessionKey,
+		chatID:            chatID,
+		banner:            banner,
+		done:              make(chan struct{}),
+		runtimeEvents:     eventCh,
+		outboundCh:        messageBus.ConsumeOutbound(),
+		viewport:          vp,
+		viewportMaxHeight: vp.Height,
+		renderer:          transcriptRenderer{},
+		focus:             focusInput,
 	}
 	m.subscribeRuntimeEvents(sessionKey)
 	return m

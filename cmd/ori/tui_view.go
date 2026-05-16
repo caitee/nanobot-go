@@ -13,6 +13,7 @@ import (
 func (m *interactiveModel) View() string {
 	textInputOut := m.textInput.View()
 	width := getTerminalWidth()
+	padding := transcriptHorizontalPaddingFor(width)
 	viewportOut := m.viewport.View()
 	key := viewCacheKey{
 		version:         m.viewVersion,
@@ -37,7 +38,7 @@ func (m *interactiveModel) View() string {
 		return m.cachedViewOutput
 	}
 
-	sep := borderStyle.Render(strings.Repeat("─", width))
+	sep := paddedViewLine(borderStyle.Render(strings.Repeat("─", max(1, width-padding*2))), padding, width)
 	var s strings.Builder
 
 	if m.quitting {
@@ -66,15 +67,17 @@ func (m *interactiveModel) View() string {
 
 	s.WriteString("\n")
 	if m.hasNewTranscriptOutput {
-		s.WriteString(waitingStyle.Render("new transcript output below"))
+		s.WriteString(paddedViewLine(waitingStyle.Render("new transcript output below"), padding, width))
 		s.WriteString("\n")
 	}
 	if m.active && m.status != "" && m.status != "done" {
+		s.WriteString(strings.Repeat(" ", padding))
 		s.WriteString(spinnerStyle.Render(spinnerFrames[m.spinnerIdx]))
 		s.WriteString(" ")
 		s.WriteString(toolRunningStyle.Render(m.status))
 		s.WriteString("\n")
 	} else if m.waiting && !m.active {
+		s.WriteString(strings.Repeat(" ", padding))
 		s.WriteString(spinnerStyle.Render(spinnerFrames[m.spinnerIdx]))
 		s.WriteString(" ")
 		s.WriteString(waitingStyle.Render("waiting"))
@@ -83,9 +86,10 @@ func (m *interactiveModel) View() string {
 	s.WriteString(sep)
 	s.WriteString("\n")
 	if suggestions := m.renderSlashCommandSuggestions(); suggestions != "" {
-		s.WriteString(suggestions)
+		s.WriteString(padRenderedLines(strings.TrimRight(suggestions, "\n"), padding, width))
+		s.WriteString("\n")
 	}
-	s.WriteString(textInputOut)
+	s.WriteString(paddedViewLine(textInputOut, padding, width))
 	s.WriteString("\n")
 
 	out := s.String()
@@ -100,10 +104,17 @@ func transcriptViewportHeight() int {
 
 func transcriptViewportHeightFor(terminalHeight int) int {
 	h := terminalHeight - 4
-	if h < 5 {
-		return 5
+	if h < 1 {
+		return 1
 	}
 	return h
+}
+
+func paddedViewLine(line string, padding, width int) string {
+	if padding <= 0 {
+		return fitLine(line, width)
+	}
+	return fitLine(strings.Repeat(" ", padding)+line, width)
 }
 
 func (m *interactiveModel) initTranscriptViewport(width, height int) {
@@ -113,9 +124,8 @@ func (m *interactiveModel) initTranscriptViewport(width, height int) {
 	if height <= 0 {
 		height = transcriptViewportHeight()
 	}
-	if height < 5 {
-		height = 5
-	}
+	height = normalizeTranscriptViewportMaxHeight(height)
+	m.viewportMaxHeight = height
 	m.viewport = viewport.New(width, height)
 	m.renderer = transcriptRenderer{}
 	if m.focus != focusTranscript && m.focus != focusOverlay {
@@ -130,12 +140,12 @@ func (m *interactiveModel) resizeTranscriptViewport(width, height int) bool {
 	if height <= 0 {
 		height = transcriptViewportHeight()
 	}
-	if height < 5 {
-		height = 5
-	}
+	height = normalizeTranscriptViewportMaxHeight(height)
 	if m.viewport.Width <= 0 || m.viewport.Height <= 0 {
-		m.initTranscriptViewport(width, height)
-		m.transcriptViewportText = m.renderTranscriptViewportContent()
+		m.viewportMaxHeight = height
+		m.renderer = transcriptRenderer{}
+		m.transcriptViewportText = m.renderTranscriptViewportContentForWidth(width)
+		m.viewport = viewport.New(width, transcriptViewportHeightForContent(m.transcriptViewportText, height))
 		m.viewport.SetContent(m.transcriptViewportText)
 		m.viewport.GotoBottom()
 		m.clearNewTranscriptOutput()
@@ -144,13 +154,20 @@ func (m *interactiveModel) resizeTranscriptViewport(width, height int) bool {
 	}
 	wasAtBottom := m.viewport.AtBottom()
 	widthChanged := m.viewport.Width != width
-	if m.viewport.Width == width && m.viewport.Height == height {
+	maxHeightChanged := m.viewportMaxHeight != height
+	content := m.transcriptViewportText
+	if widthChanged {
+		content = m.renderTranscriptViewportContentForWidth(width)
+	}
+	nextHeight := transcriptViewportHeightForContent(content, height)
+	if m.viewport.Width == width && m.viewport.Height == nextHeight && !maxHeightChanged {
 		return false
 	}
+	m.viewportMaxHeight = height
 	m.viewport.Width = width
-	m.viewport.Height = height
+	m.viewport.Height = nextHeight
 	if widthChanged {
-		m.transcriptViewportText = m.renderTranscriptViewportContent()
+		m.transcriptViewportText = content
 	}
 	m.viewport.SetContent(m.transcriptViewportText)
 	m.viewVersion++
@@ -177,10 +194,19 @@ func (m *interactiveModel) refreshTranscriptViewportWithNewOutput(markNewOutput 
 	if m.viewport.Width <= 0 || m.viewport.Height <= 0 {
 		m.initTranscriptViewport(getTerminalWidth(), transcriptViewportHeight())
 	}
+	if m.viewportMaxHeight <= 0 {
+		m.viewportMaxHeight = normalizeTranscriptViewportMaxHeight(m.viewport.Height)
+	}
 	wasAtBottom := m.viewport.AtBottom()
 	wasEmpty := strings.TrimSpace(m.transcriptViewportText) == ""
 	content := m.renderTranscriptViewportContent()
 	contentChanged := content != m.transcriptViewportText
+	nextHeight := transcriptViewportHeightForContent(content, m.viewportMaxHeight)
+	heightChanged := m.viewport.Height != nextHeight
+	if heightChanged {
+		m.viewport.Height = nextHeight
+		m.viewVersion++
+	}
 	if contentChanged {
 		m.transcriptViewportText = content
 		m.viewVersion++
@@ -201,12 +227,40 @@ func (m *interactiveModel) refreshTranscriptViewportWithNewOutput(markNewOutput 
 }
 
 func (m *interactiveModel) renderTranscriptViewportContent() string {
+	return m.renderTranscriptViewportContentForWidth(m.viewport.Width)
+}
+
+func (m *interactiveModel) renderTranscriptViewportContentForWidth(width int) string {
 	return m.renderer.renderTranscript(m.transcript, renderContext{
-		width:  m.viewport.Width,
+		width:  width,
 		focus:  m.focus,
 		active: m.active,
 		now:    time.Now(),
 	})
+}
+
+func normalizeTranscriptViewportMaxHeight(height int) int {
+	if height < 1 {
+		return 1
+	}
+	return height
+}
+
+func transcriptViewportHeightForContent(content string, maxHeight int) int {
+	maxHeight = normalizeTranscriptViewportMaxHeight(maxHeight)
+	height := transcriptContentHeight(content)
+	if height < 1 {
+		height = 1
+	}
+	return min(height, maxHeight)
+}
+
+func transcriptContentHeight(content string) int {
+	content = strings.TrimRight(content, "\n")
+	if strings.TrimSpace(content) == "" {
+		return 1
+	}
+	return strings.Count(content, "\n") + 1
 }
 
 func (m *interactiveModel) markNewTranscriptOutput() {

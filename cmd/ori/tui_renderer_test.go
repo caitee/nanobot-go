@@ -20,13 +20,40 @@ func TestTranscriptRendererOrdersBlocks(t *testing.T) {
 	tr.appendSystemBlock("sys-1", systemLevelInfo, "session switched", now.Add(5*time.Second))
 
 	out := plainView(transcriptRenderer{}.renderTranscript(tr, renderContext{width: 80, now: now}))
-	for _, want := range []string{"you", "hello", "ori", "thinking", "answer", "/status", "ready", "session switched"} {
+	for _, want := range []string{"› hello", "ori", "thinking", "answer", "/status", "ready", "session switched"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("expected rendered transcript to contain %q, got:\n%s", want, out)
 		}
 	}
+	if strings.Contains(out, "you") {
+		t.Fatalf("did not expect user block label in transcript, got:\n%s", out)
+	}
 	if userIdx, answerIdx := strings.Index(out, "hello"), strings.Index(out, "answer"); userIdx < 0 || answerIdx < 0 || userIdx > answerIdx {
 		t.Fatalf("expected user content before assistant text, got:\n%s", out)
+	}
+}
+
+func TestTranscriptRendererPadsTranscriptContent(t *testing.T) {
+	now := time.Unix(100, 0)
+	var tr transcript
+	tr.appendUserBlock("user-1", "hello", now)
+	asst := tr.appendAssistantBlock("asst-1", now.Add(time.Second))
+	asst.appendTextDelta("answer", now.Add(2*time.Second))
+
+	out := plainView(transcriptRenderer{}.renderTranscript(tr, renderContext{width: 40, now: now}))
+	if !strings.Contains(out, "\n› hello") && !strings.HasPrefix(out, "› hello") {
+		t.Fatalf("expected user line to have no global left padding, got:\n%s", out)
+	}
+	if strings.Contains(out, " › hello") {
+		t.Fatalf("expected user line padding to stay minimal, got:\n%s", out)
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		if got := lipgloss.Width(line); got > 40 {
+			t.Fatalf("expected padded line to fit width 40, got width %d for line %q in:\n%s", got, line, out)
+		}
 	}
 }
 

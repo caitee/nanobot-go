@@ -21,15 +21,21 @@ type transcriptRenderer struct{}
 
 func (r transcriptRenderer) renderTranscript(tr transcript, ctx renderContext) string {
 	ctx = normalizeRenderContext(ctx)
+	padding := transcriptHorizontalPaddingFor(ctx.width)
+	blockWidth := ctx.width - padding*2
+	if blockWidth < 1 {
+		blockWidth = 1
+	}
 	parts := make([]string, 0, len(tr.blocks))
 	for i := range tr.blocks {
 		blockCtx := ctx
+		blockCtx.width = blockWidth
 		blockCtx.active = isLiveAssistantBlock(tr.blocks[i], tr.activeAssistantID)
 		rendered := strings.TrimRight(r.renderBlock(tr.blocks[i], blockCtx), "\n")
 		if strings.TrimSpace(rendered) == "" {
 			continue
 		}
-		parts = append(parts, rendered)
+		parts = append(parts, padRenderedLines(rendered, padding, ctx.width))
 	}
 	return strings.Join(parts, "\n\n")
 }
@@ -63,11 +69,7 @@ func (r transcriptRenderer) renderUserBlock(user *userBlock, ctx renderContext) 
 		return ""
 	}
 	ctx = normalizeRenderContext(ctx)
-	var b strings.Builder
-	b.WriteString(userPromptStyle.Render(fitLine("you", ctx.width)))
-	b.WriteString("\n")
-	b.WriteString(userMessageStyle.Render(wrapPlainText(user.content, ctx.width)))
-	return b.String()
+	return userMessageStyle.Render(wrapPrefixedPlainText("› ", user.content, ctx.width))
 }
 
 func (r transcriptRenderer) renderAssistantBlock(asst *assistantBlock, ctx renderContext) string {
@@ -345,6 +347,54 @@ func wrapPlainText(text string, width int) string {
 		lines[i] = hardwrapLongLines(ansi.Wrap(lines[i], width, " "), width)
 	}
 	return strings.Join(lines, "\n")
+}
+
+func wrapPrefixedPlainText(prefix, text string, width int) string {
+	if width <= 0 {
+		width = getTerminalWidth()
+	}
+	if width < 12 {
+		return fitLine(strings.TrimSpace(prefix), width) + "\n" + wrapPlainText(text, width)
+	}
+	prefixWidth := ansi.StringWidth(prefix)
+	if prefixWidth >= width {
+		return fitLine(prefix+strings.ReplaceAll(text, "\n", " "), width)
+	}
+	continuation := strings.Repeat(" ", prefixWidth)
+	wrapWidth := width - prefixWidth
+	sourceLines := strings.Split(text, "\n")
+	out := make([]string, 0, len(sourceLines))
+	for _, source := range sourceLines {
+		wrapped := hardwrapLongLines(ansi.Wrap(source, wrapWidth, " "), wrapWidth)
+		parts := strings.Split(wrapped, "\n")
+		for i, part := range parts {
+			linePrefix := continuation
+			if i == 0 {
+				linePrefix = prefix
+			}
+			out = append(out, fitLine(linePrefix+part, width))
+		}
+	}
+	return strings.Join(out, "\n")
+}
+
+func padRenderedLines(rendered string, padding, width int) string {
+	if padding <= 0 || rendered == "" {
+		return rendered
+	}
+	prefix := strings.Repeat(" ", padding)
+	lines := strings.Split(rendered, "\n")
+	for i := range lines {
+		if strings.TrimSpace(lines[i]) == "" {
+			continue
+		}
+		lines[i] = fitLine(prefix+lines[i], width)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func transcriptHorizontalPaddingFor(width int) int {
+	return 0
 }
 
 func hardwrapLongLines(text string, width int) string {

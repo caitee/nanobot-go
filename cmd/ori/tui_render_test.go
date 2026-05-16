@@ -188,6 +188,22 @@ func TestRefreshTranscriptViewportFollowsTailAtBottom(t *testing.T) {
 	}
 }
 
+func TestRefreshTranscriptViewportShrinksToContentHeight(t *testing.T) {
+	m := &interactiveModel{}
+	m.initTranscriptViewport(40, 12)
+	m.beginTranscriptPrompt("short prompt", time.Unix(1, 0))
+
+	m.refreshTranscriptViewport()
+
+	if m.viewport.Height >= 12 {
+		t.Fatalf("expected short transcript to use less than max viewport height, got %d", m.viewport.Height)
+	}
+	wantHeight := strings.Count(strings.TrimRight(m.transcriptViewportText, "\n"), "\n") + 1
+	if m.viewport.Height != wantHeight {
+		t.Fatalf("expected viewport height to match content height, got height=%d content=%q", m.viewport.Height, plainView(m.transcriptViewportText))
+	}
+}
+
 func TestRefreshTranscriptViewportPreservesScrollWhenAwayFromBottom(t *testing.T) {
 	m := &interactiveModel{}
 	m.initTranscriptViewport(40, 5)
@@ -249,11 +265,52 @@ func TestTranscriptViewportMouseWheelScrollsFromInputFocus(t *testing.T) {
 		Action: tea.MouseActionPress,
 	})
 
-	if m.focus != focusTranscript {
-		t.Fatalf("expected mouse wheel to focus transcript, got %v", m.focus)
+	if m.focus != focusInput {
+		t.Fatalf("expected mouse wheel to keep input focus, got %v", m.focus)
 	}
 	if m.viewport.YOffset >= before {
 		t.Fatalf("expected mouse wheel up to update viewport offset below %d, got %d", before, m.viewport.YOffset)
+	}
+}
+
+func TestTranscriptViewportArrowScrollsFromInputFocus(t *testing.T) {
+	m := &interactiveModel{focus: focusInput}
+	m.initTranscriptViewport(40, 5)
+	for i := range 20 {
+		m.transcript.appendSystemBlock(m.nextBlockID("system"), systemLevelInfo, fmt.Sprintf("line %02d", i), time.Unix(int64(i), 0))
+	}
+	m.refreshTranscriptViewport()
+	before := m.viewport.YOffset
+	if before == 0 {
+		t.Fatalf("expected viewport to have scrollback")
+	}
+
+	m.Update(tea.KeyMsg{Type: tea.KeyUp})
+
+	if m.focus != focusInput {
+		t.Fatalf("expected arrow scroll to keep input focus, got %v", m.focus)
+	}
+	if m.viewport.YOffset >= before {
+		t.Fatalf("expected arrow up to update viewport offset below %d, got %d", before, m.viewport.YOffset)
+	}
+}
+
+func TestTranscriptViewportArrowScrollsWhileWaiting(t *testing.T) {
+	m := &interactiveModel{focus: focusInput, waiting: true}
+	m.initTranscriptViewport(40, 5)
+	for i := range 20 {
+		m.transcript.appendSystemBlock(m.nextBlockID("system"), systemLevelInfo, fmt.Sprintf("line %02d", i), time.Unix(int64(i), 0))
+	}
+	m.refreshTranscriptViewport()
+	before := m.viewport.YOffset
+	if before == 0 {
+		t.Fatalf("expected viewport to have scrollback")
+	}
+
+	m.Update(tea.KeyMsg{Type: tea.KeyUp})
+
+	if m.viewport.YOffset >= before {
+		t.Fatalf("expected arrow up while waiting to update viewport offset below %d, got %d", before, m.viewport.YOffset)
 	}
 }
 
