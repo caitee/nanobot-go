@@ -247,14 +247,14 @@ func transcriptFromSessionMessages(messages []appcore.SessionMessageView, ts tim
 			if msg.Reasoning != "" {
 				currentAssistant.appendReasoningDelta(msg.Reasoning, ts)
 			}
+			if msg.Content != "" {
+				currentAssistant.appendTextDelta(msg.Content, ts)
+			}
 			for _, call := range msg.ToolCalls {
 				currentAssistant.upsertToolStart(call.ID, call.Name, sessionToolCallArgs(call), ts)
 				if call.ID != "" {
 					toolCalls[call.ID] = currentAssistant
 				}
-			}
-			if msg.Content != "" {
-				currentAssistant.setFinalText(finalSourceRuntime, msg.Content, ts)
 			}
 			markSessionAssistantDone(currentAssistant, ts)
 		case "tool", "tool_result", "toolResult":

@@ -1,6 +1,11 @@
 package main
 
 import (
+	"bytes"
+	"io"
+	"log"
+	"log/slog"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -79,6 +84,36 @@ func TestInteractiveProgramOptionsDoNotEnableMouseReporting(t *testing.T) {
 	}
 	if got&mouseAllMotion != 0 {
 		t.Fatal("interactive mode should not enable mouse all-motion reporting; it prevents native terminal text selection")
+	}
+}
+
+func TestInteractiveLogWriterDefaultsToDiscard(t *testing.T) {
+	if got := interactiveLogWriter(false); got != io.Discard {
+		t.Fatalf("interactive logs should be discarded unless --logs is set, got %T", got)
+	}
+	if got := interactiveLogWriter(true); got == io.Discard {
+		t.Fatal("interactive logs should be visible when --logs is set")
+	}
+}
+
+func TestConfigureInteractiveLoggingSuppressesDefaultLogs(t *testing.T) {
+	previousSlog := slog.Default()
+	t.Cleanup(func() {
+		slog.SetDefault(previousSlog)
+		log.SetOutput(os.Stderr)
+	})
+
+	var base bytes.Buffer
+	log.SetOutput(&base)
+	slog.SetDefault(slog.New(slog.NewTextHandler(&base, &slog.HandlerOptions{Level: slog.LevelWarn})))
+
+	restore := configureInteractiveLogging(false)
+	log.Print("hidden stdlib")
+	slog.Warn("hidden slog")
+	restore()
+
+	if base.String() != "" {
+		t.Fatalf("interactive logging should suppress default log output, got %q", base.String())
 	}
 }
 

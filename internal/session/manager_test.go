@@ -3,6 +3,7 @@ package session
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -110,5 +111,39 @@ func TestFileSessionStoreListUsesFilenameWhenMetadataKeyMissing(t *testing.T) {
 	}
 	if infos[0].LastMessagePreview != "legacy prompt" {
 		t.Fatalf("preview = %q; want legacy prompt", infos[0].LastMessagePreview)
+	}
+}
+
+func TestFileSessionStoreListHandlesLargeJSONLLines(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewFileSessionStore(dir)
+	if err != nil {
+		t.Fatalf("NewFileSessionStore: %v", err)
+	}
+	sess := store.GetOrCreate("cli:large")
+	sess.CreatedAt = time.Date(2026, 5, 18, 9, 0, 0, 0, time.UTC)
+	sess.UpdatedAt = time.Date(2026, 5, 18, 9, 1, 0, 0, time.UTC)
+	sess.Messages = append(sess.Messages, Message{
+		Role:    "user",
+		Content: strings.Repeat("x", 128*1024),
+	})
+	if err := store.Save(sess); err != nil {
+		t.Fatalf("Save large session: %v", err)
+	}
+
+	reloaded, err := NewFileSessionStore(dir)
+	if err != nil {
+		t.Fatalf("NewFileSessionStore reload: %v", err)
+	}
+	infos := reloaded.List()
+
+	if len(infos) != 1 {
+		t.Fatalf("expected large session to be listed, got %+v", infos)
+	}
+	if infos[0].Key != "cli:large" {
+		t.Fatalf("key = %q; want cli:large", infos[0].Key)
+	}
+	if infos[0].MessageCount != 1 {
+		t.Fatalf("message count = %d; want 1", infos[0].MessageCount)
 	}
 }

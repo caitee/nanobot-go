@@ -238,6 +238,10 @@ transcript segment 顺序为准，例如 `reasoning -> tool -> Result preview ->
 transcript 快照；已完成和进行中的内容都留在 transcript 内，不通过 `printAbove`
 或终端 scrollback 形成第二套可见历史。
 
+`/sessions`、`/mcp`、`/skills`、`/config` 这类打开 overlay 的 TUI 命令不应把
+plain-text fallback 同时写进 transcript；fallback 文本只服务于非 TUI 客户端。
+交互模式中执行这些命令时，直接打开对应面板即可。
+
 用户输入块不显示 `you` 标签，使用紧凑的 `› ` 前缀直接连接输入内容。这个前缀
 是用户消息与 assistant / command / system block 的主要区分；不要再额外添加
 全局左 padding，否则普通终端模式下内容会显得过度缩进。Markdown、reasoning、
@@ -271,6 +275,12 @@ Reasoning 默认不全量展示。完整 reasoning 保留在 transcript reasonin
 - `detail` 详细视图同样保留 segment 顺序，并展示每段尾部摘要：live 模式展示最后 5 条非空 reasoning 行，completed/final 模式展示最后 3 条非空 reasoning 行。
 - live、completed、final 的 detail 尾部摘要必须保持同一套行数和宽度处理规则。
 - `/reasoning on|off` 只控制模型是否产生 reasoning；`/view normal|detail` 才控制 TUI 展示密度。
+
+### Session Replay 顺序
+
+`/sessions` 恢复历史时必须按持久化消息顺序重建 transcript。历史 assistant
+content 应作为普通 text segment 追加，不走 live runtime 的 `setFinalText` 合并逻辑；
+否则后续 final 文本会重写较早的 text segment，导致恢复视图出现“最终回复在前、工具调用在后”的错序。
 
 ### 工具调用块
 
@@ -344,10 +354,12 @@ make check
 - normal 模式保留多段 reasoning 的顺序和边界，每段只显示 `thinking · N lines summarized` 标题。
 - detail 模式 reasoning live/completed/final 都只显示尾部摘要。
 - final response 不重复打印已流式展示的 text segment。
+- session replay 不重排历史 segment；assistant content、tool call/result、后续 content 必须按持久化顺序显示。
 - normal 模式工具显示紧凑摘要，成功态和错误态都最多显示 1 条 preview。
 - detail 模式工具参数按 key 稳定排序，并渲染为多行块。
 - detail 模式长工具 result 显示 preview 和隐藏行数。
 - `/view normal|detail` 只改变 TUI 展示密度，不改变 `/reasoning` 模型开关。
+- overlay slash command 只打开面板，不把 fallback 文本追加到 transcript。
 - `EventToolExecUpdate` 更新运行中 preview。
 - 工具运行态不复用 footer spinner。
 - 80 列和窄终端下工具详情行不溢出。

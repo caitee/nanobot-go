@@ -738,7 +738,7 @@ func TestApplySlashCommandResultAppendsMarkdownCommandBlock(t *testing.T) {
 	}
 }
 
-func TestApplySlashCommandResultOpensOverlayAndRecordsCommand(t *testing.T) {
+func TestApplySlashCommandResultOpensOverlayWithoutCommandFallback(t *testing.T) {
 	m := &interactiveModel{renderer: transcriptRenderer{}, focus: focusInput}
 	m.initTranscriptViewport(80, 10)
 
@@ -755,8 +755,8 @@ func TestApplySlashCommandResultOpensOverlayAndRecordsCommand(t *testing.T) {
 	if m.focus != focusOverlay {
 		t.Fatalf("focus = %v, want overlay", m.focus)
 	}
-	if len(m.transcript.blocks) != 1 || m.transcript.blocks[0].command == nil {
-		t.Fatalf("command transcript block missing: %+v", m.transcript.blocks)
+	if len(m.transcript.blocks) != 0 {
+		t.Fatalf("UI request should open panel without appending fallback command block: %+v", m.transcript.blocks)
 	}
 }
 
@@ -871,8 +871,8 @@ func TestManagementPanelOpensFromUIRequest(t *testing.T) {
 	if cmd := m.applySlashCommandResult("/mcp", result); cmd != nil {
 		t.Fatalf("expected panel open to avoid print command")
 	}
-	if len(m.transcript.blocks) != 1 || m.transcript.blocks[0].command == nil {
-		t.Fatalf("expected command block in transcript: %+v", m.transcript.blocks)
+	if len(m.transcript.blocks) != 0 {
+		t.Fatalf("expected panel open to avoid transcript fallback: %+v", m.transcript.blocks)
 	}
 	if m.panel == nil || m.panel.kind != appcore.UIRequestMCP {
 		t.Fatalf("expected MCP panel, got %+v", m.panel)
@@ -881,8 +881,8 @@ func TestManagementPanelOpensFromUIRequest(t *testing.T) {
 	if !strings.Contains(out, "MCP servers") {
 		t.Fatalf("expected MCP management panel, got:\n%s", out)
 	}
-	if strings.Count(out, "fallback") != 1 {
-		t.Fatalf("expected fallback only from transcript command block, got:\n%s", out)
+	if strings.Contains(out, "fallback") {
+		t.Fatalf("expected TUI panel to suppress command fallback text, got:\n%s", out)
 	}
 }
 
@@ -979,6 +979,71 @@ func TestTranscriptFromSessionMessagesMatchesDelayedToolResultByID(t *testing.T)
 	if got := strings.Count(out, "✦ ori"); got != 1 {
 		t.Fatalf("assistant headers = %d, want 1:\n%s", got, out)
 	}
+}
+
+func TestTranscriptFromSessionMessagesPreservesToolResultBeforeFinalText(t *testing.T) {
+	messages := []appcore.SessionMessageView{
+		{Role: "user", Content: "summarize docs"},
+		{Role: "assistant", Reasoning: "need docs", ToolCalls: []appcore.SessionToolCallView{
+			{ID: "tool-1", Name: "read_file", ArgumentsMap: map[string]any{"path": "docs/TUI-GUIDE.md"}},
+		}},
+		{Role: "tool", ToolCallID: "tool-1", Name: "read_file", Content: "doc contents"},
+		{Role: "assistant", Content: "final summary"},
+	}
+
+	tr := transcriptFromSessionMessages(messages, time.Unix(1, 0))
+	out := plainView(transcriptRenderer{}.renderTranscript(tr, renderContext{
+		width:    100,
+		viewMode: transcriptViewNormal,
+	}))
+
+	assertInOrder(t, out,
+		"thinking · 1 lines summarized",
+		"read_file docs/TUI-GUIDE.md",
+		"Result: doc contents",
+		"final summary",
+	)
+}
+
+func TestTranscriptFromSessionMessagesDoesNotMoveFinalTextBeforePriorTools(t *testing.T) {
+	messages := []appcore.SessionMessageView{
+		{Role: "user", Content: "分析 docs"},
+		{
+			Role:      "assistant",
+			Reasoning: "list docs first",
+			Content:   "先看目录。",
+			ToolCalls: []appcore.SessionToolCallView{
+				{ID: "tool-1", Name: "list_dir", ArgumentsMap: map[string]any{"path": "docs"}},
+			},
+		},
+		{Role: "tool", ToolCallID: "tool-1", Name: "list_dir", Content: "ARCHITECTURE.md\nTUI-GUIDE.md"},
+		{
+			Role:      "assistant",
+			Reasoning: "read docs next",
+			Content:   "再读取关键文档。",
+			ToolCalls: []appcore.SessionToolCallView{
+				{ID: "tool-2", Name: "read_file", ArgumentsMap: map[string]any{"path": "docs/TUI-GUIDE.md"}},
+			},
+		},
+		{Role: "tool", ToolCallID: "tool-2", Name: "read_file", Content: "guide body"},
+		{Role: "assistant", Reasoning: "summarize now", Content: "最终总结"},
+	}
+
+	tr := transcriptFromSessionMessages(messages, time.Unix(1, 0))
+	out := plainView(transcriptRenderer{}.renderTranscript(tr, renderContext{
+		width:    100,
+		viewMode: transcriptViewNormal,
+	}))
+
+	assertInOrder(t, out,
+		"先看目录",
+		"list_dir docs",
+		"Result: ARCHITECTURE.md",
+		"再读取关键文档",
+		"read_file docs/TUI-GUIDE.md",
+		"Result: guide body",
+		"最终总结",
+	)
 }
 
 func TestResumeSelectedSessionLoadsTranscript(t *testing.T) {

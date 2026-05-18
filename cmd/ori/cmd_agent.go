@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
+	"log"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -131,6 +133,9 @@ func runAgentSingle(ctx context.Context, app *appcore.App, sessionKey, chatID st
 }
 
 func runAgentInteractive(ctx context.Context, app *appcore.App, cfg *config.Config, sessionKey, chatID string) {
+	restoreLogs := configureInteractiveLogging(agentLogsFlag)
+	defer restoreLogs()
+
 	banner := renderBanner(cfg, sessionKey)
 	fmt.Print(banner)
 
@@ -138,8 +143,28 @@ func runAgentInteractive(ctx context.Context, app *appcore.App, cfg *config.Conf
 	p := tea.NewProgram(model, interactiveProgramOptions()...)
 	model.SetProgram(p)
 	if _, err := p.Run(); err != nil {
-		slog.Error("interactive mode error", "error", err)
+		fmt.Fprintln(os.Stderr, "interactive mode error:", err)
 	}
+}
+
+func configureInteractiveLogging(showLogs bool) func() {
+	writer := interactiveLogWriter(showLogs)
+	previousSlog := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(writer, &slog.HandlerOptions{
+		Level: slog.LevelWarn,
+	})))
+	log.SetOutput(writer)
+	return func() {
+		slog.SetDefault(previousSlog)
+		log.SetOutput(os.Stderr)
+	}
+}
+
+func interactiveLogWriter(showLogs bool) io.Writer {
+	if showLogs {
+		return os.Stderr
+	}
+	return io.Discard
 }
 
 func interactiveProgramOptions() []tea.ProgramOption {

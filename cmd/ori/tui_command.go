@@ -54,10 +54,16 @@ func (m *interactiveModel) applySlashCommandResult(input string, result *appcore
 	if result.ResetSession || result.ClearViewport {
 		m.applyClearCommandResult()
 	}
-	m.appendCommandResult(input, result)
 	if result.UIRequest != "" {
 		m.openManagementPanel(result.UIRequest)
+		if result.Status != "" {
+			m.status = result.Status
+		}
+		m.refreshTranscriptViewport()
+		m.viewVersion++
+		return nil
 	}
+	m.appendCommandResult(input, result)
 	if result.Status != "" {
 		m.status = result.Status
 	}

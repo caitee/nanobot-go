@@ -2,6 +2,7 @@ package session
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -118,17 +119,25 @@ func readSessionFile(filePath string) (*Session, error) {
 	}
 	defer file.Close()
 
-	scanner := bufio.NewScanner(file)
+	reader := bufio.NewReader(file)
 	var session Session
 	session.Metadata = make(map[string]any)
 
-	for scanner.Scan() {
-		var data map[string]any
-		if err := json.Unmarshal(scanner.Bytes(), &data); err != nil {
-			slog.Warn("failed to unmarshal session line", "error", err)
+	for {
+		line, readErr := reader.ReadBytes('\n')
+		if len(bytes.TrimSpace(line)) == 0 {
+			if readErr == io.EOF {
+				break
+			}
+			if readErr != nil {
+				return nil, readErr
+			}
 			continue
 		}
-		if data["_type"] == "metadata" {
+		var data map[string]any
+		if err := json.Unmarshal(line, &data); err != nil {
+			slog.Warn("failed to unmarshal session line", "error", err)
+		} else if data["_type"] == "metadata" {
 			if v, ok := data["created_at"].(string); ok {
 				if t, err := time.Parse(time.RFC3339, v); err == nil {
 					session.CreatedAt = t
@@ -186,9 +195,12 @@ func readSessionFile(filePath string) (*Session, error) {
 			}
 			session.Messages = append(session.Messages, msg)
 		}
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, err
+		if readErr == io.EOF {
+			break
+		}
+		if readErr != nil {
+			return nil, readErr
+		}
 	}
 
 	return &session, nil
